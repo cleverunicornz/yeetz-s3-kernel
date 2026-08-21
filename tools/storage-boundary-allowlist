@@ -1,0 +1,6 @@
+# Storage-boundary allowlist (tools/check_storage_boundaries.sh).
+#
+# WIRING: empty. Application composition roots and test harnesses receive
+# opaque kernel handles; no application source constructs the adapter.
+#
+# DEBT: empty. No new entry is permitted without human authorization.

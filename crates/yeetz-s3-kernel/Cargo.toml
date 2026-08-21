@@ -1,0 +1,31 @@
+[package]
+name = "yeetz-s3-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Assured S3 lineage and canonical state kernel"
+
+[dependencies]
+bytes.workspace = true
+futures = { workspace = true, optional = true }
+hex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+yeetz-sdk-s3.workspace = true
+
+[features]
+test-support = ["dep:futures", "yeetz-sdk-s3/test-support"]
+
+[dev-dependencies]
+axum = { workspace = true, features = ["http1", "json", "tokio"] }
+proptest.workspace = true
+reqwest.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full", "test-util"] }
+yeetz-sdk-s3 = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

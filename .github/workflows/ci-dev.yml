@@ -1,0 +1,73 @@
+name: ci-dev
+
+# Manual, agent-invocable gate runner. Never auto-triggers.
+# Usage: gh workflow run ci-dev.yml -f ref=<branch-or-sha> -f task=<task> [-f runner=<runner>]
+# Witness rule: gate claims cite this run's URL, not local attestations.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "branch or SHA to verify"
+        required: true
+      task:
+        description: "clippy | build | nextest | gates | kernel-rigs | real-s3"
+        required: false
+        default: "clippy"
+      runner:
+        description: "warp-ubuntu-latest-x64-16x (default) | warp-ubuntu-latest-x64-8x | any warp label"
+        required: false
+        default: "warp-ubuntu-latest-x64-16x"
+
+concurrency:
+  group: ci-dev-${{ inputs.ref }}-${{ inputs.task }}
+  cancel-in-progress: true
+
+jobs:
+  run:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+          components: clippy, rustfmt
+      - uses: WarpBuilds/rust-cache@v2
+        with:
+          cache-provider: warpbuild
+          shared-key: yeetz-s3-kernel-ci
+          cache-on-failure: false
+      - run: tools/test_storage_boundaries.sh
+      - run: tools/test_dependency_floor.sh
+      - run: tools/check_storage_boundaries.sh
+      - run: tools/check_dependency_floor.sh
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: clippy
+        if: inputs.task == 'clippy'
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: build
+        if: inputs.task == 'build'
+        run: cargo build --workspace --locked
+      - name: nextest
+        if: inputs.task == 'nextest'
+        run: cargo nextest run --workspace
+      - name: gates (full set)
+        if: inputs.task == 'gates'
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo build --workspace --locked
+          cargo nextest run --workspace
+      - name: real-s3 (Exoscale SOS ABA probe)
+        if: inputs.task == 'real-s3'
+        env:
+          EXO_S3_KEY: ${{ secrets.EXO_S3_KEY }}
+          EXO_S3_SECRET: ${{ secrets.EXO_S3_SECRET }}
+          EXO_S3_BUCKET: ${{ secrets.EXO_S3_BUCKET }}
+        run: cargo run --locked -p yeetz-rigs --example real_s3_aba_probe
+      - name: kernel-facing durable rigs
+        if: inputs.task == 'kernel-rigs'
+        run: cargo run --locked -p yeetz-rigs --example streams_contracts

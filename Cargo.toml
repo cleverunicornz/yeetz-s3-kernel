@@ -1,0 +1,83 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/yeetz-s3-kernel",
+    "crates/yeetz-s3-streams",
+    "crates/yeetz-sdk-s3",
+    "crates/yeetz-sdk-core",
+    "rigs",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+# Internal
+yeetz-sdk-core = { path = "crates/yeetz-sdk-core" }
+yeetz-sdk-s3 = { path = "crates/yeetz-sdk-s3" }
+yeetz-s3-kernel = { path = "crates/yeetz-s3-kernel" }
+yeetz-s3-streams = { path = "crates/yeetz-s3-streams" }
+
+# Kernel closure (pins carried from the parent yeetz repo — the kernel
+# is assured at these versions; do not bump casually)
+hex = "=0.4.3"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+sha2 = "=0.11.0"
+thiserror = "=2.0.18"
+tokio = { version = "=1.52.1", features = ["full"] }
+object_store = { version = "=0.13.2", features = ["aws"] }
+aws-sdk-s3 = { version = "=1.130.0", default-features = false, features = [
+  "default-https-client",
+  "rt-tokio",
+] }
+tracing = "=0.1.44"
+bytes = "=1.11.1"
+futures = "=0.3.32"
+url = "=2.5.8"
+toml = "=1.1.2"
+reqwest = { version = "=0.13.2", features = [
+  "json",
+  "multipart",
+  "stream",
+  "query",
+  "form",
+] }
+base64 = "=0.22.1"
+httpdate = "=1.0.3"
+rand = "=0.10.1"
+
+# Dev
+axum = { version = "=0.8.9", default-features = false, features = ["macros"] }
+proptest = "=1.11.0"
+tempfile = "=3.27.0"
+temp-env = "=0.3.6"
+httpmock = "=0.8.3"
+
+[workspace.lints.rust]
+# Changed from "forbid" to "deny" for Rust 2024 edition compatibility.
+# In 2024, std::env::set_var/remove_var are unsafe, and tests need to use them.
+# "deny" allows #[allow(unsafe_code)] in test modules while still erroring on unsafe in prod code.
+unsafe_code = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+type_complexity = "allow"
+manual_let_else = "warn"
+match_same_arms = "warn"
+match_wildcard_for_single_variants = "warn"
+mem_forget = "warn"
+must_use_candidate = "warn"
+needless_borrow = "warn"
+needless_continue = "warn"
+needless_pass_by_ref_mut = "warn"
+needless_pass_by_value = "warn"
+option_option = "warn"
+redundant_clone = "warn"
+
+[profile.release]
+lto = "thin"

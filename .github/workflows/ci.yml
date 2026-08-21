@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".agents/**"
+      - ".github/**"
+      - "LICENSE"
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".agents/**"
+      - ".github/**"
+      - "LICENSE"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: warp-ubuntu-latest-x64-16x
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+          components: clippy, rustfmt
+      - uses: WarpBuilds/rust-cache@v2
+        with:
+          cache-provider: warpbuild
+          shared-key: yeetz-s3-kernel-ci
+      # Storage-boundary invariant: the kernel closure is the only S3
+      # client. Mechanical enforcement; ratchet allowlist for debt.
+      - run: tools/test_storage_boundaries.sh
+      - run: tools/test_dependency_floor.sh
+      - run: tools/check_storage_boundaries.sh
+      - run: tools/check_dependency_floor.sh
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo build --workspace --locked
+      - run: cargo nextest run --workspace

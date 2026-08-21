@@ -1,0 +1,29 @@
+[package]
+name = "yeetz-sdk-s3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Request-scoped S3-compatible object storage SDK mechanics"
+
+[dependencies]
+yeetz-sdk-core = { workspace = true }
+object_store = { workspace = true, features = ["aws"] }
+aws-sdk-s3 = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+url = { workspace = true }
+toml = { workspace = true }
+
+[features]
+test-support = []
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+temp-env.workspace = true
+tempfile.workspace = true
+[lints]
+workspace = true
