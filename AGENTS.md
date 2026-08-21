@@ -39,8 +39,10 @@ kernel's source of record.
     gate. No lanes, closures, or delegates.
 11. **ADRs are immutable.** `docs/decisions/` owns the why; supersede,
     never edit.
-12. **Verification runs remotely.** WarpBuild 16x, shared cache
-    `yeetz-s3-kernel-ci`; gate claims cite a ci-dev run URL, never a
+12. **Verification runs remotely.** Self-hosted bare-metal runners
+    (`org-ci-linux-x64`), rust cache on local SSD
+    (`/opt/gh-runners/bin/configure-rust-local-cache` — always hot, no
+    external cache service); gate claims cite a ci-dev run URL, never a
     local attestation (`.agents/skills/ci`).
 
 ## Where things live

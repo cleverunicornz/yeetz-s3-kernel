@@ -14,9 +14,9 @@ on:
         required: false
         default: "clippy"
       runner:
-        description: "warp-ubuntu-latest-x64-16x (default) | warp-ubuntu-latest-x64-8x | any warp label"
+        description: "org-ci-linux-x64 (default) | runner-<host>-<nn> for a specific bare-metal runner"
         required: false
-        default: "warp-ubuntu-latest-x64-16x"
+        default: "org-ci-linux-x64"
 
 concurrency:
   group: ci-dev-${{ inputs.ref }}-${{ inputs.task }}
@@ -36,11 +36,7 @@ jobs:
         with:
           toolchain: "1.96.0"
           components: clippy, rustfmt
-      - uses: WarpBuilds/rust-cache@v2
-        with:
-          cache-provider: warpbuild
-          shared-key: yeetz-s3-kernel-ci
-          cache-on-failure: false
+      - run: /opt/gh-runners/bin/configure-rust-local-cache
       - run: tools/test_storage_boundaries.sh
       - run: tools/test_dependency_floor.sh
       - run: tools/check_storage_boundaries.sh

@@ -26,17 +26,14 @@ jobs:
     # Fork PRs don't run CI — same-repo branches and main pushes only.
     # Untrusted code never executes on our runners.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: warp-ubuntu-latest-x64-16x
+    runs-on: org-ci-linux-x64
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.96.0"
           components: clippy, rustfmt
-      - uses: WarpBuilds/rust-cache@v2
-        with:
-          cache-provider: warpbuild
-          shared-key: yeetz-s3-kernel-ci
+      - run: /opt/gh-runners/bin/configure-rust-local-cache
       # Storage-boundary invariant: the kernel closure is the only S3
       # client. Mechanical enforcement; ratchet allowlist for debt.
       - run: tools/test_storage_boundaries.sh
