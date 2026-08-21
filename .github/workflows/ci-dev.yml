@@ -36,10 +36,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.96.0"
-          components: clippy, rustfmt
       - run: /opt/gh-runners/bin/configure-rust-local-cache
       - name: reset repository target for cold qualification
         if: inputs.cache_state == 'cold'

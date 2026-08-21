@@ -29,10 +29,6 @@ jobs:
     runs-on: org-ci-linux-x64
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.96.0"
-          components: clippy, rustfmt
       - run: /opt/gh-runners/bin/configure-rust-local-cache
       # Storage-boundary invariant: the kernel closure is the only S3
       # client. Mechanical enforcement; ratchet allowlist for debt.
