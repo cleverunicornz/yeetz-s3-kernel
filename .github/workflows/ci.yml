@@ -23,6 +23,9 @@ concurrency:
 
 jobs:
   check:
+    # Fork PRs don't run CI — same-repo branches and main pushes only.
+    # Untrusted code never executes on our runners.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: warp-ubuntu-latest-x64-16x
     steps:
       - uses: actions/checkout@v4

@@ -24,6 +24,9 @@ concurrency:
 
 jobs:
   run:
+    # Fork PRs never dispatch — workflow_dispatch requires write access
+    # (already enforced by GitHub), belt-and-suspenders for any future trigger
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ inputs.runner }}
     steps:
       - uses: actions/checkout@v4
