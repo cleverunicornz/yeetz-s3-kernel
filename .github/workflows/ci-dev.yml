@@ -10,16 +10,20 @@ on:
         description: "branch or SHA to verify"
         required: true
       task:
-        description: "clippy | build | nextest | gates | kernel-rigs | real-s3"
+        description: "check | clippy | build | nextest | gates | qualify | kernel-rigs | real-s3"
         required: false
         default: "clippy"
       runner:
         description: "org-ci-linux-x64 (default) | runner-<host>-<nn> for a specific bare-metal runner"
         required: false
         default: "org-ci-linux-x64"
+      cache_state:
+        description: "warm (default) | cold (discard this runner's repository target before execution)"
+        required: false
+        default: "warm"
 
 concurrency:
-  group: ci-dev-${{ inputs.ref }}-${{ inputs.task }}
+  group: ci-dev-${{ inputs.ref }}-${{ inputs.task }}-${{ inputs.runner }}-${{ inputs.cache_state }}
   cancel-in-progress: true
 
 jobs:
@@ -29,7 +33,7 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ inputs.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
@@ -37,13 +41,20 @@ jobs:
           toolchain: "1.96.0"
           components: clippy, rustfmt
       - run: /opt/gh-runners/bin/configure-rust-local-cache
+      - name: reset repository target for cold qualification
+        if: inputs.cache_state == 'cold'
+        run: rm -rf -- "$CARGO_TARGET_DIR"
       - run: tools/test_storage_boundaries.sh
+        if: inputs.task == 'gates' || inputs.task == 'qualify' || inputs.task == 'kernel-rigs' || inputs.task == 'real-s3'
       - run: tools/test_dependency_floor.sh
+        if: inputs.task == 'gates' || inputs.task == 'qualify' || inputs.task == 'kernel-rigs' || inputs.task == 'real-s3'
       - run: tools/check_storage_boundaries.sh
+        if: inputs.task == 'gates' || inputs.task == 'qualify' || inputs.task == 'kernel-rigs' || inputs.task == 'real-s3'
       - run: tools/check_dependency_floor.sh
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
+        if: inputs.task == 'gates' || inputs.task == 'qualify' || inputs.task == 'kernel-rigs' || inputs.task == 'real-s3'
+      - name: check
+        if: inputs.task == 'check'
+        run: cargo check --workspace --all-targets --all-features
       - name: clippy
         if: inputs.task == 'clippy'
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -57,6 +68,14 @@ jobs:
         if: inputs.task == 'gates'
         run: |
           cargo fmt --all --check
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo build --workspace --locked
+          cargo nextest run --workspace
+      - name: qualify commissioned runner
+        if: inputs.task == 'qualify'
+        run: |
+          cargo fmt --all --check
+          cargo check --workspace --all-targets --all-features
           cargo clippy --workspace --all-targets --all-features -- -D warnings
           cargo build --workspace --locked
           cargo nextest run --workspace
