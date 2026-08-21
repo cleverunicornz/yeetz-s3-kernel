@@ -28,11 +28,7 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: org-ci-linux-x64
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.96.0"
-          components: clippy, rustfmt
+      - uses: actions/checkout@v7
       - run: /opt/gh-runners/bin/configure-rust-local-cache
       # Storage-boundary invariant: the kernel closure is the only S3
       # client. Mechanical enforcement; ratchet allowlist for debt.
@@ -40,9 +36,6 @@ jobs:
       - run: tools/test_dependency_floor.sh
       - run: tools/check_storage_boundaries.sh
       - run: tools/check_dependency_floor.sh
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo build --workspace --locked
