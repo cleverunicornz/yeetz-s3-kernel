@@ -17,6 +17,18 @@ on:
         description: "org-ci-linux-x64 (default) | runner-<host>-<nn> for a specific bare-metal runner"
         required: false
         default: "org-ci-linux-x64"
+        type: choice
+        options:
+          - org-ci-linux-x64
+          - runner-61w-01
+          - runner-61w-02
+          - runner-61w-03
+          - runner-66t-01
+          - runner-66t-02
+          - runner-66t-03
+          - runner-ju0-01
+          - runner-ju0-02
+          - runner-ju0-03
       cache_state:
         description: "warm (default) | cold (discard this runner's repository target before execution)"
         required: false
