@@ -1,17 +1,28 @@
 ---
 name: ci
-description: Use when running gates, verifying a branch, citing gate evidence, or deciding where builds/tests run. Owns the remote verification plane — the org's self-hosted bare-metal runners, the ci-dev dispatch workflow, the witness rule, and the no-local-builds default.
+description: Use when running gates, verifying a branch, citing gate evidence, or deciding where builds/tests run. Owns the organization-wide CVU verification plane, the native macOS/Windows WarpBuild exception, the ci-dev dispatch workflow, the witness rule, and the no-local-builds default.
 metadata:
   short-description: Remote verification plane and witness rule
 ---
 
 # ci
 
-Verification runs on the organization's self-hosted bare-metal
-runners, not on local machines. Local Rust builds by agents are
-prohibited except for throwaway editor-loop `cargo check` — they eat
-the human's disk, spawn process storms that crash the harness, and
-produce no citable evidence.
+Linux and platform-neutral verification runs on the organization-wide CVU
+bare-metal fleet (`org-ci-linux-x64`), not on local machines or any other
+Linux runner. Local Rust builds by agents are prohibited except for
+throwaway editor-loop `cargo check` — they eat the human's disk, spawn process
+storms that crash the harness, and produce no citable evidence.
+
+## Runner selection
+
+- Every Linux and platform-neutral job uses `org-ci-linux-x64`.
+- Only jobs that build or test native macOS artifacts use
+  `warp-macos-15-arm64-6x`.
+- Only jobs that build or test native Windows artifacts use
+  `warp-windows-latest-x64-4x`.
+- Never use GitHub-hosted runners, generic `self-hosted`, or WarpBuild Linux.
+- Exact `runner-<host>-<nn>` labels are limited to CVU maintenance,
+  qualification, cache-hot iteration, or host-specific reproduction.
 
 ## The two workflows
 
