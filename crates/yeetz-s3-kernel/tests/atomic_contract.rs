@@ -412,7 +412,7 @@ async fn a8_taxonomy_absent_distinct_from_incomplete() {
     // Never-created lineage: Absent, not an error, not incomplete.
     match kernel.read_head_state().await.unwrap() {
         LineageHeadState::Absent => {}
-        LineageHeadState::Present(_) => panic!("never-created lineage must be Absent"),
+        other => panic!("never-created lineage must be Absent, got {other:?}"),
     }
     assert!(kernel.read_head_state().await.unwrap().is_absent());
     // The legacy method keeps its semantics (additive contract).
@@ -436,7 +436,7 @@ async fn a8_taxonomy_absent_distinct_from_incomplete() {
     kernel.append_genesis(&genesis).await.unwrap();
     match kernel.read_head_state().await.unwrap() {
         LineageHeadState::Present(_) => {}
-        LineageHeadState::Absent => panic!("created lineage must be Present"),
+        other => panic!("created lineage must be Present, got {other:?}"),
     }
 
     // Broken-history lineage (head present, terminal record destroyed):
@@ -447,7 +447,7 @@ async fn a8_taxonomy_absent_distinct_from_incomplete() {
     kernel.destroy_terminal_record_for_test().await.unwrap();
     match kernel.read_head_state().await.unwrap() {
         LineageHeadState::Present(_) => {}
-        LineageHeadState::Absent => panic!("broken history must remain Present (head intact)"),
+        other => panic!("broken history must remain Present (head intact), got {other:?}"),
     }
     assert!(
         kernel.read_terminal_record().await.is_err(),

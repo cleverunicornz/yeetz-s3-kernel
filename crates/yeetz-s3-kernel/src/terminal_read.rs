@@ -1,6 +1,7 @@
 use crate::state_kernel::{
     CanonicalRecord, HeadRead, KernelError, RecordDigest, SafeReference, StateKernel,
 };
+use crate::tombstone::Tombstone;
 
 impl StateKernel {
     /// O(1) terminal read (ADR 0016): the head object plus the
@@ -32,15 +33,18 @@ impl StateKernel {
         })
     }
 
-    /// The absent/present taxonomy (ADR 0016, Fugu's amendment):
-    /// `Absent` when the lineage's head object does not exist — the
-    /// lineage was never created (or its head was destroyed, itself an
-    /// integrity condition the caller cannot repair from);
+    /// The existence taxonomy (ADR 0016, Fugu's amendment; batch 6
+    /// extends it): `Absent` when no head and no tombstone exist —
+    /// the lineage was never created; `Destroyed` when a tombstone
+    /// exists — the lineage existed and was deliberately deleted
+    /// (the witness mechanizes the parent-aggregate convention);
     /// `Present` carries the head. Broken-history lineages with an
     /// intact head object remain `Present` here — the incompleteness
     /// surfaces through the record-reading paths as
     /// [`KernelError::StateHistoryIncomplete`], never conflated with
-    /// absence. Additive: [`Self::read_head`] semantics are unchanged.
+    /// absence. Additive: [`Self::read_head`] semantics are
+    /// unchanged. A reborn lineage (fresh genesis after destroy) is
+    /// `Present` — the new head's existence supersedes the witness.
     pub async fn read_head_state(&self) -> Result<LineageHeadState, KernelError> {
         match self.load_head().await {
             Ok(loaded) => {
@@ -52,8 +56,32 @@ impl StateKernel {
                     etag,
                 }))
             }
-            Err(KernelError::StateHistoryIncomplete { .. }) => Ok(LineageHeadState::Absent),
+            Err(KernelError::StateHistoryIncomplete { .. }) => match self.load_tombstone().await? {
+                Some(tombstone) => Ok(LineageHeadState::Destroyed(tombstone)),
+                None => Ok(LineageHeadState::Absent),
+            },
             Err(err) => Err(err),
+        }
+    }
+
+    /// Load and parse the lineage tombstone (`None` when absent).
+    /// Malformed stored evidence is [`KernelError::TombstoneCorrupt`]
+    /// — never absence (law 7).
+    async fn load_tombstone(&self) -> Result<Option<Tombstone>, KernelError> {
+        match self
+            .object_store
+            .download(&self.lineage.tombstone_key())
+            .await
+        {
+            Ok(bytes) => Tombstone::decode(bytes.as_ref()).map(Some).map_err(|_| {
+                KernelError::TombstoneCorrupt {
+                    reference: SafeReference::for_lineage(&self.lineage),
+                }
+            }),
+            Err(yeetz_sdk_s3::ObjectStoreError::NotFound(_)) => Ok(None),
+            Err(_) => Err(KernelError::StateUnavailable {
+                operation: "tombstone read",
+            }),
         }
     }
 }
@@ -83,13 +111,17 @@ impl TerminalRecordRead {
     }
 }
 
-/// Absent vs present for a lineage's head (ADR 0016 taxonomy):
-/// distinguishes a never-created lineage from a broken-history one —
-/// the latter is `Present` here and `StateHistoryIncomplete` through
-/// the record paths, never conflated with absence (law 7).
+/// The existence taxonomy for a lineage's head (ADR 0016; batch 6
+/// adds `Destroyed`): distinguishes never-created (`Absent`),
+/// deliberately deleted (`Destroyed` with the tombstone witness —
+/// mechanizing the parent-aggregate convention), and `Present`.
+/// Never conflates destruction with absence (law 7); a
+/// broken-history lineage is `Present` here and
+/// `StateHistoryIncomplete` through the record paths.
 #[derive(Debug, Clone)]
 pub enum LineageHeadState {
     Absent,
+    Destroyed(Tombstone),
     Present(HeadRead),
 }
 

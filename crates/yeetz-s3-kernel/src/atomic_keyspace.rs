@@ -19,11 +19,12 @@
 //! from lineage keys, so a namespace can never collide with a lineage
 //! name regardless of naming. Listing is prefix-scoped to the
 //! namespace root and cannot observe other namespaces.
-
 use std::sync::Arc;
 
 use bytes::Bytes;
 use yeetz_sdk_s3::{ObjectStoreClient, ObjectStoreError};
+
+use crate::tombstone::Tombstone;
 
 /// Reserved key root for the keyspace (kernel-owned, like `objects/`
 /// and `head`).
@@ -118,6 +119,12 @@ pub enum KeyspaceError {
         requested: u64,
         certified: Option<u64>,
     },
+    /// The tombstone namespace (`tombstones/`) is reserved and
+    /// immutable: tombstones are written only by [`AtomicKeyspace::destroy`],
+    /// never overwritten, never deleted except by a certified trim
+    /// sweep.
+    #[error("tombstone namespace is immutable: {0}")]
+    TombstoneImmutable(String),
     /// The backing store failed in a way the caller should retry.
     #[error("keyspace store unavailable: {operation}")]
     Unavailable { operation: &'static str },
@@ -135,6 +142,24 @@ pub struct TrimState {
     /// Whether this proposal is the effective floor (`false` when
     /// idempotent or overtaken).
     pub advanced: bool,
+}
+
+/// The four-state existence read (batch 6): [`KeyState::Present`] /
+/// [`KeyState::Destroyed`] / [`KeyState::OffsetExpired`] /
+/// [`KeyState::Absent`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum KeyState {
+    /// The key exists; value plus the CAS token.
+    Present { value: Bytes, etag: String },
+    /// The key existed and was deliberately deleted; the tombstone
+    /// is the witness (cause, actor, generation, timestamp).
+    Destroyed { tombstone: Tombstone },
+    /// The key's seq position is below the namespace's certified
+    /// trim floor: history the certificate retired (batch 5) —
+    /// neither absent nor destroyed, and never a zombie's Present.
+    OffsetExpired { first_retained: u64 },
+    /// The key never existed: no value, no tombstone.
+    Absent,
 }
 
 /// The outcome of a [`AtomicKeyspace::delete_below`] sweep. A crash
@@ -239,10 +264,30 @@ impl AtomicKeyspace {
         Ok(format!("{KEYSPACE_ROOT}/{}/{}", self.namespace, key))
     }
 
+    /// Reserved tombstone sub-root: `tombstones/{key}` mirrors the
+    /// key it witnesses. Kernel-owned, like `trims/`.
+    const TOMBSTONE_ROOT: &str = "tombstones";
+
+    /// The tombstone key mirroring a data key.
+    fn tombstone_key(key: &str) -> String {
+        format!("{}/{key}", Self::TOMBSTONE_ROOT)
+    }
+
+    /// Tombstones are written only by `destroy` and removed only by
+    /// a certified trim sweep; every direct write/delete path
+    /// refuses the reserved prefix.
+    fn ensure_not_tombstone_key(key: &str) -> Result<(), KeyspaceError> {
+        if key.starts_with(Self::TOMBSTONE_ROOT) && key.len() > Self::TOMBSTONE_ROOT.len() {
+            return Err(KeyspaceError::TombstoneImmutable(key.to_string()));
+        }
+        Ok(())
+    }
+
     /// Put-if-absent. A lost race returns
     /// [`KeyspaceError::AlreadyExists`]; the winner's bytes are
     /// untouched (the loser never overwrites).
     pub async fn create(&self, key: &str, value: Bytes) -> Result<(), KeyspaceError> {
+        Self::ensure_not_tombstone_key(key)?;
         let object_key = self.object_key(key)?;
         let value = ValueEnvelope::new(0, value).encode();
         match self
@@ -337,13 +382,13 @@ impl AtomicKeyspace {
     /// stored object's etag equals `expected_etag`. Returns the new
     /// etag. A mismatch returns [`KeyspaceError::PreconditionFailed`]
     /// carrying the currently observed etag when available — the
-    /// caller re-reads, re-derives, retries (law 4).
     pub async fn compare_exchange(
         &self,
         key: &str,
         expected_etag: &str,
         value: Bytes,
     ) -> Result<String, KeyspaceError> {
+        Self::ensure_not_tombstone_key(key)?;
         let object_key = self.object_key(key)?;
         let current = match self.store.download_with_etag(&object_key).await {
             Ok(meta) => meta,
@@ -445,6 +490,7 @@ impl AtomicKeyspace {
     /// Delete a key (namespaced). Idempotent: deleting an absent key
     /// succeeds — object stores treat it that way and so do we.
     pub async fn delete(&self, key: &str) -> Result<(), KeyspaceError> {
+        Self::ensure_not_tombstone_key(key)?;
         let object_key = self.object_key(key)?;
         self.store
             .delete(&object_key)
@@ -465,6 +511,7 @@ impl AtomicKeyspace {
         // identifier error after earlier deletes would discard the outcome
         // report the caller needs to resume safely.
         for key in keys {
+            Self::ensure_not_tombstone_key(key)?;
             self.object_key(key)?;
         }
 
@@ -488,6 +535,93 @@ impl AtomicKeyspace {
             }
         }
         Ok(outcomes)
+    }
+
+    /// Intentional deletion with an existence witness: an immutable
+    /// tombstone (`{deleted_at_gen, cause, actor, ts}`) is written
+    /// at `tombstones/{key}` BEFORE the value is deleted — enough to
+    /// prove the key existed and was deliberately deleted. Idempotent
+    /// for an already-destroyed key (the first tombstone stands);
+    /// a no-op for a never-created key (no fabricated history). A
+    /// re-create supersedes the tombstone: the new existence IS the
+    /// truth, the witness remains as history until a certified trim
+    /// sweep retires it.
+    pub async fn destroy(&self, key: &str, cause: &str, actor: &str) -> Result<(), KeyspaceError> {
+        let object_key = self.object_key(key)?;
+        let Some((_, version, _)) = self.get_with_version(key).await? else {
+            return Ok(()); // nothing to witness — absence is already the truth
+        };
+        let tombstone = Tombstone::new(version, cause, actor);
+        let tombstone_object_key = format!(
+            "{KEYSPACE_ROOT}/{}/{}",
+            self.namespace,
+            Self::tombstone_key(key)
+        );
+        // Put-if-absent through the raw path (the public create is
+        // guarded against the reserved prefix); AlreadyExists means
+        // an earlier lifetime's tombstone stands — immutable history.
+        match self
+            .store
+            .upload_conditional(&tombstone_object_key, tombstone.encode()?.into(), None)
+            .await
+        {
+            Ok(_) | Err(ObjectStoreError::PreconditionFailed(_)) => {}
+            Err(_) => {
+                return Err(KeyspaceError::Unavailable {
+                    operation: "keyspace destroy: tombstone create",
+                });
+            }
+        }
+        // Witness in place — now the deletion itself.
+        self.store
+            .delete(&object_key)
+            .await
+            .map_err(|_| KeyspaceError::Unavailable {
+                operation: "keyspace destroy: delete",
+            })
+    }
+
+    /// The existence read (batch 6): `Present` / `Destroyed` /
+    /// `OffsetExpired` / `Absent` — destroyed is never conflated with
+    /// never-created, and trimmed history is never conflated with
+    /// either. A seq-shaped key below the namespace's root trim
+    /// certificate reads `OffsetExpired` regardless of zombies or
+    /// unswept tombstones (the certificate rules, per batch 5);
+    /// scoped certificates (per-stream) surface through the scoped
+    /// APIs. Seq 0 — the genesis position — is exempt (immortal).
+    pub async fn read_state(&self, key: &str) -> Result<KeyState, KeyspaceError> {
+        self.object_key(key)?;
+        if let Some(seq) = key.rsplit('/').next().and_then(Self::parse_seq_component)
+            && seq > 0
+            && let Some(first_retained) = self.trim_floor("").await?
+            && seq < first_retained
+        {
+            return Ok(KeyState::OffsetExpired { first_retained });
+        }
+        if let Some((value, etag)) = self.get_with_etag(key).await? {
+            return Ok(KeyState::Present { value, etag });
+        }
+        // Tombstones are raw objects (not versioned envelopes — they
+        // are create-once by construction), read through the raw path.
+        let tombstone_object_key = format!(
+            "{KEYSPACE_ROOT}/{}/{}",
+            self.namespace,
+            Self::tombstone_key(key)
+        );
+        match self.store.download(&tombstone_object_key).await {
+            Ok(bytes) => {
+                return Ok(KeyState::Destroyed {
+                    tombstone: Tombstone::decode(bytes.as_ref())?,
+                });
+            }
+            Err(ObjectStoreError::NotFound(_)) => {}
+            Err(_) => {
+                return Err(KeyspaceError::Unavailable {
+                    operation: "read_state: tombstone",
+                });
+            }
+        }
+        Ok(KeyState::Absent)
     }
 
     /// The 20-digit zero-padded key component of a seq (the seq-key
@@ -663,16 +797,42 @@ impl AtomicKeyspace {
             }
         }
 
-        // Bounded batches through the resumable bulk primitive.
-        for chunk in pending.chunks(64) {
-            let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
-            for outcome in self.delete_many(&refs).await? {
-                report.examined += 1;
-                if outcome.deleted {
-                    report.deleted += 1;
-                } else {
-                    report.remaining += 1;
+        // The same bounded walk over the mirrored tombstones below
+        // the floor: history retires WITH the data it witnessed —
+        // the trim certificate carries the witness from here on.
+        let tombstone_prefix = Self::tombstone_key(data_prefix);
+        let tombstone_start = format!("{tombstone_prefix}{}", Self::seq_component(0));
+        let mut after = Some(tombstone_start);
+        'tombstones: loop {
+            let keys = self.list_after(after.as_deref(), 1000).await?;
+            if keys.is_empty() {
+                break;
+            }
+            for key in &keys {
+                let Some(seq) = key
+                    .strip_prefix(&tombstone_prefix)
+                    .and_then(Self::parse_seq_component)
+                else {
+                    break 'tombstones;
+                };
+                if seq == 0 || seq >= first_retained {
+                    break 'tombstones;
                 }
+                pending.push(key.clone());
+                after = Some(key.clone());
+            }
+        }
+
+        // Bounded batches. Tombstone keys bypass the guarded bulk
+        // primitive (immutability applies to callers, not to the
+        // certified sweep), so the sweep deletes through the raw
+        // object path with the same per-key outcome accounting.
+        for key in &pending {
+            report.examined += 1;
+            let object_key = self.object_key(key)?;
+            match self.store.delete(&object_key).await {
+                Ok(()) => report.deleted += 1,
+                Err(_) => report.remaining += 1,
             }
         }
         Ok(report)
