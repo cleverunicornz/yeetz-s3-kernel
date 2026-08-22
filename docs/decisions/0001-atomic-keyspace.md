@@ -671,3 +671,109 @@ K1–K7 do not move. The change is additive: one method, one SDK
 primitive, one fault cut, one loopback wire arm. No existing
 signature or semantic changes — `destroy`'s unconditional tail is
 documented as a future adoption site, deliberately untouched.
+
+---
+
+## Ruled addendum: Batch 9 — lineage-head incarnation (closing the head path's cross-deletion ABA)
+
+Status: accepted (human-authorized kernel extension, direct ruling
+2026-08-22: "it should be closed structurally … we should correct it
+100%"). Builds on batches 4 (versioned values), 6 (tombstones) and 7
+(incarnation counters).
+
+### The defect (Fugu full-board teardown, finding E)
+
+Lineage heads (`{lineage}/head`) and canonical records predate the
+era model and never received the envelope treatment the
+`AtomicKeyspace` got: they CAS on raw etags over raw JSON. On a
+content-etag backend (measured-real on Exoscale SOS), destroy +
+byte-identical genesis recreate reproduces the destroyed era's head
+etag, so a stale `HeadRead` carried across the destroy passes
+`same_identity && etag ==` and its `If-Match` succeeds — a successor
+appended onto a destroyed era by a writer that never observed the
+rebirth. Reproduced by the kernel canary (ci-dev run 32589181111,
+branch `teardown/lineage-incarnation-canary`, tip `9cf5eb1`; the
+loopback models the measured content-etag scheme). The ruling: this
+is the one path that did not get back-refactored when the incarnation
+model landed, and that is operationally wrong.
+
+### The mechanism — a head-specific era stamp, not the value envelope
+
+Heads join the era model with the smallest mechanism that closes the
+gap:
+
+1. **v2 head wire** (`llm_gateway_state_head/v2`): the head JSON
+   gains one field, `incarnation: u64`. Byte-identical genesis in two
+   eras therefore has different head bytes — and different content
+   etags on any backend. Dual decode: a v1 head (pre-batch-9 store)
+   reads as incarnation 0, the never-destroyed lifetime it was;
+   `deny_unknown_fields` makes v1/v2 mutually unparseable, so the
+   envelope string discriminates exactly one format per object and
+   everything else fails closed. The kernel writes v2 exclusively;
+   the first head movement after an upgrade rewrites the object.
+2. **`{lineage}/incarnation` counter**: the lineage twin of batch 7's
+   `incarnations/{key}` mirror — one counter per lineage (a lineage
+   has exactly one head), raw big-endian u64, put-if-absent at 1 on
+   the first destroy, advanced only by monotone CAS, never
+   decreased, absent = era 0.
+3. **Genesis stamps the current era and re-checks after landing**
+   (the head-path twin of teardown finding T3): the counter read and
+   the put-if-absent are separate requests, so a destroy can bump the
+   era between them and delete the head before the PUT lands —
+   leaving a head stamped with the destroyed era and byte-identical
+   to it, which would reopen the ABA. After landing, `create_head`
+   re-reads the counter; on a moved era it evicts only its own
+   stale-era bytes and retries at the fresh era (bounded).
+4. **`destroy` order**: tombstone (now recording the closed head's
+   incarnation — superseding batch 7's "lineages record 0" clause) →
+   era bump → head delete. The bump is the linearization of
+   "lifetime closed".
+5. **CAS identity**: `CanonicalHead::same_identity` includes the
+   incarnation, so `append_successor`/`append_successor_batch` refuse
+   a stale-era `HeadRead` with `LineageHeadConflict` before the
+   store's If-Match is even attempted — the refusal is structural
+   twice over (identity mismatch AND distinct bytes on the wire).
+
+Why not the keyspace's full binary envelope: its `version` field
+exists because a keyspace value can be CAS'd to byte-identical
+payload within one lifetime; heads structurally cannot — every head
+CAS advances `generation`, which is inside the head bytes, so the
+only byte-identical collision is cross-deletion, and the incarnation
+alone breaks it. Wrapping the canonical JSON in a binary prefix would
+also fork the canonical round-trip verification (`from_bytes`
+re-encodes and compares) for no additional closure; a JSON field
+keeps encode/decode symmetric.
+
+### K1–K7 and the read surface do not move
+
+Every non-destroy path observes identical behavior: same keys, same
+CAS discipline, same errors, same terminal reads (still two GETs —
+reads never touch the counter). Within one lifetime the incarnation
+is constant, so `same_identity` is unchanged for every honest
+comparison. `read_head_state` (Present/Absent/Destroyed) keeps its
+batch-6 semantics; a reborn lineage is still `Present`. Crash
+windows: before the bump the destroy simply did not happen (head
+Present); after the bump but before the delete the head still rules
+the taxonomy (`Present`) and a fresh genesis conflicts rather than
+resurrecting over the dead head; re-running `destroy` converges from
+both windows (first tombstone stands, counter gaps are sanctioned).
+
+### Contract suite and proof
+
+- **L-suite** (`crates/yeetz-s3-kernel/tests/lineage_incarnation_contract.rs`):
+  L1 stale head token across destroy/recreate (byte-identical
+  genesis) refused, fresh-era writes succeed; L2 one-lifetime writes
+  unchanged; L3 tombstone records the closed era and the first
+  witness stands; L5 terminal reads and taxonomy invariant across
+  eras.
+- **In-src** (`state_kernel::gateway_state_contract`): L4a/L4b
+  destroy crash-window convergence; L6 v1 head decode + first-move
+  v2 upgrade; L7 the deterministic parked-writer canary (A15 barrier
+  pattern); and the ported teardown canary
+  `stale_lineage_head_is_rejected_across_destroy_recreate` (the green
+  descendant of run 32589181111's red).
+- **Real-S3 probe leg** (finding G6): the `real-s3` ci-dev task's
+  probe now runs a lineage-head destroy/recreate leg on the live
+  Exoscale bucket — era-2 stamped incarnation 1 with a moved head
+  etag, era-1 `HeadRead` refused, fresh era-2 token advancing — so
+  the closure has a live-backend witness, not just the loopback.
