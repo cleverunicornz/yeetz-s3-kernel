@@ -10,8 +10,8 @@
 use bytes::Bytes;
 use yeetz_s3_kernel::state_kernel::{KernelLineage, SuccessorPolicy};
 use yeetz_s3_kernel::{
-    AtomicKeyspace, ChunkInventory, KernelHandle, KeyspaceError, StreamKeyState,
-    ValueRepresentation,
+    AtomicKeyspace, ChunkInventory, KernelHandle, KeyspaceError, MAX_IN_FLIGHT_CHUNKS,
+    StreamKeyState, ValueRepresentation,
 };
 
 const CHUNK_BYTES: usize = 16 * 1024 * 1024;
@@ -39,6 +39,18 @@ async fn stream_create(keyspace: &AtomicKeyspace, key: &str, data: &Bytes) {
     let mut writer = keyspace.begin_stream_create(key).await.unwrap();
     writer.write_all(data).await.unwrap();
     writer.seal().await.unwrap().commit().await.unwrap();
+}
+
+#[tokio::test]
+async fn teardown_writer_stops_at_the_four_upload_window() {
+    use tokio::io::AsyncWriteExt;
+
+    let keyspace = keyspace("writer-window", "ns");
+    let mut writer = keyspace.begin_stream_create("cell").await.unwrap();
+    let input = vec![0x5a; (MAX_IN_FLIGHT_CHUNKS + 1) * CHUNK_BYTES];
+
+    let consumed = writer.write(&input).await.unwrap();
+    assert_eq!(consumed, MAX_IN_FLIGHT_CHUNKS * CHUNK_BYTES);
 }
 
 async fn read_range(keyspace: &AtomicKeyspace, key: &str, start: u64, end: u64) -> Bytes {
