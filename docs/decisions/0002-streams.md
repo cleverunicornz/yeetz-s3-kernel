@@ -278,3 +278,89 @@ content; v1's append-only discipline (no log-object deletes) keeps
 the log itself outside that ambiguity. The full measured verdict and
 the open versioning decision are recorded in ADR 0001's ruled
 addendum.
+
+---
+
+## Ruled addendum: Batch 5 — certified trim and retention
+
+Status: accepted (human-authorized kernel batch 5, deferred-items
+ruling session 2026-08-21; the git layer is the demanding consumer —
+unbounded object storage is a leak: reflog streams grow ~300B per
+push per ref, and orphaned CAS-loser objects accumulate).
+
+### The unblock
+
+The original consensus shelved physical trim (Fugu's blocker:
+"physical trim cannot coexist with no fencing"). Batch 4's versioned
+keyspace values supply that fencing: every keyspace value carries a
+monotonic version, so CAS discriminates values structurally. This
+addendum ships the trim that unblock permits.
+
+### The design
+
+1. **Trim certificates (the logical boundary).** An immutable,
+   create-once object at `{scope}/trims/{first_retained:020}`; the
+   maximum certificate IS the effective floor (zero-padded keys sort
+   with their seqs). Monotone by construction and by rejection: a
+   proposal below the current floor is `TrimNotMonotone` — the
+   certificate, never object absence, is the boundary, so a stale
+   writer cannot resurrect a lower floor by recreating what the
+   sweeper deleted. Equal proposals are idempotent; a concurrent
+   higher proposal wins by max-by-key.
+2. **Reads below the floor are typed.** A stream read that would
+   start below `first_retained` is `OffsetExpired { first_retained }`
+   — the seventh `Replay` state. Never empty, never corruption:
+   swept events are logically gone, not missing (law 7's other
+   edge). Cursors below the floor surface `OffsetExpired` the same
+   way; advancing a swept cursor forward OUT from under the floor is
+   the supported recovery (the stored position stands for
+   monotonicity — the floor witnesses the event once existed).
+3. **The GC sweeper.** `AtomicKeyspace::delete_below(scope,
+   data_prefix, first_retained)`: deletes `{data_prefix}{seq:020}`
+   keys with `1 <= seq < first_retained`, conditional on a covering
+   certificate (`TrimNotCertified` otherwise). Bounded batches
+   through `delete_many`'s per-key outcomes; idempotent; resumable —
+   a crash leaves extra objects (safe) and a re-run converges. Never
+   deletes at or above the boundary; the genesis position (seq 0) is
+   immortal — deleting a stream is a different operation. Library
+   call (the reconciler's pattern), no daemon.
+4. **Streams integration.** `Streams::trim` (validates: stream
+   exists, floor ≥ 1, floor ≤ observable end + 1), `Streams::gc`,
+   `Streams::trim_floor`. `append` includes the floor in its
+   allocation and idempotency-scan floors — no event can land below
+   the certificate (resurrection is rejected by the certificate, not
+   by object absence), and the scan never GETs a swept seq (which
+   would read as false corruption). The tail hint self-invalidates
+   below the floor (its terminal record no longer verifies); hints
+   only ever CAS upward, so they cannot point below the boundary.
+
+### Contract suite (R1–R7)
+
+- `r1_trim_certificate_is_monotone` — higher wins, equal idempotent,
+  lower rejected by the certificate; scopes independent.
+- `r2_read_below_trim_floor_is_offset_expired_not_empty_or_corrupt` —
+  typed boundary pre- AND post-GC; above-floor replay unchanged;
+  genesis (config) survives the sweep.
+- `r3_gc_deletes_only_below_floor_never_at_or_above` — uncertified
+  bound refused; seq 0 and everything ≥ floor intact.
+- `r4_gc_is_idempotent_rerun_no_changes`.
+- `r5_gc_interrupted_mid_sweep_is_resumable` — partial sweep
+  simulated; the re-run converges over exactly the remainder.
+- `r6_streams_trim_append_and_cursor_respect_the_floor` — append
+  lands above the floor; dense replay through new events; swept
+  cursor reads OffsetExpired (not CursorCorrupt) and can advance
+  forward.
+- `r7_resurrection_rejected_by_certificate_not_absence` (keyspace)
+  and `r7_streams_resurrection_rejected_by_certificate_and_reswept`
+  (streams) — a stale writer's below-floor create succeeds at the
+  keyspace (fresh version-0 lifetime, batch 4's documented boundary)
+  but changes nothing the APIs serve: reads stay OffsetExpired, the
+  sweeper re-collects, a lower trim stays rejected.
+
+### What is still NOT shipped (deliberate)
+
+- Reachability GC (orphaned CAS-loser objects): the git layer builds
+  it on `delete_many` separately; floor trim does not model it.
+- Stream deletion: the genesis is immortal.
+- Scheduled trimming: the reconciler invokes the library call on
+  policy; no timer exists here.

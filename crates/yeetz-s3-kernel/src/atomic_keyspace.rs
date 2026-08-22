@@ -5,10 +5,14 @@
 //! typed `AlreadyExists` on a lost race; `compare_exchange` is If-Match
 //! CAS; `list_after` is exclusive-start-after, strictly ordered,
 //! bounded; deletes are namespaced and idempotent; `delete_many`
-//! reports per-key outcomes for resumable sweeps. Values are stored in
-//! an internal versioned envelope so byte-identical payloads in
-//! different CAS eras have different object bytes. **No unconditional
-//! overwrite exists in this module.**
+//! reports per-key outcomes for resumable sweeps. Trim and retention
+//! (batch 5): an immutable create-once certificate at
+//! `{scope}/trims/{first_retained:020}` bounds a scope's retained
+//! prefix (max-by-key is the floor); [`AtomicKeyspace::delete_below`]
+//! is the certified, idempotent, resumable GC primitive. Values are
+//! stored in an internal versioned envelope so byte-identical
+//! payloads in different CAS eras have different object bytes. **No
+//! unconditional overwrite exists in this module.**
 //!
 //! Key layout: every object lives under the kernel-reserved root
 //! `keyspace/` — `keyspace/{namespace}/{key}` — structurally disjoint
@@ -99,9 +103,52 @@ pub enum KeyspaceError {
     /// The current value has no representable successor version.
     #[error("keyspace value version exhausted: {0}")]
     VersionExhausted(String),
+    /// A proposed trim floor is below the certified maximum: a lower
+    /// trim cannot supersede a higher one. The certificate, not
+    /// object absence, is the boundary.
+    #[error("trim not monotone: requested first_retained {requested}, certified {certified}")]
+    TrimNotMonotone { requested: u64, certified: u64 },
+    /// The requested GC bound is not covered by a trim certificate
+    /// for the scope.
+    #[error(
+        "trim not certified for {scope:?}: requested first_retained {requested}, certified {certified:?}"
+    )]
+    TrimNotCertified {
+        scope: String,
+        requested: u64,
+        certified: Option<u64>,
+    },
     /// The backing store failed in a way the caller should retry.
     #[error("keyspace store unavailable: {operation}")]
     Unavailable { operation: &'static str },
+}
+
+/// The state of a trim scope after [`AtomicKeyspace::propose_trim`]:
+/// the effective (maximum) certified floor and whether this call
+/// advanced it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrimState {
+    /// The maximum certified first-retained seq — the effective
+    /// floor; a concurrent higher proposal may have overtaken the
+    /// caller's request.
+    pub first_retained: u64,
+    /// Whether this proposal is the effective floor (`false` when
+    /// idempotent or overtaken).
+    pub advanced: bool,
+}
+
+/// The outcome of a [`AtomicKeyspace::delete_below`] sweep. A crash
+/// mid-sweep leaves `remaining > 0` — extra objects, which are safe;
+/// a re-run converges to `remaining == 0` with no other effect.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeleteBelowReport {
+    /// Keys below the floor the sweep attempted.
+    pub examined: u64,
+    /// Keys whose delete was confirmed applied.
+    pub deleted: u64,
+    /// Keys below the floor still present after the sweep — the
+    /// interrupted remainder; re-run to converge.
+    pub remaining: u64,
 }
 
 /// Per-key outcome of a `delete_many` sweep — idempotent and
@@ -441,5 +488,193 @@ impl AtomicKeyspace {
             }
         }
         Ok(outcomes)
+    }
+
+    /// The 20-digit zero-padded key component of a seq (the seq-key
+    /// convention shared with the streams layout).
+    fn seq_component(seq: u64) -> String {
+        format!("{seq:020}")
+    }
+
+    /// Parse a 20-digit zero-padded seq key component.
+    fn parse_seq_component(component: &str) -> Option<u64> {
+        (component.len() == 20 && component.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| component.parse().ok())
+            .flatten()
+    }
+
+    /// The certificate prefix of a scope: `{scope}/trims/` (or
+    /// `trims/` at the namespace root).
+    fn trim_cert_prefix(scope: &str) -> Result<String, KeyspaceError> {
+        if !scope.is_empty() {
+            validate_identifier("trim scope", scope)?;
+        }
+        Ok(if scope.is_empty() {
+            "trims/".to_string()
+        } else {
+            format!("{scope}/trims/")
+        })
+    }
+
+    /// Propose a trim floor for a scope ("" = the namespace root; a
+    /// non-empty scope carves a sub-tree, e.g. one stream). The
+    /// certificate is an immutable create-once object at
+    /// `{scope}/trims/{first_retained:020}`; the effective floor is
+    /// the maximum certificate (zero-padded keys sort with their
+    /// seqs). Monotone by law: a proposal below the current floor is
+    /// rejected with [`KeyspaceError::TrimNotMonotone`] — the
+    /// certificate, never object absence, is the boundary, so a stale
+    /// writer cannot resurrect a lower floor by recreating what the
+    /// sweeper deleted (the batch-4 versioned values make the
+    /// certificate itself ABA-proof). An equal proposal is idempotent.
+    /// A concurrent higher proposal may overtake; the returned
+    /// [`TrimState`] names the effective floor.
+    pub async fn propose_trim(
+        &self,
+        scope: &str,
+        first_retained: u64,
+    ) -> Result<TrimState, KeyspaceError> {
+        let cert_prefix = Self::trim_cert_prefix(scope)?;
+        if let Some(certified) = self.trim_floor(scope).await? {
+            if first_retained < certified {
+                return Err(KeyspaceError::TrimNotMonotone {
+                    requested: first_retained,
+                    certified,
+                });
+            }
+            if first_retained == certified {
+                return Ok(TrimState {
+                    first_retained: certified,
+                    advanced: false,
+                });
+            }
+        }
+        let key = format!("{cert_prefix}{}", Self::seq_component(first_retained));
+        self.create(&key, Bytes::from_static(b"trim-certificate"))
+            .await?;
+        // Max-by-key is the truth: report the effective floor, not
+        // the caller's proposal (a concurrent higher cert wins).
+        let effective = self.trim_floor(scope).await?.unwrap_or(first_retained);
+        Ok(TrimState {
+            first_retained: effective,
+            advanced: effective == first_retained,
+        })
+    }
+
+    /// The effective trim floor of a scope: the maximum certificate,
+    /// or `None` when the scope was never trimmed. One bounded LIST
+    /// page per call for any realistic certificate count.
+    pub async fn trim_floor(&self, scope: &str) -> Result<Option<u64>, KeyspaceError> {
+        let cert_prefix = Self::trim_cert_prefix(scope)?;
+        // `start_after` must be a valid identifier: the bare
+        // `{scope}/trims` segment sorts immediately before every
+        // `{scope}/trims/{seq}` certificate key.
+        let start = if scope.is_empty() {
+            "trims".to_string()
+        } else {
+            format!("{scope}/trims")
+        };
+        let mut after = Some(start);
+        let mut floor = None;
+        loop {
+            let keys = self.list_after(after.as_deref(), 1000).await?;
+            for key in &keys {
+                // The certificate prefix's key range is contiguous in
+                // byte order; the first key outside it ends the walk.
+                let Some(rest) = key.strip_prefix(&cert_prefix) else {
+                    return Ok(floor);
+                };
+                if let Some(seq) = Self::parse_seq_component(rest) {
+                    floor = Some(floor.map_or(seq, |current: u64| current.max(seq)));
+                }
+                after = Some(key.clone());
+            }
+            if keys.len() < 1000 {
+                return Ok(floor);
+            }
+        }
+    }
+
+    /// Certified GC: delete `{data_prefix}{seq:020}` keys with
+    /// `1 <= seq < first_retained`, conditional on a certificate
+    /// covering the bound (`trim_floor(scope) >= first_retained`;
+    /// otherwise [`KeyspaceError::TrimNotCertified`]). Seq 0 — the
+    /// genesis position of the seq-key convention — is never
+    /// collectable: it anchors existence, and deleting it is stream
+    /// deletion, a different operation. Never deletes at or above the
+    /// boundary. Bounded batches; idempotent and resumable: a crash
+    /// mid-sweep leaves extra objects (safe), and a re-run converges
+    /// through the same certificate.
+    pub async fn delete_below(
+        &self,
+        scope: &str,
+        data_prefix: &str,
+        first_retained: u64,
+    ) -> Result<DeleteBelowReport, KeyspaceError> {
+        // Validates the scope and derives the certificate prefix.
+        Self::trim_cert_prefix(scope)?;
+        let certified = self.trim_floor(scope).await?;
+        if certified.is_none_or(|floor| first_retained > floor) {
+            return Err(KeyspaceError::TrimNotCertified {
+                scope: scope.to_string(),
+                requested: first_retained,
+                certified,
+            });
+        }
+
+        // Validate the data prefix by composing its first legal key.
+        let start = format!("{data_prefix}{}", Self::seq_component(0));
+        validate_identifier("delete_below data prefix", &start)?;
+
+        // Ascending walk: the seq-key range is contiguous in byte
+        // order, so the first key outside the prefix (or at/above the
+        // floor) ends the sweep. The certificate prefix itself sorts
+        // before every `data_prefix` continuation, so `trims/` keys
+        // encountered before the data range are stepped over.
+        let mut report = DeleteBelowReport::default();
+        let mut after = Some(start);
+        let mut pending: Vec<String> = Vec::new();
+        'walk: loop {
+            let keys = self.list_after(after.as_deref(), 1000).await?;
+            if keys.is_empty() {
+                break;
+            }
+            for key in &keys {
+                let Some(seq) = key
+                    .strip_prefix(data_prefix)
+                    .and_then(Self::parse_seq_component)
+                else {
+                    // Past the contiguous data range: ascending order
+                    // guarantees no further data keys exist.
+                    break 'walk;
+                };
+                if seq == 0 {
+                    // The genesis position is immortal.
+                    after = Some(key.clone());
+                    continue;
+                }
+                if seq >= first_retained {
+                    // At or above the boundary: never collected, and
+                    // ascending order means the sweep is done.
+                    break 'walk;
+                }
+                pending.push(key.clone());
+                after = Some(key.clone());
+            }
+        }
+
+        // Bounded batches through the resumable bulk primitive.
+        for chunk in pending.chunks(64) {
+            let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
+            for outcome in self.delete_many(&refs).await? {
+                report.examined += 1;
+                if outcome.deleted {
+                    report.deleted += 1;
+                } else {
+                    report.remaining += 1;
+                }
+            }
+        }
+        Ok(report)
     }
 }

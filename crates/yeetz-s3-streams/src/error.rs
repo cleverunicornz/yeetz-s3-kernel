@@ -77,11 +77,21 @@ pub enum StreamsError {
         current: Seq,
         target: Seq,
     },
+    /// The requested offset is below the stream's certified trim
+    /// floor: the events before `first_retained` are logically gone
+    /// (physically gone after the sweeper ran). A typed boundary —
+    /// never an empty result, never corruption.
+    #[error("offset expired for {stream:?}: first retained seq is {first_retained}")]
+    OffsetExpired {
+        stream: StreamId,
+        first_retained: Seq,
+    },
 }
 
-/// The six-state typed read outcome (ADR 0017): `NotFound | Empty |
-/// Page { events, complete } | Corrupt {
-/// missing_or_mismatched_seqs } | Unavailable | BackendUnqualified`.
+/// The typed read outcome (ADR 0017; seven states since the
+/// batch-5 trim addendum): `NotFound | Empty | Page { events,
+/// complete } | Corrupt { missing_or_mismatched_seqs } |
+/// Unavailable | BackendUnqualified | OffsetExpired`.
 ///
 /// `complete=true` is witness-bounded (human-ruled contract): it
 /// requires BOTH a verified tail hint naming the last fetched/verified
@@ -116,6 +126,11 @@ pub enum Replay {
     /// witness says must be dense, or envelopes failing verification.
     /// Named, never skipped.
     Corrupt { missing_or_mismatched: Vec<Seq> },
+    /// The walk would start below the certified trim floor
+    /// (`after_seq + 1 < first_retained`): those events are logically
+    /// gone — a typed boundary, not an empty page and not damage.
+    /// Resume instead at `after_seq >= first_retained - 1`.
+    OffsetExpired { first_retained: Seq },
     /// Store failure mid-read; retry.
     Unavailable { operation: &'static str },
     /// The backend violated a hard qualification; fail-closed.

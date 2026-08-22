@@ -4,9 +4,14 @@
 //! One immutable object per event at `streams/v1/<id>/log/<seq:020>`;
 //! the object's conditional create IS the allocation. Replay is
 //! computed-key GETs with explicit contiguity and witness-bounded
-//! completeness. Cursors are CAS'd monotone pointers. v1 is
-//! append-only: no delete, no trim, no floor, no epoch, no fencing
-//! (mode-A/mode-B reserved, not shipped).
+//! completeness. Cursors are CAS'd monotone pointers. The log is
+//! append-only in the write path — no unconditional overwrite, no
+//! in-place mutation — and retention is certified trim (batch 5):
+//! an immutable create-once certificate bounds the retained prefix,
+//! reads below the floor are a typed `OffsetExpired`, and the GC
+//! sweeper deletes only below the certificate (the genesis is
+//! immortal). Fugu's no-fencing blocker is resolved by the kernel's
+//! versioned keyspace values, which the certificate relies on.
 //!
 //! Forge-agnostic by law: opaque stream IDs, opaque payloads, no
 //! yeetz types anywhere. The application maps names→IDs at its
@@ -57,7 +62,9 @@ use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use yeetz_s3_kernel::KernelHandle;
-use yeetz_s3_kernel::atomic_keyspace::{AtomicKeyspace, KeyspaceError};
+use yeetz_s3_kernel::atomic_keyspace::{
+    AtomicKeyspace, DeleteBelowReport, KeyspaceError, TrimState,
+};
 
 /// Keyspace namespace: physical objects live at
 /// `keyspace/streams/v1/<stream-id>/...`.
@@ -272,6 +279,83 @@ impl Streams {
         Ok(Some(envelope.payload.to_vec()))
     }
 
+    /// The stream's certified trim floor: the maximum trim
+    /// certificate on this stream's scope (`None` = never trimmed).
+    /// The certificate, not object presence, is the boundary.
+    pub async fn trim_floor(&self, stream: &StreamId) -> Result<Option<Seq>, StreamsError> {
+        self.keyspace
+            .trim_floor(stream.as_str())
+            .await
+            .map_err(map_keyspace("trim_floor"))
+    }
+
+    /// Certify a trim floor for the stream: events with
+    /// `seq < first_retained` become logically gone (physically gone
+    /// once [`Streams::gc`] sweeps). Create-once, monotone (a lower
+    /// floor cannot supersede a higher one), idempotent at the same
+    /// floor. The genesis record (seq 0, config) is immortal —
+    /// `first_retained >= 1` — and the floor may not exceed the
+    /// current log end + 1. The tail hint self-invalidates below the
+    /// floor (its terminal record is gone, so it stops verifying);
+    /// cursors below the floor read as [`StreamsError::OffsetExpired`],
+    /// never corruption.
+    pub async fn trim(
+        &self,
+        stream: &StreamId,
+        first_retained: Seq,
+    ) -> Result<TrimState, StreamsError> {
+        if first_retained == 0 {
+            return Err(StreamsError::InvalidArgument(
+                "trim floor must retain the genesis (first_retained >= 1)".into(),
+            ));
+        }
+        // The stream must exist, and the floor must not name a seq
+        // past the observable end (a floor beyond the log would
+        // certify retention of events that never landed — accidental
+        // data loss).
+        let genesis = self
+            .keyspace
+            .get(&Self::log_key(stream, 0))
+            .await
+            .map_err(map_keyspace("trim: genesis"))?;
+        if genesis.is_none() {
+            return Err(StreamsError::StreamNotFound(stream.clone()));
+        }
+        let end = self.list_log_max(stream).await?.max(
+            self.verified_tail_hint(stream)
+                .await
+                .map_or(0, |hint| hint.highest_validated_dense_seq),
+        );
+        if first_retained > end + 1 {
+            return Err(StreamsError::InvalidArgument(format!(
+                "trim floor {first_retained} exceeds the observable log end {end}"
+            )));
+        }
+        self.keyspace
+            .propose_trim(stream.as_str(), first_retained)
+            .await
+            .map_err(map_keyspace("trim: propose"))
+    }
+
+    /// Certified GC for one stream: delete the log objects below the
+    /// stream's trim floor (never the genesis, never at/above the
+    /// floor). Idempotent and resumable — a crash leaves extra
+    /// objects, which are safe; a re-run converges. A resurrected
+    /// object written below the floor (a stale writer racing the
+    /// sweeper) is re-collected on the next sweep: the certificate,
+    /// not object absence, is the boundary. No certificate → no-op
+    /// report. Library call for the reconciler's pattern — no daemon.
+    pub async fn gc(&self, stream: &StreamId) -> Result<DeleteBelowReport, StreamsError> {
+        let Some(floor) = self.trim_floor(stream).await? else {
+            return Ok(DeleteBelowReport::default());
+        };
+        let data_prefix = format!("{}/log/", stream.as_str());
+        self.keyspace
+            .delete_below(stream.as_str(), &data_prefix, floor)
+            .await
+            .map_err(map_keyspace("gc: delete_below"))
+    }
+
     /// Append one event. The event object's conditional create IS the
     /// allocation; the successful create is the linearization point.
     /// A retry whose byte-identical envelope already landed (lost
@@ -303,25 +387,33 @@ impl Streams {
             missing_or_mismatched: vec![0],
         })?;
 
-        // Monotone floors: a verified hint and the LIST-derived max.
-        // LIST may lag; the hint keeps allocation and lost-response
-        // convergence from walking the known dense prefix again.
+        // Monotone floors: a verified hint, the LIST-derived max, and
+        // the certified trim floor. LIST may lag; the hint keeps
+        // allocation and lost-response convergence from walking the
+        // known dense prefix again; the trim floor keeps allocation
+        // above the certified boundary — a stale writer cannot land
+        // below it (resurrection is rejected by the certificate, not
+        // by object absence).
         let list_max = self.list_log_max(stream).await?;
         let hint = self.verified_tail_hint(stream).await;
         let hint_seq = hint
             .as_ref()
             .map(|hint| hint.highest_validated_dense_seq)
             .unwrap_or(0);
-        let allocation_floor = list_max.max(hint_seq);
+        let trim = self.trim_floor(stream).await?.unwrap_or(0);
+        let allocation_floor = list_max.max(hint_seq).max(trim);
         if allocation_floor == Seq::MAX {
             return Err(StreamsError::SeqExhausted(stream.clone()));
         }
         // Inclusive of the hint seq itself: an append that landed and
         // advanced the hint before its client saw the response can
-        // have its event AT the hint seq.
+        // have its event AT the hint seq. The scan never dips below
+        // the trim floor: those events are logically gone, and a GET
+        // against a swept seq must not read as corruption.
         let scan_from = hint_seq
             .max(list_max.saturating_sub(IDEMPOTENT_SCAN_WINDOW))
-            .max(1);
+            .max(1)
+            .max(trim);
 
         // Idempotent convergence inside the bounded window: an
         // envelope with the same stable event id, schema, and payload
@@ -462,7 +554,7 @@ impl Streams {
     }
 
     /// Replay events after `after_seq` (first event is `after_seq+1`),
-    /// at most `limit` (≥ 1). Six-state typed outcome; see [`Replay`].
+    /// at most `limit` (≥ 1). Typed outcome; see [`Replay`].
     pub async fn read(&self, stream: &StreamId, after_seq: Seq, limit: usize) -> Replay {
         if limit == 0 {
             return Replay::BackendUnqualified {
@@ -492,10 +584,24 @@ impl Streams {
                 };
             }
         }
-
         // Nothing can exist past u64::MAX (S8).
         if after_seq == Seq::MAX {
             return Replay::Empty;
+        }
+        // A certified trim floor bounds the walk: starting below
+        // `first_retained` is OffsetExpired — a typed boundary, never
+        // an empty result, never corruption (the swept-away events
+        // are logically gone, not missing).
+        match self.keyspace.trim_floor(stream.as_str()).await {
+            Ok(Some(first_retained)) if after_seq + 1 < first_retained => {
+                return Replay::OffsetExpired { first_retained };
+            }
+            Ok(_) => {}
+            Err(_) => {
+                return Replay::Unavailable {
+                    operation: "read: trim floor",
+                };
+            }
         }
         // Clamp + bounded-parallel computed-key GETs; stop at the
         // first absent seq (contiguity: the first fetched seq must be
@@ -742,6 +848,17 @@ impl Streams {
                 }
             },
             None => {
+                // A trimmed target is a typed boundary, not damage:
+                // below the certified floor the event is logically
+                // gone (absence above the floor stays EventMissing).
+                if let Some(first_retained) = self.trim_floor(stream).await.ok().flatten()
+                    && target_seq < first_retained
+                {
+                    return Err(StreamsError::OffsetExpired {
+                        stream: stream.clone(),
+                        first_retained,
+                    });
+                }
                 return Err(StreamsError::EventMissing {
                     stream: stream.clone(),
                     seq: target_seq,
@@ -766,14 +883,46 @@ impl Streams {
                     }
                 }
                 Ok(Some((bytes, etag))) => {
-                    let current = self
+                    let current = match self
                         .decode_and_verify_cursor(
                             stream,
                             consumer,
                             &bytes,
                             "advance_cursor: current event",
                         )
-                        .await?;
+                        .await
+                    {
+                        Ok(cursor) => cursor,
+                        // A current cursor below the certified floor
+                        // references a swept event: its stored seq
+                        // remains the position for monotonicity (the
+                        // floor witnesses the event once existed —
+                        // cursors are written only after event
+                        // verification); re-verification is impossible
+                        // and unnecessary. Advancing out from under a
+                        // trim is the supported recovery.
+                        Err(StreamsError::OffsetExpired { .. }) => {
+                            let cursor: Cursor = serde_json::from_slice(&bytes).map_err(|_| {
+                                StreamsError::CursorCorrupt {
+                                    stream: stream.clone(),
+                                    consumer: consumer.to_string(),
+                                    reason: "payload is malformed",
+                                }
+                            })?;
+                            if cursor.format_version != ENVELOPE_FORMAT_VERSION
+                                || cursor.stream_id != *stream
+                                || cursor.seq == 0
+                            {
+                                return Err(StreamsError::CursorCorrupt {
+                                    stream: stream.clone(),
+                                    consumer: consumer.to_string(),
+                                    reason: "payload is malformed",
+                                });
+                            }
+                            cursor
+                        }
+                        Err(err) => return Err(err),
+                    };
                     if current.seq > target_seq {
                         return Err(StreamsError::CursorNotMonotonic {
                             stream: stream.clone(),
@@ -830,12 +979,28 @@ impl Streams {
             return Err(corrupt("seq does not name an event"));
         }
 
-        let event = self
+        let event = match self
             .keyspace
             .get(&Self::log_key(stream, cursor.seq))
             .await
             .map_err(map_keyspace(event_operation))?
-            .ok_or_else(|| corrupt("referenced event is absent"))?;
+        {
+            Some(bytes) => bytes,
+            None => {
+                // A swept cursor target below the certified floor is
+                // OffsetExpired — trim-induced absence is never
+                // corruption (law 7's other edge).
+                if let Some(first_retained) = self.trim_floor(stream).await.ok().flatten()
+                    && cursor.seq < first_retained
+                {
+                    return Err(StreamsError::OffsetExpired {
+                        stream: stream.clone(),
+                        first_retained,
+                    });
+                }
+                return Err(corrupt("referenced event is absent"));
+            }
+        };
         let envelope = Envelope::decode_and_verify(stream, cursor.seq, &event)
             .map_err(|_| corrupt("referenced event is corrupt"))?;
         if cursor.event_id != envelope.stable_event_id.as_str() {
