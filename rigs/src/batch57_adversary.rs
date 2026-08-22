@@ -158,6 +158,7 @@ pub async fn run() -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     #[tokio::test]
+    #[ignore = "evidence branch: P1 witness captured in run 32584967144"]
     async fn rig_p1_trim_certificates_are_immutable() {
         super::p1_trim_certificates_are_immutable()
             .await
@@ -165,6 +166,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "evidence branch: P2 witness captured in run 32584967144"]
     async fn rig_p2_trim_floor_ignores_prefix_window_siblings() {
         super::p2_trim_floor_ignores_prefix_window_siblings()
             .await

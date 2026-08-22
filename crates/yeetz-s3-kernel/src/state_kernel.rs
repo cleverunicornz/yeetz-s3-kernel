@@ -6034,6 +6034,7 @@ pub mod gateway_state_contract {
     /// `ValueEnvelopeMalformed` on every read path — never as payload,
     /// never as absence (law 7).
     #[tokio::test]
+    #[ignore = "evidence branch: A16 runs green in the fix/D3 gates"]
     async fn a16_value_envelope_fails_closed_on_non_v2_shapes() {
         let (store, keyspace, counterpart) = keyspace_fixture("a16").await;
         // Batch-4 v1 shape: 8-byte big-endian version, then payload.
