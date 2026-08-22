@@ -911,8 +911,18 @@ impl AtomicKeyspace {
             let keys = self.list_after(after.as_deref(), 1000).await?;
             for key in &keys {
                 // The certificate prefix's key range is contiguous in
-                // byte order; the first key outside it ends the walk.
+                // byte order; the first key sorting at or past the
+                // range ends the walk. Keys sorting BEFORE the range
+                // — the sibling window between the `start` sentinel
+                // (`{scope}/trims`) and the prefix itself
+                // (`{scope}/trims/`, e.g. `{scope}/trims-x`) — are
+                // stepped over: they are not certificates and must
+                // not hide the floor (teardown finding T2, 2026-08-22).
                 let Some(rest) = key.strip_prefix(&cert_prefix) else {
+                    if key.as_str() < cert_prefix.as_str() {
+                        after = Some(key.clone());
+                        continue;
+                    }
                     return Ok(floor);
                 };
                 if let Some(seq) = Self::parse_seq_component(rest) {

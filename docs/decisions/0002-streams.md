@@ -306,7 +306,10 @@ addendum ships the trim that unblock permits.
    certificate, never object absence, is the boundary, so a stale
    writer cannot resurrect a lower floor by recreating what the
    sweeper deleted. Equal proposals are idempotent; a concurrent
-   higher proposal wins by max-by-key.
+   higher proposal wins by max-by-key. The floor walk steps
+   over sibling keys sorting before the certificate range
+   (`{scope}/trims-x` and friends) and terminates only at the first
+   key at or past the range (teardown finding T2, 2026-08-22).
 2. **Reads below the floor are typed.** A stream read that would
    start below `first_retained` is `OffsetExpired { first_retained }`
    — the seventh `Replay` state. Never empty, never corruption:

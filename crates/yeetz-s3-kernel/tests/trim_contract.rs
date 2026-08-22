@@ -230,3 +230,48 @@ async fn r7_resurrection_rejected_by_certificate_not_absence() {
         assert!(ks.get(&data_key(seq)).await.unwrap().is_some(), "seq {seq}");
     }
 }
+
+/// R9 (teardown finding T2, 2026-08-22): the floor walk steps over
+/// keys sorting in the sibling window between its start sentinel
+/// (`{scope}/trims`) and the certificate range (`{scope}/trims/`).
+/// The first such key used to terminate the walk and hide the
+/// certified floor entirely — `OffsetExpired` boundaries lost, GC
+/// refused — while the certificates stood.
+#[tokio::test]
+async fn r9_floor_walk_steps_over_prefix_window_siblings() {
+    let ks = keyspace("r9");
+    ks.propose_trim("", 10).await.unwrap();
+    assert_eq!(ks.trim_floor("").await.unwrap(), Some(10));
+
+    // `trims-x` and `trims.y` are valid keys sorting strictly after
+    // the sentinel "trims" and strictly before every "trims/" key.
+    ks.create("trims-x", Bytes::from_static(b"sibling"))
+        .await
+        .unwrap();
+    ks.create("trims.y", Bytes::from_static(b"sibling"))
+        .await
+        .unwrap();
+    assert_eq!(
+        ks.trim_floor("").await.unwrap(),
+        Some(10),
+        "the root floor survives prefix-window siblings"
+    );
+
+    // The scoped (per-stream) shape, both sibling spellings.
+    ks.propose_trim("s1", 7).await.unwrap();
+    ks.create("s1/trims-x", Bytes::from_static(b"sibling"))
+        .await
+        .unwrap();
+    ks.create("s1/trims.z", Bytes::from_static(b"sibling"))
+        .await
+        .unwrap();
+    assert_eq!(
+        ks.trim_floor("s1").await.unwrap(),
+        Some(7),
+        "the scoped floor survives prefix-window siblings"
+    );
+
+    // The walk still terminates and still tracks a higher floor.
+    ks.propose_trim("", 12).await.unwrap();
+    assert_eq!(ks.trim_floor("").await.unwrap(), Some(12));
+}
