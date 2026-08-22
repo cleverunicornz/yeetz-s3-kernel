@@ -1128,3 +1128,104 @@ async fn r7_streams_resurrection_rejected_by_certificate_and_reswept() {
         StreamsError::InvalidArgument(message) if message.contains("trim not monotone")
     ));
 }
+
+/// R8 (Fugu finding D, 2026-08-22): `trim(stream, end+1)` — a
+/// certified floor above every event — is API-accepted (the batch-5
+/// validation allows `floor <= observable end + 1`). The stream is
+/// LOGICALLY EMPTY WITH A FLOOR: appends land AT the floor (the
+/// first free retained slot), reads from the boundary walk from the
+/// floor densely, reads below it are `OffsetExpired`, and the
+/// idempotency pre-scan never GETs the empty floor slot — previously
+/// it did, and every append after trim-to-end failed
+/// `Corrupt { missing_or_mismatched: [floor] }` forever. Holds
+/// pre-GC (the certificate rules) and post-GC (objects swept); the
+/// genesis-only stream trimmed to floor 1 is the same class.
+#[tokio::test]
+async fn r8_trim_to_end_is_logically_empty_and_appends_continue() {
+    let streams = streams_on_in_memory_store();
+    let stream = streams.create_stream(b"cfg").await.unwrap();
+    for index in 1..=3u64 {
+        streams
+            .append(&stream, &schema("r.v1"), &event(&format!("d{index}")), &[])
+            .await
+            .unwrap();
+    }
+
+    // The degenerate boundary is accepted: floor = end + 1 = 4.
+    streams.trim(&stream, 4).await.unwrap();
+    assert_eq!(streams.trim_floor(&stream).await.unwrap(), Some(4));
+
+    // Pre-GC (objects 1..=3 still physically present): the append
+    // lands AT the floor — the old pre-scan GET'd the empty floor
+    // slot here and wedged as Corrupt{[4]}.
+    let at_floor = streams
+        .append(&stream, &schema("r.v1"), &event("d4"), &[])
+        .await
+        .unwrap();
+    assert_eq!(at_floor.seq, 4);
+
+    // Reads compose with the boundary: from floor-1 the page is dense
+    // from the floor itself; below it is the typed boundary.
+    match streams.read(&stream, 3, 100).await {
+        Replay::Page { events, complete } => {
+            assert_eq!(
+                events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+                vec![4]
+            );
+            assert!(complete);
+        }
+        other => panic!("expected dense page from the floor, got {other:?}"),
+    }
+    assert!(matches!(
+        streams.read(&stream, 2, 100).await,
+        Replay::OffsetExpired { first_retained: 4 }
+    ));
+
+    // In-window idempotency still converges at the floor slot: the
+    // scan window [4..=4] finds the landed envelope.
+    let converged = streams
+        .append(&stream, &schema("r.v1"), &event("d4"), &[])
+        .await
+        .unwrap();
+    assert_eq!(converged.seq, 4);
+
+    // Post-GC: the sweeper takes exactly the three below-floor
+    // events; appends continue past the floor; replay from the
+    // boundary stays dense through both new events.
+    let report = streams.gc(&stream).await.unwrap();
+    assert_eq!(report.deleted, 3);
+    let after = streams
+        .append(&stream, &schema("r.v1"), &event("d5"), &[])
+        .await
+        .unwrap();
+    assert_eq!(after.seq, 5);
+    match streams.read(&stream, 3, 100).await {
+        Replay::Page { events, complete } => {
+            assert_eq!(
+                events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+                vec![4, 5]
+            );
+            assert!(complete);
+        }
+        other => panic!("expected dense replay through the new events, got {other:?}"),
+    }
+    assert_eq!(
+        streams.read_config(&stream).await.unwrap().as_deref(),
+        Some(b"cfg".as_slice())
+    );
+
+    // The genesis-only stream trimmed to floor 1 is the same class:
+    // no event ever landed, and the append must not read the empty
+    // floor slot as corruption.
+    let fresh = streams.create_stream(&[]).await.unwrap();
+    streams.trim(&fresh, 1).await.unwrap();
+    let first = streams
+        .append(&fresh, &schema("r.v1"), &event("f1"), &[])
+        .await
+        .unwrap();
+    assert_eq!(first.seq, 1);
+    assert!(matches!(
+        streams.read(&fresh, 0, 100).await,
+        Replay::Page { .. }
+    ));
+}

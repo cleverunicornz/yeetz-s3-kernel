@@ -32,6 +32,20 @@
 //! delivery is at-least-once, and consumers dedupe by stable event
 //! id.
 //!
+//! # A fully trimmed stream is logically empty WITH a floor (finding D)
+//!
+//! `trim(stream, end+1)` — a certified floor above every event — is
+//! the retention endpoint and is accepted. The state is meaningful:
+//! reads that would start below the floor are
+//! [`Replay::OffsetExpired`], reads from the boundary walk from the
+//! floor itself, and appends land AT the floor (`first_retained` is
+//! the first free retained slot; reads require density from there).
+//! The idempotency pre-scan's window is bounded by event evidence
+//! (LIST-derived max, verified hint) — the trim certificate names a
+//! retention boundary, not an event — so the scan never GETs a seq
+//! where no event can exist and the empty floor slot is not false
+//! corruption.
+//!
 //! # Completeness requires a verified witness (human-ruled)
 //!
 //! `Replay::Page::complete == true` requires BOTH a verified tail
@@ -297,8 +311,11 @@ impl Streams {
     /// floor cannot supersede a higher one), idempotent at the same
     /// floor. The genesis record (seq 0, config) is immortal —
     /// `first_retained >= 1` — and the floor may not exceed the
-    /// current log end + 1. The tail hint self-invalidates below the
-    /// floor (its terminal record is gone, so it stops verifying);
+    /// current log end + 1. `floor == end + 1` (the retention
+    /// endpoint) is accepted and meaningful: the stream is logically
+    /// empty WITH a floor, and later appends land at the floor itself
+    /// (see [`Streams::append`]). The tail hint self-invalidates below
+    /// the floor (its terminal record is gone, so it stops verifying);
     /// cursors below the floor read as [`StreamsError::OffsetExpired`],
     /// never corruption.
     pub async fn trim(
@@ -366,7 +383,11 @@ impl Streams {
     /// stable id with different content is a typed
     /// [`StreamsError::IdempotencyConflict`]; beyond it, the same
     /// logical event re-appends as a NEW event (at-least-once;
-    /// consumers dedupe by stable event id).
+    /// consumers dedupe by stable event id). On a fully trimmed
+    /// stream (certified floor above every event) the append lands
+    /// AT the floor — `first_retained` is the first free retained
+    /// slot — and the pre-scan never GETs a seq where no event can
+    /// exist, so the empty floor slot is not false corruption.
     pub async fn append(
         &self,
         stream: &StreamId,
@@ -403,15 +424,25 @@ impl Streams {
             .map(|hint| hint.highest_validated_dense_seq)
             .unwrap_or(0);
         let trim = self.trim_floor(stream).await?.unwrap_or(0);
-        let allocation_floor = list_max.max(hint_seq).max(trim);
-        if allocation_floor == Seq::MAX {
+        // Event evidence tops out at the LIST-derived max or the
+        // verified hint (whichever sees further past a stale LIST).
+        // The trim certificate is NOT event evidence: it names a
+        // retention boundary, and on a fully trimmed stream
+        // (floor = end+1) no event exists at — let alone above — the
+        // floor slot. A scan whose inclusive end is the allocation
+        // floor GETs that empty slot there and misreads absence as
+        // corruption, wedging every future append (Fugu finding D).
+        let event_max = list_max.max(hint_seq);
+        if event_max == Seq::MAX {
             return Err(StreamsError::SeqExhausted(stream.clone()));
         }
         // Inclusive of the hint seq itself: an append that landed and
         // advanced the hint before its client saw the response can
         // have its event AT the hint seq. The scan never dips below
         // the trim floor: those events are logically gone, and a GET
-        // against a swept seq must not read as corruption.
+        // against a swept seq must not read as corruption. Nor does
+        // it rise above the event evidence: a seq only the floor
+        // names has no envelope to find, swept or never-landed.
         let scan_from = hint_seq
             .max(list_max.saturating_sub(IDEMPOTENT_SCAN_WINDOW))
             .max(1)
@@ -425,8 +456,8 @@ impl Streams {
         // never a silent second landing at another seq. (Byte-identity
         // across seqs is impossible — the seq is in the envelope — so
         // the predicate is everything except seq.)
-        if allocation_floor >= scan_from {
-            for seq in scan_from..=allocation_floor {
+        if event_max >= scan_from {
+            for seq in scan_from..=event_max {
                 let existing = self
                     .keyspace
                     .get(&Self::log_key(stream, seq))
@@ -465,7 +496,13 @@ impl Streams {
             }
         }
 
-        let mut guess = allocation_floor + 1;
+        // The next event lands one past the last known event, clamped
+        // up to the certified floor. On a fully trimmed stream the
+        // clamp binds: the event lands AT `first_retained` — the
+        // first free retained slot — because reads walk from the floor
+        // and require density (a landing at floor+1 would read back
+        // as Corrupt naming the floor).
+        let mut guess = (event_max + 1).max(trim);
         let mut conflicts: u32 = 0;
         let mut backoff = APPEND_BACKOFF_START;
         loop {

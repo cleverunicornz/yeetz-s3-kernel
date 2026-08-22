@@ -371,3 +371,55 @@ addendum ships the trim that unblock permits.
 - Stream deletion: the genesis is immortal.
 - Scheduled trimming: the reconciler invokes the library call on
   policy; no timer exists here.
+
+---
+
+## Addendum: finding D — trim-to-end is logically empty with a floor
+
+Status: accepted (implementation decision inside the batch-5
+contract; Fugu teardown finding D, human-mandated fix 2026-08-22).
+
+`Streams::trim(stream, end+1)` — a certified floor above every
+event — sits inside the batch-5 validation (`floor <= observable
+end + 1`) and is the retention endpoint ("keep nothing but the
+genesis"). The state is meaningful, not degenerate:
+
+1. **The stream is logically empty WITH a floor.** Reads that would
+   start below the floor are `OffsetExpired` exactly as batch 5
+   rules; reads from the boundary (`after_seq == floor-1`) walk
+   from the floor itself and serve `Empty` until a new event lands.
+2. **Appends land AT the floor.** `first_retained` is the first
+   free RETAINED slot: allocation is `max(last-event + 1, floor)`,
+   so a fully trimmed stream's next event lands at the floor, not
+   one past it. The read contract forces this — reads walk from the
+   floor and require density, so a landing at `floor+1` would
+   surface as `Corrupt` naming the floor on the next replay.
+3. **The idempotency pre-scan is bounded by event evidence.** Its
+   window tops out at the LIST-derived max / verified hint (seqs
+   where an envelope provably landed); the trim certificate names a
+   retention boundary, not an event, so it floors the window
+   (`scan_from >= floor`) but never extends its top. Previously the
+   scan's inclusive end was the allocation floor, so on a fully
+   trimmed stream it GET'd the empty floor slot and every append
+   failed `Corrupt { missing_or_mismatched: [floor] }` forever —
+   finding D's permanent wedge, pre- and post-GC, and identically
+   for a genesis-only stream trimmed to floor 1.
+
+**Why make the state meaningful rather than reject the trim
+(option A):** the certificate layer (`AtomicKeyspace::propose_trim`)
+validates monotonicity only — it is scope-generic and cannot know a
+log end — so the floor-above-every-event state is constructible
+through the kernel surface regardless of the `Streams::trim` gate,
+and the streams layer must make it meaningful anyway. Option A
+would also narrow the ruled batch-5 validation. No T-series or trim
+contract is weakened: floor monotonicity, certificate immutability,
+GC's below-floor-only deletes, and resumability are untouched.
+
+Known non-wedging edge (recorded, out of scope): a concurrent floor
+raise plus GC sweep racing an in-flight append's pre-scan can
+surface one spurious `Corrupt` naming seqs the append's stale floor
+snapshot still covered; the next append observes the raised floor
+and converges. No permanent wedge is constructible.
+
+Contract witness (in-memory contract suite):
+`r8_trim_to_end_is_logically_empty_and_appends_continue`.
