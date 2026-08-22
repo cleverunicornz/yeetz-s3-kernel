@@ -169,6 +169,13 @@ impl Streams {
                 Replay::NotFound { .. } => {
                     return Err(StreamsError::StreamNotFound(stream.clone()));
                 }
+                Replay::OffsetExpired { first_retained } => {
+                    // Migration verifies density from seq 1; a
+                    // trimmed stream cannot satisfy that post-condition.
+                    return Err(StreamsError::InvalidArgument(format!(
+                        "stream is trimmed below {first_retained}; migration requires the full log"
+                    )));
+                }
             }
         }
         if after != expected_count {

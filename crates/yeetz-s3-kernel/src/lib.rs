@@ -14,7 +14,9 @@ pub mod state_kernel;
 
 pub mod atomic_keyspace;
 
-pub use atomic_keyspace::{AtomicKeyspace, DeleteOutcome, KEYSPACE_ROOT, KeyspaceError};
+pub use atomic_keyspace::{
+    AtomicKeyspace, DeleteBelowReport, DeleteOutcome, KEYSPACE_ROOT, KeyspaceError, TrimState,
+};
 pub use state_kernel::{KernelHandle, KernelInitError};
 pub use terminal_read::{LineageHeadState, TerminalRecordRead};
 pub use yeetz_sdk_s3::S3Config;

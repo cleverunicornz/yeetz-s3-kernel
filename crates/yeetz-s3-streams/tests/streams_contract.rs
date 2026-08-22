@@ -947,3 +947,184 @@ pub(crate) fn streams_on_in_memory_store_with_store() -> (Streams, KernelHandle)
     let kernel = KernelHandle::with_in_memory_store("streams-contract");
     (Streams::new(&kernel).unwrap(), kernel)
 }
+
+/// R2 (batch 5): a read that would start below the certified trim
+/// floor is `OffsetExpired` — a typed boundary, never an empty page,
+/// never corruption — both before the sweeper runs (the certificate
+/// is the boundary, not object absence) and after it. Reads at or
+/// above the floor are unchanged.
+#[tokio::test]
+async fn r2_read_below_trim_floor_is_offset_expired_not_empty_or_corrupt() {
+    let streams = streams_on_in_memory_store();
+    let stream = streams.create_stream(b"cfg").await.unwrap();
+    for index in 1..=10u64 {
+        streams
+            .append(&stream, &schema("r.v1"), &event(&format!("r{index}")), &[])
+            .await
+            .unwrap();
+    }
+
+    // No certificate yet: gc is a no-op, reads are whole-log.
+    let noop = streams.gc(&stream).await.unwrap();
+    assert_eq!(noop.deleted, 0);
+    assert!(matches!(
+        streams.read(&stream, 0, 100).await,
+        Replay::Page { complete: true, .. }
+    ));
+
+    streams.trim(&stream, 6).await.unwrap();
+    assert_eq!(streams.trim_floor(&stream).await.unwrap(), Some(6));
+
+    // Pre-GC: objects below the floor still exist, but the
+    // certificate already rules the read.
+    for after in [0u64, 4] {
+        match streams.read(&stream, after, 100).await {
+            Replay::OffsetExpired { first_retained } => assert_eq!(first_retained, 6),
+            other => panic!("expected OffsetExpired, got {other:?}"),
+        }
+    }
+    // The boundary itself is retained: first wanted seq == floor.
+    match streams.read(&stream, 5, 100).await {
+        Replay::Page { events, complete } => {
+            assert_eq!(
+                events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+                (6..=10).collect::<Vec<_>>()
+            );
+            assert!(complete);
+        }
+        other => panic!("expected page above the floor, got {other:?}"),
+    }
+
+    // Sweep: exactly the five below-floor events go; replay above the
+    // floor is unchanged; the genesis (config) survives.
+    let report = streams.gc(&stream).await.unwrap();
+    assert_eq!(report.deleted, 5);
+    match streams.read(&stream, 5, 100).await {
+        Replay::Page { events, complete } => {
+            assert_eq!(
+                events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+                (6..=10).collect::<Vec<_>>()
+            );
+            assert!(complete);
+        }
+        other => panic!("expected dense replay above the floor, got {other:?}"),
+    }
+    assert!(matches!(
+        streams.read(&stream, 4, 100).await,
+        Replay::OffsetExpired { first_retained: 6 }
+    ));
+    assert_eq!(
+        streams.read_config(&stream).await.unwrap().as_deref(),
+        Some(b"cfg".as_slice())
+    );
+}
+
+/// R6 (batch 5): trim integrates with the write and cursor paths —
+/// append allocates above the floor (no resurrection below it), dense
+/// replay above the floor continues through the new events, and a
+/// cursor below the floor surfaces `OffsetExpired`, never
+/// `CursorCorrupt` (trim-induced absence is not damage).
+#[tokio::test]
+async fn r6_streams_trim_append_and_cursor_respect_the_floor() {
+    let streams = streams_on_in_memory_store();
+    let stream = streams.create_stream(&[]).await.unwrap();
+    for index in 1..=10u64 {
+        streams
+            .append(&stream, &schema("r.v1"), &event(&format!("c{index}")), &[])
+            .await
+            .unwrap();
+    }
+    // A cursor below the future floor, acked while its event exists.
+    streams.advance_cursor(&stream, "worker", 3).await.unwrap();
+
+    streams.trim(&stream, 6).await.unwrap();
+    streams.gc(&stream).await.unwrap();
+
+    // Append lands above the floor — never below the certificate.
+    let receipt = streams
+        .append(&stream, &schema("r.v1"), &event("c11"), &[])
+        .await
+        .unwrap();
+    assert_eq!(receipt.seq, 11);
+    match streams.read(&stream, 5, 100).await {
+        Replay::Page { events, complete } => {
+            assert_eq!(
+                events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+                (6..=11).collect::<Vec<_>>()
+            );
+            assert!(complete);
+        }
+        other => panic!("expected dense replay through the new event, got {other:?}"),
+    }
+
+    // The swept cursor is OffsetExpired, not corrupt; re-advancing to
+    // the swept target is rejected the same way; advancing above the
+    // floor still works.
+    let swept = streams.read_cursor(&stream, "worker").await.unwrap_err();
+    assert!(matches!(
+        swept,
+        StreamsError::OffsetExpired {
+            first_retained: 6,
+            ..
+        }
+    ));
+    let backwards = streams
+        .advance_cursor(&stream, "worker", 3)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        backwards,
+        StreamsError::OffsetExpired {
+            first_retained: 6,
+            ..
+        }
+    ));
+    streams.advance_cursor(&stream, "worker", 8).await.unwrap();
+}
+
+/// R7 (streams leg): a stale writer resurrecting a log object below
+/// the certified floor (raw keyspace create — a fresh version-0
+/// lifetime) changes nothing the API serves: reads below the floor
+/// stay `OffsetExpired` (the certificate, not object absence, is the
+/// boundary), the sweeper re-collects the zombie, and a lower trim
+/// proposal stays rejected.
+#[tokio::test]
+async fn r7_streams_resurrection_rejected_by_certificate_and_reswept() {
+    let (streams, kernel) = streams_on_in_memory_store_with_store();
+    let keyspace = support::streams_keyspace(&kernel);
+    let stream = streams.create_stream(&[]).await.unwrap();
+    for index in 1..=10u64 {
+        streams
+            .append(&stream, &schema("r.v1"), &event(&format!("z{index}")), &[])
+            .await
+            .unwrap();
+    }
+    streams.trim(&stream, 6).await.unwrap();
+    streams.gc(&stream).await.unwrap();
+
+    // The stale writer lands a byte-valid envelope at swept seq 3.
+    keyspace
+        .create(
+            &format!("{}/log/{:020}", stream.as_str(), 3u64),
+            support::hand_envelope(stream.as_str(), 3, "zombie", "z.v1", b"z"),
+        )
+        .await
+        .unwrap();
+
+    // The certificate rules the read: OffsetExpired, never the zombie.
+    assert!(matches!(
+        streams.read(&stream, 2, 100).await,
+        Replay::OffsetExpired { first_retained: 6 }
+    ));
+
+    // Idempotent GC re-collects the resurrected object.
+    let report = streams.gc(&stream).await.unwrap();
+    assert_eq!(report.deleted, 1);
+
+    // A lower trim stays rejected by the certificate.
+    let rejected = streams.trim(&stream, 4).await.unwrap_err();
+    assert!(matches!(
+        rejected,
+        StreamsError::InvalidArgument(message) if message.contains("trim not monotone")
+    ));
+}
