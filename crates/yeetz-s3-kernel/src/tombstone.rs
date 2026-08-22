@@ -26,9 +26,11 @@ pub struct Tombstone {
     /// The destroyed value's generation: the keyspace version (or
     /// lineage head generation) at destroy time.
     pub deleted_at_gen: u64,
-    /// The destroyed value's incarnation: which deletion lifetime
-    /// the witness closed (lineages record 0 — heads have no
-    /// incarnation model; their rebirth is a fresh genesis).
+    /// The destroyed value's incarnation: which deletion lifetime the
+    /// witness closed. Keyspace values carry their envelope
+    /// incarnation; lineage tombstones record the destroyed HEAD's
+    /// incarnation (batch 9) — 0 for a lifetime that preceded the
+    /// era model.
     pub incarnation: u64,
     /// Why the deletion happened (caller-supplied, auditable).
     pub cause: String,

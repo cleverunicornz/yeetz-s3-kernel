@@ -26,6 +26,9 @@ use std::sync::Arc;
 use bytes::Bytes;
 use yeetz_sdk_s3::{ObjectStoreClient, S3Config};
 
+use crate::state_kernel::{
+    CanonicalRecord, KernelError, KernelLineage, StateKernel, SuccessorPolicy,
+};
 use crate::{AtomicKeyspace, KEYSPACE_ROOT, KeyspaceError};
 
 /// Parallel racers for the If-None-Match create probe.
@@ -39,6 +42,8 @@ pub async fn run_real_s3_aba_probe(config: &S3Config) -> Result<Vec<String>, Str
     let prefix = format!("aba-probe/{run_id}/");
     let module_namespace = format!("aba-probe/{run_id}");
     let module_prefix = format!("{KEYSPACE_ROOT}/{module_namespace}/");
+    let lineage_name = format!("aba-probe/{run_id}-lineage");
+    let lineage_prefix = format!("{lineage_name}/");
     let mut created: Vec<String> = Vec::new();
     let mut verdicts: Vec<String> = Vec::new();
 
@@ -54,14 +59,26 @@ pub async fn run_real_s3_aba_probe(config: &S3Config) -> Result<Vec<String>, Str
         }
         Err(error) => Err(error),
     };
+    let result = match result {
+        Ok(()) => {
+            lineage_battery(
+                Arc::clone(&client),
+                &lineage_name,
+                &mut created,
+                &mut verdicts,
+            )
+            .await
+        }
+        Err(error) => Err(error),
+    };
 
     // Cleanup regardless of verdict — delete exactly what we created,
-    // then assert both run-scoped prefixes are gone (loud if the store
+    // then assert every run-scoped prefix is gone (loud if the store
     // leaks).
     for key in &created {
         let _ = client.delete(key).await;
     }
-    for cleanup_prefix in [&prefix, &module_prefix] {
+    for cleanup_prefix in [&prefix, &module_prefix, &lineage_prefix] {
         let leftover = client
             .list_prefix(cleanup_prefix)
             .await
@@ -74,7 +91,7 @@ pub async fn run_real_s3_aba_probe(config: &S3Config) -> Result<Vec<String>, Str
     }
     note(
         &mut verdicts,
-        format!("cleanup: {prefix} and {module_prefix} empty after run"),
+        format!("cleanup: {prefix}, {module_prefix} and {lineage_prefix} empty after run"),
     );
 
     result?;
@@ -573,6 +590,162 @@ async fn module_battery(
     note(
         verdicts,
         "AtomicKeyspace era-2 current-token CAS: accepted (versions advance within the new incarnation)"
+            .to_string(),
+    );
+
+    Ok(())
+}
+
+/// Lineage-head leg (batch 9; Fugu teardown finding G6, 2026-08-22):
+/// the same cross-deletion closure the keyspace leg proves for
+/// values, measured on the lineage HEAD path — the object that
+/// predated the era model and never received the envelope
+/// treatment. Destroy the lineage, recreate with a byte-identical
+/// genesis (on a content-etag backend the raw era-1 head bytes would
+/// recur the identical etag — exactly the finding-E reproduction),
+/// then prove the era-1 `HeadRead` is refused while a fresh era-2
+/// token advances the reborn lineage.
+async fn lineage_battery(
+    client: Arc<ObjectStoreClient>,
+    lineage_name: &str,
+    created: &mut Vec<String>,
+    verdicts: &mut Vec<String>,
+) -> Result<(), String> {
+    let lineage = KernelLineage::new(lineage_name, SuccessorPolicy::SuccessorCapable)
+        .map_err(|error| format!("lineage bind: {error:?}"))?;
+    let kernel = StateKernel::new(client, lineage.clone());
+
+    let genesis = CanonicalRecord::new(
+        &lineage,
+        0,
+        None,
+        "probe.lineage-genesis",
+        "probe.v1",
+        vec![0xC3; 64],
+        "probe-operation",
+        "real-s3-probe",
+        "probe-cause",
+    )
+    .map_err(|error| format!("lineage genesis record: {error:?}"))?;
+
+    // Era 1: genesis head at incarnation 0.
+    let era1 = kernel
+        .append_genesis(&genesis)
+        .await
+        .map_err(|error| format!("lineage era-1 genesis: {error:?}"))?;
+    created.push(format!(
+        "{lineage_name}/objects/{}",
+        era1.record_digest().as_str()
+    ));
+
+    kernel
+        .destroy("probe-lineage-leg", "real-s3-probe")
+        .await
+        .map_err(|error| format!("lineage destroy: {error:?}"))?;
+    created.push(format!("{lineage_name}/tombstone"));
+    created.push(format!("{lineage_name}/incarnation"));
+
+    // Era 2: byte-identical genesis — the exact ABA shape. The head
+    // must come back stamped incarnation 1 with MOVED bytes (and
+    // therefore a moved content etag).
+    let era2 = kernel
+        .append_genesis(&genesis)
+        .await
+        .map_err(|error| format!("lineage era-2 genesis: {error:?}"))?;
+    if era2.incarnation() != 1 {
+        return Err(format!(
+            "lineage era-2 genesis is incarnation {} — expected 1",
+            era2.incarnation()
+        ));
+    }
+    if era2.etag == era1.etag {
+        return Err(format!(
+            "lineage cross-deletion closure failed: byte-identical genesis recurred the head etag {}",
+            era1.etag
+        ));
+    }
+    note(
+        verdicts,
+        format!(
+            "lineage head destroy→recreate(identical genesis): era-2 stamped incarnation 1; head etag moved ({} != {})",
+            era1.etag, era2.etag
+        ),
+    );
+
+    // The stale era-1 HeadRead must be refused — the finding-E
+    // hazard, closed.
+    let stale_successor = CanonicalRecord::new(
+        &lineage,
+        1,
+        Some(era1.record_position()),
+        "probe.lineage-stale",
+        "probe.v1",
+        vec![0x3C; 64],
+        "probe-stale-operation",
+        "real-s3-probe",
+        "probe-cause",
+    )
+    .map_err(|error| format!("lineage stale successor record: {error:?}"))?;
+    match kernel.append_successor(&stale_successor, &era1).await {
+        Err(KernelError::LineageHeadConflict { .. }) => note(
+            verdicts,
+            "lineage era-1 HeadRead across the destroy: LineageHeadConflict".to_string(),
+        ),
+        Err(error) => {
+            return Err(format!(
+                "lineage era-1 token across destroy returned unexpected error: {error:?}"
+            ));
+        }
+        Ok(_) => {
+            return Err(
+                "lineage era-1 HeadRead was ACCEPTED across the destroy (cross-deletion ABA)"
+                    .to_string(),
+            );
+        }
+    }
+
+    // The refused CAS still published its immutable record (the
+    // documented unreachable-orphan shape) — track it for cleanup.
+    created.push(format!(
+        "{lineage_name}/objects/{}",
+        stale_successor
+            .digest()
+            .map_err(|error| format!("lineage stale successor digest: {error:?}"))?
+            .as_str()
+    ));
+
+    // A fresh era-2 token advances the reborn lineage normally.
+    let era2_successor = CanonicalRecord::new(
+        &lineage,
+        1,
+        Some(era2.record_position()),
+        "probe.lineage-fresh",
+        "probe.v1",
+        vec![0x55; 64],
+        "probe-fresh-operation",
+        "real-s3-probe",
+        "probe-cause",
+    )
+    .map_err(|error| format!("lineage fresh successor record: {error:?}"))?;
+    let advanced = kernel
+        .append_successor(&era2_successor, &era2)
+        .await
+        .map_err(|error| format!("lineage era-2 successor: {error:?}"))?;
+    created.push(format!(
+        "{lineage_name}/objects/{}",
+        advanced.record_digest().as_str()
+    ));
+    created.push(format!("{lineage_name}/head"));
+    if advanced.generation() != 1 || advanced.incarnation() != 1 {
+        return Err(format!(
+            "lineage era-2 successor landed at generation {} incarnation {} — expected 1/1",
+            advanced.generation(),
+            advanced.incarnation()
+        ));
+    }
+    note(
+        verdicts,
+        "lineage era-2 fresh-token successor: accepted at generation 1 of incarnation 1"
             .to_string(),
     );
 
