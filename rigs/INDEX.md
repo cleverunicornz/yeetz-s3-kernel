@@ -60,6 +60,12 @@ the loopback streaming contract suite. A hex segment that decodes to
 an invalid logical key is unresolved, survives fenced sweep, and is
 reported as the resumable remainder.
 
+The batch-10 teardown reversed-range witness is part of
+`a28_range_boundary_table` in the public streaming contract suite.
+Both an in-bounds reversed window and a reversed window starting past
+EOF return typed `InvalidRange`; `len..len` remains the valid empty
+EOF window.
+
 The forge-facing rigs (connect transport legs, gRPC legs, write-path
 concurrency, events migration) stayed in the parent `yeetz` repo —
 they prove forge behavior against forge types.

@@ -121,6 +121,17 @@ async fn a28_range_boundary_table() {
         Err(KeyspaceError::InvalidRange { .. }) => {}
         other => panic!("start beyond length must be typed, got {other:?}"),
     }
+    let reversed = std::ops::Range { start: 5, end: 4 };
+    match keyspace.open_stream_range("cell", reversed).await {
+        Err(KeyspaceError::InvalidRange {
+            start: 5, end: 4, ..
+        }) => {}
+        other => panic!("reversed range must be typed InvalidRange, got {other:?}"),
+    }
+    match keyspace.open_stream_range("cell", len + 1..len).await {
+        Err(KeyspaceError::InvalidRange { .. }) => {}
+        other => panic!("reversed range above EOF must be typed, got {other:?}"),
+    }
 
     // The full-stream read equals the collected whole value.
     let whole = keyspace.get("cell").await.unwrap().unwrap();
