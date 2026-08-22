@@ -777,3 +777,107 @@ both windows (first tombstone stands, counter gaps are sanctioned).
   Exoscale bucket — era-2 stamped incarnation 1 with a moved head
   etag, era-1 `HeadRead` refused, fresh era-2 token advancing — so
   the closure has a live-backend witness, not just the loopback.
+
+---
+
+## Ruled addendum: Batch 9 lifecycle closure — L9/L10/L14
+
+Status: accepted (human-authorized via the standing Finding E ruling —
+"close it structurally … correct 100%" — plus the delegated-synthesis
+directive; the direction was settled, the mechanism adjudicated here).
+Completes the batch-9 teardown: L8 landed first as PR #15
+(`4478a68`); this closes the remaining three defects, one root-cause
+family: **a head's self-declared era can disagree with the incarnation
+counter, and the deletion tails were unconditional.**
+
+### The three windows (red witness: ci-dev run 32595300408,
+### branch `batch9-teardown`, tip `b01b49c`)
+
+- **L9** — `create_head`'s post-PUT counter re-read is not a
+  publication fence. If that GET fails (or the writer crashes) after
+  a stale-era PUT has landed, the destroyed era's exact head bytes
+  sit published; a pre-destroy `HeadRead` then CASes them
+  byte-for-byte (content etags recur).
+- **L10** — `destroy` ended with an unconditional head delete. A
+  stale destroy whose observed head was replaced after its era
+  closed erases the replacement — a fresh incarnation destroyed
+  without its own era bump.
+- **L14** — the bump is destroy's linearization point, but the head
+  delete is a later request. Between them the old head is still
+  visible and CAS-able: an era-0 token advanced it to generation 1
+  inside a closed era.
+
+### Mechanism decisions
+
+1. **Appends carry an era gate AND a post-CAS tail — both, not
+   either.** The gate (`ensure_open_era`) runs in
+   `append_successor`/`append_successor_batch` with the other token
+   refusals, before the store's If-Match: the token's self-declared
+   incarnation must equal the counter (any disagreement refuses —
+   the counter never decreases, so a disagreement is a closed era or
+   corruption, and both fail closed as `LineageHeadConflict`). The
+   gate alone cannot close L14's concurrent ordering — a destroy can
+   bump the counter after the gate passes and before the CAS lands —
+   so a successful CAS is followed by `retire_closed_era_publication`:
+   re-read the counter; on disagreement evict exactly the bytes this
+   call published (`delete_conditional`, If-Match on the etag the CAS
+   earned) and surface `LineageHeadConflict`. This is precisely
+   `create_head`'s post-landing re-read + conditional self-eviction
+   (L8/PR #15), mirrored onto the successor path; the L14-race canary
+   proves the tail is load-bearing (a parked CAS released after a
+   bump evicts itself; the gate alone would publish the closed-era
+   head and return `Ok`).
+2. **Destroy's tail is a conditional delete fenced to the observed
+   etag** (`delete_conditional` — batch 8's primitive, composed into
+   `destroy`'s final unlink exactly where batch 8's addendum
+   foresaw). Outcomes: match or `NoSuchKey` → `Ok` (a racing destroy
+   or converged crash window — the L4b idempotence); `PreconditionFailed`
+   → `LineageHeadConflict` (the observed head was replaced after
+   this era closed — contention semantics; re-running `destroy`
+   converges); anything else → `StateUnavailable`. The L4a/L4b
+   crash-convergence contract is unchanged.
+3. **In-memory handles fail closed for `destroy`** (the A18
+   posture): the tail requires the conditional-delete wire primitive,
+   and `object_store`'s in-memory backend has none — a silent
+   unconditional fallback is the defect batch 8 refused, so
+   `with_in_memory_store` lineages surface a typed
+   `StateUnavailable` instead. Consequently L1/L3/L5 and the W-suite
+   lineage member (W5) moved from `tests/` onto the loopback rig
+   in-src (`state_kernel::gateway_state_contract`), public
+   assertions unchanged; the legacy `tests/` files keep the
+   no-destroy members (L2, the keyspace W-suite).
+4. **The read surface does not move.** The era gate and tail are
+   append-path costs only (one counter GET each — correctness rules).
+   Terminal reads remain exactly two GETs and never touch the
+   counter; L13 pins this on the wire. K1–K7 are untouched: same
+   keys, same CAS discipline, same error taxonomy.
+
+### Contract suite
+
+- **L9** `l9_post_landing_recheck_failure_cannot_publish_a_destroyed_era`:
+  the parked-writer + `LineageIncarnationRead` fault cut; the
+  republished destroyed-era head is readable (the crash window is
+  honest) but unadvanceable.
+- **L10** `l10_destroy_deletes_only_the_observed_head_etag`: the
+  destroy wire carries `If-Match` = the loaded head's etag.
+- **L13** `l13_terminal_read_remains_two_gets_without_counter_access`:
+  the read-shape law, pinned against the new counter traffic.
+- **L14** `l14_post_bump_pre_delete_rejects_closed_era_successor`:
+  the sequential post-bump window (tombstone + counter raw-seeded).
+- **L14-race** `l14_race_successor_cas_lands_after_the_bump_evicts_itself`:
+  the concurrent window — a CAS parked at the barrier while the era
+  closes underneath must self-evict and conflict (the recheck-tail's
+  proof).
+- L8's canary was updated: the wire now legitimately shows TWO
+  conditional head deletes (the destroy tail and the stale-era
+  eviction); the assertion pins that every head DELETE carries
+  If-Match — no unconditional head delete exists anywhere.
+- The migrated L1/L3/L5/W5 keep their public assertions on the
+  loopback.
+
+### Blast radius
+
+`replace_head` semantics unchanged; `create_head` unchanged (L8);
+reads unchanged; the keyspace surface untouched. The only behavioral
+changes are the three closed windows plus the in-memory destroy
+fail-closed documented above.
