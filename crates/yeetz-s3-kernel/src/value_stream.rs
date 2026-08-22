@@ -722,12 +722,25 @@ impl PendingValue {
                 }
             }
             WriterIntent::CompareExchange { expected_etag } => {
+                self.keyspace()
+                    .ensure_open_value_era(&self.key, self.manifest.incarnation)
+                    .await?;
                 match self
                     .store
                     .upload_conditional(&object_key, manifest_bytes, Some(&expected_etag))
                     .await
                 {
-                    Ok(Some(etag)) => Ok(self.receipt(etag)),
+                    Ok(Some(etag)) => {
+                        let etag = self
+                            .keyspace()
+                            .finish_value_cas_after_publish(
+                                &self.key,
+                                self.manifest.incarnation,
+                                etag,
+                            )
+                            .await?;
+                        Ok(self.receipt(etag))
+                    }
                     Ok(None) => Err(KeyspaceError::Unavailable {
                         operation: "keyspace compare_exchange (no etag on manifest publish)",
                     }),
@@ -741,7 +754,17 @@ impl PendingValue {
                             .adjudicate_manifest_put(&self.key, &object_key, &self.manifest)
                             .await?
                         {
-                            Ambiguity::Landed { etag: Some(etag) } => Ok(self.receipt(etag)),
+                            Ambiguity::Landed { etag: Some(etag) } => {
+                                let etag = self
+                                    .keyspace()
+                                    .finish_value_cas_after_publish(
+                                        &self.key,
+                                        self.manifest.incarnation,
+                                        etag,
+                                    )
+                                    .await?;
+                                Ok(self.receipt(etag))
+                            }
                             Ambiguity::Landed { etag: None } => Err(KeyspaceError::Unavailable {
                                 operation: "keyspace compare_exchange (ambiguous manifest commit: no etag)",
                             }),
@@ -857,19 +880,67 @@ impl AtomicKeyspace {
 
     /// The control-metadata era read (ADR 0004 §2.3): incarnation and
     /// version from a v2 OR v3 control, never a chunk fetch.
-    pub(crate) async fn read_control_era(
+    pub(crate) async fn read_control_era_with_etag(
         &self,
         key: &str,
-    ) -> Result<Option<(u64, u64)>, KeyspaceError> {
+    ) -> Result<Option<(u64, u64, String)>, KeyspaceError> {
         let object_key = self.object_key(key)?;
-        match self.store.download(&object_key).await {
-            Ok(bytes) => {
-                let control = ControlEnvelope::decode(key, &bytes)?;
-                Ok(Some((control.incarnation(), control.version())))
+        match self.store.download_with_etag(&object_key).await {
+            Ok(meta) => {
+                let Some(etag) = meta.etag else {
+                    return Err(KeyspaceError::Unavailable {
+                        operation: "keyspace control era read (no etag)",
+                    });
+                };
+                let control = ControlEnvelope::decode(key, &meta.data)?;
+                Ok(Some((control.incarnation(), control.version(), etag)))
             }
             Err(ObjectStoreError::NotFound(_)) => Ok(None),
             Err(_) => Err(KeyspaceError::Unavailable {
                 operation: "keyspace control era read",
+            }),
+        }
+    }
+
+    /// Reject a CAS bound to an incarnation already closed by
+    /// `destroy`. The etag can still match in destroy's
+    /// post-bump/pre-delete window, so store CAS alone is insufficient.
+    pub(crate) async fn ensure_open_value_era(
+        &self,
+        key: &str,
+        bound_incarnation: u64,
+    ) -> Result<(), KeyspaceError> {
+        if self.current_incarnation(key).await? == bound_incarnation {
+            return Ok(());
+        }
+        Err(KeyspaceError::StaleIncarnation(key.to_string()))
+    }
+
+    /// Recheck the incarnation after a successful CAS. A destroy may
+    /// bump between the pre-CAS gate and the control PUT; evict exactly
+    /// this publication by its new etag and refuse the closed-era write.
+    pub(crate) async fn finish_value_cas_after_publish(
+        &self,
+        key: &str,
+        bound_incarnation: u64,
+        published_etag: String,
+    ) -> Result<String, KeyspaceError> {
+        if self.current_incarnation(key).await? == bound_incarnation {
+            return Ok(published_etag);
+        }
+        let object_key = self.object_key(key)?;
+        match self
+            .store
+            .delete_conditional(&object_key, &published_etag)
+            .await
+        {
+            Ok(())
+            | Err(ObjectStoreError::NotFound(_))
+            | Err(ObjectStoreError::PreconditionFailed(_)) => {
+                Err(KeyspaceError::StaleIncarnation(key.to_string()))
+            }
+            Err(_) => Err(KeyspaceError::Unavailable {
+                operation: "keyspace compare_exchange (closed-era eviction)",
             }),
         }
     }
@@ -987,6 +1058,8 @@ impl AtomicKeyspace {
             return Err(self.cas_conflict(key, expected_etag).await);
         }
         let control = ControlEnvelope::decode(key, &meta.data)?;
+        self.ensure_open_value_era(key, control.incarnation())
+            .await?;
         let version = control
             .version()
             .checked_add(1)
@@ -1267,7 +1340,8 @@ impl AtomicKeyspace {
     }
 
     /// Whole-value CAS above `INLINE_MAX`. The etag is consumable
-    /// exactly once, so no incarnation recheck is needed on success.
+    /// exactly once within one open incarnation; destroy's counter is
+    /// checked immediately before and after the manifest PUT.
     pub(crate) async fn compare_exchange_chunked(
         &self,
         key: &str,
@@ -1280,12 +1354,17 @@ impl AtomicKeyspace {
         let manifest = self
             .stage_chunks(key, value, incarnation, next_version)
             .await?;
+        self.ensure_open_value_era(key, incarnation).await?;
         match self
             .store
             .upload_conditional(&object_key, manifest.encode(), Some(expected_etag))
             .await
         {
-            Ok(etag) => etag.ok_or(KeyspaceError::Unavailable {
+            Ok(Some(etag)) => {
+                self.finish_value_cas_after_publish(key, incarnation, etag)
+                    .await
+            }
+            Ok(None) => Err(KeyspaceError::Unavailable {
                 operation: "keyspace compare_exchange (no etag)",
             }),
             Err(ObjectStoreError::PreconditionFailed(_)) => {
@@ -1296,7 +1375,11 @@ impl AtomicKeyspace {
                     .adjudicate_manifest_put(key, &object_key, &manifest)
                     .await?
                 {
-                    Ambiguity::Landed { etag } => etag.ok_or(KeyspaceError::Unavailable {
+                    Ambiguity::Landed { etag: Some(etag) } => {
+                        self.finish_value_cas_after_publish(key, incarnation, etag)
+                            .await
+                    }
+                    Ambiguity::Landed { etag: None } => Err(KeyspaceError::Unavailable {
                         operation: "keyspace compare_exchange (ambiguous manifest commit: no etag)",
                     }),
                     Ambiguity::LostConflict => Err(self.cas_conflict(key, expected_etag).await),

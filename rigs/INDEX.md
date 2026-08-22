@@ -22,6 +22,13 @@ tasks; A28/A32/A35 public-API legs live in
 `crates/yeetz-s3-kernel/tests/streaming_contract.rs`, and S11 in
 `crates/yeetz-s3-streams/tests/streams_envelope_bound.rs`.
 
+The batch-10 teardown lifecycle leg
+`teardown_value_control_has_era_gates_and_conditional_destroy_tail`
+holds a streamed VALUE CAS across a destroy-era counter advance. It
+requires the stale publication to self-evict, rejects an already-closed
+control before CAS, and asserts that VALUE destroy emits `DELETE +
+If-Match` against the exact control it observed.
+
 The batch-10 teardown writer-window witness is
 `teardown_writer_stops_at_the_four_upload_window` in the public
 streaming contract suite. A single oversized `poll_write` must stop

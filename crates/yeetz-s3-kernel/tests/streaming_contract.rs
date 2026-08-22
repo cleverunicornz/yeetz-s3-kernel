@@ -150,7 +150,10 @@ async fn a30_stream_state_parity_on_the_public_surface() {
         keyspace.read_state_stream("ghost").await.unwrap(),
         StreamKeyState::Absent
     ));
-    keyspace.destroy("cell", "a30", "test").await.unwrap();
+    keyspace
+        .destroy_in_memory_for_test("cell", "a30", "test")
+        .await
+        .unwrap();
     assert!(matches!(
         keyspace.read_state_stream("cell").await.unwrap(),
         StreamKeyState::Destroyed { .. }
