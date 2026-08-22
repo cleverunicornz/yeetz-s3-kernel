@@ -2559,6 +2559,12 @@ pub mod gateway_state_contract {
         /// AfterEffect applies it and cuts the response — the lost
         /// response a GC sweep must tolerate (G117).
         KeyspaceDelete,
+        /// A conditional DELETE against a keyspace object (DELETE +
+        /// If-Match — S3 conditional deletes). BeforeEffect refuses
+        /// it: a failed conditional delete leaving the value intact.
+        /// AfterEffect applies the delete and loses the response —
+        /// the caller re-reads to converge (G118).
+        KeyspaceConditionalDelete,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2614,7 +2620,10 @@ pub mod gateway_state_contract {
                     *method == Method::PUT && key.ends_with("/head") && if_match.is_some()
                 }
                 StorageFaultCut::KeyspaceDelete => {
-                    *method == Method::DELETE && key.starts_with("keyspace/")
+                    *method == Method::DELETE && key.starts_with("keyspace/") && if_match.is_none()
+                }
+                StorageFaultCut::KeyspaceConditionalDelete => {
+                    *method == Method::DELETE && key.starts_with("keyspace/") && if_match.is_some()
                 }
             }
         }
@@ -2788,6 +2797,15 @@ pub mod gateway_state_contract {
         key: String,
     }
 
+    /// Minimal S3 error XML body — the AWS SDK's rest-xml error parser
+    /// selects modeled errors by `<Code>`, so 4xx wire paths the AWS
+    /// client must discriminate need real bodies.
+    fn s3_error_xml(code: &str, message: &str) -> Vec<u8> {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Error><Code>{code}</Code><Message>{message}</Message></Error>"
+        )
+        .into_bytes()
+    }
     fn counterpart_key(path: &str) -> Option<String> {
         path.strip_prefix(&format!("/{T001_COUNTERPART_BUCKET}/"))
             .filter(|key| !key.is_empty())
@@ -3064,11 +3082,36 @@ pub mod gateway_state_contract {
                 None => (StatusCode::NOT_FOUND, None, Vec::new()),
                 // DELETE: idempotent removal; absent key is still a
                 // success (S3 semantics — delete of a missing object is
-                // 204).
+                // 204). With If-Match it is S3's conditional delete:
+                // 204 on match, 412 PreconditionFailed on mismatch,
+                // 404 NoSuchKey when absent (never-existed and
+                // already-deleted are indistinguishable).
                 Some(key) if method == Method::DELETE => {
                     let mut objects = state.objects.lock().await;
-                    objects.remove(key);
-                    (StatusCode::NO_CONTENT, None, Vec::new())
+                    if let Some(expected) = if_match.as_deref() {
+                        match objects.get(key) {
+                            None => (
+                                StatusCode::NOT_FOUND,
+                                None,
+                                s3_error_xml("NoSuchKey", "conditional delete target is absent"),
+                            ),
+                            Some(entry) if entry.etag == unquoted_etag(expected) => {
+                                objects.remove(key);
+                                (StatusCode::NO_CONTENT, None, Vec::new())
+                            }
+                            Some(_) => (
+                                StatusCode::PRECONDITION_FAILED,
+                                None,
+                                s3_error_xml(
+                                    "PreconditionFailed",
+                                    "etag mismatch on conditional delete",
+                                ),
+                            ),
+                        }
+                    } else {
+                        objects.remove(key);
+                        (StatusCode::NO_CONTENT, None, Vec::new())
+                    }
                 }
                 Some(key) if method == Method::PUT => {
                     state
@@ -3135,8 +3178,9 @@ pub mod gateway_state_contract {
                     StorageFaultCut::ImmutableWrite
                     | StorageFaultCut::HeadCreate
                     | StorageFaultCut::HeadUpdate
-                    // Delete applied; the response is lost (G117).
-                    | StorageFaultCut::KeyspaceDelete => {
+                    // Delete applied; the response is lost (G117/G118).
+                    | StorageFaultCut::KeyspaceDelete
+                    | StorageFaultCut::KeyspaceConditionalDelete => {
                         status = T002_FAULT_STATUS;
                         etag = None;
                         response_body.clear();
@@ -3912,7 +3956,8 @@ pub mod gateway_state_contract {
             | (StorageFaultCut::ImmutableWrite, StorageFaultPhase::AfterEffect)
             | (StorageFaultCut::HeadCreate, StorageFaultPhase::AfterEffect)
             | (StorageFaultCut::HeadUpdate, StorageFaultPhase::AfterEffect)
-            | (StorageFaultCut::KeyspaceDelete, StorageFaultPhase::AfterEffect) => {
+            | (StorageFaultCut::KeyspaceDelete, StorageFaultPhase::AfterEffect)
+            | (StorageFaultCut::KeyspaceConditionalDelete, StorageFaultPhase::AfterEffect) => {
                 T002_FAULT_STATUS.as_u16()
             }
             (StorageFaultCut::ImmutableChecksum, StorageFaultPhase::AfterEffect)
@@ -4094,8 +4139,8 @@ pub mod gateway_state_contract {
             // Keyspace deletes are proven by their own loopback
             // contract (a9_delete_many_resumes_after_lost_response_cut);
             // they carry no lineage semantics.
-            StorageFaultCut::KeyspaceDelete => {
-                unreachable!("keyspace delete cut has no lineage receipt")
+            StorageFaultCut::KeyspaceDelete | StorageFaultCut::KeyspaceConditionalDelete => {
+                unreachable!("keyspace delete cuts have no lineage receipt")
             }
         }
     }
@@ -6078,6 +6123,359 @@ pub mod gateway_state_contract {
                 ),
                 "A16: {name} must fail closed on read_state"
             );
+        }
+        let _ = counterpart.shutdown().await;
+    }
+
+    /// A19: a matching etag deletes in one operation, and the
+    /// loopback's request log witnesses the wire shape — a single
+    /// DELETE carrying If-Match with the caller's token.
+    #[tokio::test]
+    async fn a19_conditional_delete_match_deletes_on_the_wire() {
+        let (_store, keyspace, counterpart) = keyspace_fixture("a19").await;
+        keyspace
+            .create("cell", Bytes::from_static(b"v1"))
+            .await
+            .unwrap();
+        let (value, etag) = keyspace
+            .get_with_etag("cell")
+            .await
+            .unwrap()
+            .expect("value present");
+        assert_eq!(value, Bytes::from_static(b"v1"));
+
+        keyspace
+            .delete_if_match("cell", &etag)
+            .await
+            .expect("matching etag deletes");
+
+        assert_eq!(keyspace.get("cell").await.unwrap(), None, "value is gone");
+
+        // The wire shape: exactly one DELETE for the object key, and it
+        // carried If-Match with the caller's (unquoted) token — the
+        // same token class compare_exchange accepts.
+        let snapshot = counterpart.snapshot().await;
+        let deletes: Vec<_> = snapshot
+            .requests
+            .iter()
+            .filter(|request| {
+                request.method == "DELETE" && request.key.as_deref() == Some("keyspace/a19/cell")
+            })
+            .collect();
+        assert_eq!(deletes.len(), 1, "single conditional delete request");
+        let sent = deletes[0]
+            .if_match
+            .as_deref()
+            .expect("If-Match on the DELETE");
+        assert_eq!(
+            sent.trim_matches('"'),
+            etag,
+            "the DELETE carried the caller's token"
+        );
+        assert_eq!(deletes[0].status, StatusCode::NO_CONTENT.as_u16());
+        let _ = counterpart.shutdown().await;
+    }
+
+    /// A20: a stale etag refuses typed `PreconditionFailed` naming the
+    /// era the caller lost to (observed etag, incarnation, version);
+    /// the value survives untouched, and the current token then
+    /// deletes it.
+    #[tokio::test]
+    async fn a20_conditional_delete_mismatch_names_the_era() {
+        let (_store, keyspace, counterpart) = keyspace_fixture("a20").await;
+        keyspace
+            .create("cell", Bytes::from_static(b"v1"))
+            .await
+            .unwrap();
+        let (_, stale) = keyspace
+            .get_with_etag("cell")
+            .await
+            .unwrap()
+            .expect("value present");
+        let current = keyspace
+            .compare_exchange("cell", &stale, Bytes::from_static(b"v2"))
+            .await
+            .unwrap();
+
+        match keyspace
+            .delete_if_match("cell", &stale)
+            .await
+            .expect_err("stale token refuses")
+        {
+            crate::KeyspaceError::PreconditionFailed {
+                key,
+                expected_etag,
+                observed,
+                observed_incarnation,
+                observed_version,
+            } => {
+                assert_eq!(key, "cell");
+                assert_eq!(expected_etag, stale);
+                assert_eq!(observed.as_deref(), Some(current.as_str()));
+                assert_eq!(observed_incarnation, Some(0));
+                assert_eq!(observed_version, Some(1), "the era the caller lost to");
+            }
+            other => panic!("expected PreconditionFailed, got {other:?}"),
+        }
+        assert_eq!(
+            keyspace.get("cell").await.unwrap().as_deref(),
+            Some(b"v2".as_slice()),
+            "the value survives the refused delete"
+        );
+        keyspace
+            .delete_if_match("cell", &current)
+            .await
+            .expect("current token deletes");
+        assert_eq!(keyspace.get("cell").await.unwrap(), None);
+        let _ = counterpart.shutdown().await;
+    }
+
+    /// A21: absent-key taxonomy — never-created (`Absent`) and
+    /// destroyed (`Destroyed`, tombstone standing) both refuse
+    /// `PreconditionFailed` with all-`None` observed fields
+    /// (compare_exchange's absent shape); the conditional path never
+    /// converts absence into idempotent success and never consults or
+    /// disturbs the tombstone.
+    #[tokio::test]
+    async fn a21_conditional_delete_absent_key_taxonomy() {
+        let (_store, keyspace, counterpart) = keyspace_fixture("a21").await;
+        // Never-created.
+        match keyspace.delete_if_match("ghost", "any-etag").await {
+            Err(crate::KeyspaceError::PreconditionFailed {
+                observed: None,
+                observed_incarnation: None,
+                observed_version: None,
+                ..
+            }) => {}
+            other => panic!("never-created must refuse all-None, got {other:?}"),
+        }
+        assert_eq!(
+            keyspace.read_state("ghost").await.unwrap(),
+            crate::KeyState::Absent
+        );
+
+        // Destroyed: the value object is gone, the tombstone stands.
+        keyspace
+            .create("cell", Bytes::from_static(b"v1"))
+            .await
+            .unwrap();
+        let (_, etag) = keyspace
+            .get_with_etag("cell")
+            .await
+            .unwrap()
+            .expect("value present");
+        keyspace.destroy("cell", "a21", "test").await.unwrap();
+        assert!(matches!(
+            keyspace.read_state("cell").await.unwrap(),
+            crate::KeyState::Destroyed { .. }
+        ));
+        // A token that matched moments ago is now absence — refused,
+        // not an idempotent success.
+        match keyspace.delete_if_match("cell", &etag).await {
+            Err(crate::KeyspaceError::PreconditionFailed {
+                observed: None,
+                observed_incarnation: None,
+                observed_version: None,
+                ..
+            }) => {}
+            other => panic!("destroyed must refuse all-None, got {other:?}"),
+        }
+        // The witness still stands — the refusal disturbed nothing.
+        assert!(matches!(
+            keyspace.read_state("cell").await.unwrap(),
+            crate::KeyState::Destroyed { .. }
+        ));
+        let _ = counterpart.shutdown().await;
+    }
+
+    /// A22: incarnation composition — the batch-7 closure protects
+    /// the conditional delete across destroy/recreate boundaries, and
+    /// the primitive itself stays BELOW the machinery (no tombstone,
+    /// no incarnation bump).
+    #[tokio::test]
+    async fn a22_conditional_delete_incarnation_composition() {
+        let (_store, keyspace, counterpart) = keyspace_fixture("a22").await;
+        keyspace
+            .create("cell", Bytes::from_static(b"era-one"))
+            .await
+            .unwrap();
+        let (_, era1) = keyspace
+            .get_with_etag("cell")
+            .await
+            .unwrap()
+            .expect("value present");
+
+        // destroy bumps the incarnation BEFORE deleting, so the
+        // re-created era of IDENTICAL payload bytes is envelope-distinct.
+        keyspace.destroy("cell", "rebuild", "a22").await.unwrap();
+        keyspace
+            .create("cell", Bytes::from_static(b"era-one"))
+            .await
+            .unwrap();
+
+        // The era-1 token can never delete the era-2 incarnation, and
+        // the error names the era it lost to.
+        match keyspace.delete_if_match("cell", &era1).await {
+            Err(crate::KeyspaceError::PreconditionFailed {
+                observed_incarnation: Some(1),
+                ..
+            }) => {}
+            other => panic!("cross-era token must refuse naming incarnation 1, got {other:?}"),
+        }
+        assert_eq!(
+            keyspace.get("cell").await.unwrap().as_deref(),
+            Some(b"era-one".as_slice()),
+            "the era-2 value stands"
+        );
+
+        // The primitive composes cleanly with the machinery's state:
+        // the era-2 token deletes...
+        let (_, era2) = keyspace
+            .get_with_etag("cell")
+            .await
+            .unwrap()
+            .expect("era-2 value present");
+        keyspace
+            .delete_if_match("cell", &era2)
+            .await
+            .expect("era-2 token deletes");
+
+        // ...and the layering holds: a raw conditional delete writes
+        // no tombstone (Absent, not Destroyed) and bumps no
+        // incarnation (the counter still names era 2's lifetime).
+        assert_eq!(
+            keyspace.read_state("cell").await.unwrap(),
+            crate::KeyState::Absent,
+            "no witness — delete_if_match is not destroy"
+        );
+        assert_eq!(
+            keyspace.incarnation_for_test("cell").await.unwrap(),
+            1,
+            "no incarnation bump — the counter still names the destroyed era"
+        );
+        let _ = counterpart.shutdown().await;
+    }
+
+    /// A23: concurrent delete-vs-CAS — both contenders hold the same
+    /// current etag; exactly one mutation wins the era. If the CAS
+    /// wins, the delete refuses typed and the value stands; if the
+    /// delete wins, the CAS refuses typed and the key is absent. No
+    /// interleaving deletes an era it did not verify.
+    #[tokio::test]
+    async fn a23_concurrent_delete_vs_cas_exactly_one_winner() {
+        let (_store, keyspace, counterpart) = keyspace_fixture("a23").await;
+        for index in 0..8 {
+            let key = format!("cell-{index}");
+            keyspace
+                .create(&key, Bytes::from_static(b"v1"))
+                .await
+                .unwrap();
+            let (_, etag) = keyspace
+                .get_with_etag(&key)
+                .await
+                .unwrap()
+                .expect("value present");
+
+            let racer = Bytes::from_static(b"racer");
+            let (delete_result, cas_result) = tokio::join!(
+                keyspace.delete_if_match(&key, &etag),
+                keyspace.compare_exchange(&key, &etag, racer),
+            );
+            match (delete_result, cas_result) {
+                (Ok(()), Err(crate::KeyspaceError::PreconditionFailed { .. })) => {
+                    assert_eq!(
+                        keyspace.get(&key).await.unwrap(),
+                        None,
+                        "delete won: absent"
+                    );
+                }
+                (Err(crate::KeyspaceError::PreconditionFailed { .. }), Ok(_)) => {
+                    assert_eq!(
+                        keyspace.get(&key).await.unwrap().as_deref(),
+                        Some(b"racer".as_slice()),
+                        "CAS won: the racer stands"
+                    );
+                }
+                other => panic!("key {key}: exactly one winner expected, got {other:?}"),
+            }
+        }
+        let _ = counterpart.shutdown().await;
+    }
+
+    /// G118: the conditional-delete fault cut. BeforeEffect — a
+    /// failed conditional delete leaves the value intact (the cut's
+    /// 400 surfaces as Unavailable; the etag is still current, so the
+    /// retry converges). AfterEffect — the delete applies and the
+    /// response is lost; the caller re-reads to converge, and the
+    /// stale retry refuses typed.
+    #[tokio::test]
+    async fn g118_conditional_delete_fault_cut_leaves_value_intact() {
+        let (_store, keyspace, counterpart) = keyspace_fixture("g118").await;
+
+        // BeforeEffect: refused — value intact.
+        keyspace
+            .create("before", Bytes::from_static(b"v1"))
+            .await
+            .unwrap();
+        let (_, etag) = keyspace
+            .get_with_etag("before")
+            .await
+            .unwrap()
+            .expect("value present");
+        counterpart
+            .arm_storage_fault(
+                StorageFaultCut::KeyspaceConditionalDelete,
+                StorageFaultPhase::BeforeEffect,
+                "keyspace/g118/before",
+            )
+            .await;
+        match keyspace.delete_if_match("before", &etag).await {
+            Err(crate::KeyspaceError::Unavailable { .. }) => {}
+            other => panic!("cut conditional delete must surface Unavailable, got {other:?}"),
+        }
+        assert_eq!(
+            keyspace.get("before").await.unwrap().as_deref(),
+            Some(b"v1".as_slice()),
+            "value intact after the refused delete"
+        );
+        // The cut is one-shot; the same still-current token converges.
+        keyspace
+            .delete_if_match("before", &etag)
+            .await
+            .expect("retry after refusal converges");
+        assert_eq!(keyspace.get("before").await.unwrap(), None);
+
+        // AfterEffect: applied, response lost.
+        keyspace
+            .create("after", Bytes::from_static(b"v1"))
+            .await
+            .unwrap();
+        let (_, etag) = keyspace
+            .get_with_etag("after")
+            .await
+            .unwrap()
+            .expect("value present");
+        counterpart
+            .arm_storage_fault(
+                StorageFaultCut::KeyspaceConditionalDelete,
+                StorageFaultPhase::AfterEffect,
+                "keyspace/g118/after",
+            )
+            .await;
+        match keyspace.delete_if_match("after", &etag).await {
+            Err(crate::KeyspaceError::Unavailable { .. }) => {}
+            other => panic!("lost response must surface Unavailable, got {other:?}"),
+        }
+        assert_eq!(
+            keyspace.get("after").await.unwrap(),
+            None,
+            "delete was applied server-side"
+        );
+        // The stale retry refuses typed — the caller converges by
+        // re-reading.
+        match keyspace.delete_if_match("after", &etag).await {
+            Err(crate::KeyspaceError::PreconditionFailed { observed: None, .. }) => {}
+            other => panic!("stale retry after lost response must refuse typed, got {other:?}"),
         }
         let _ = counterpart.shutdown().await;
     }

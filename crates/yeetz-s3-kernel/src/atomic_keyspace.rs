@@ -3,8 +3,11 @@
 //!
 //! The assured keyed-I/O surface: `create` is put-if-absent with a
 //! typed `AlreadyExists` on a lost race; `compare_exchange` is If-Match
-//! CAS; `list_after` is exclusive-start-after, strictly ordered,
-//! bounded; deletes are namespaced and idempotent; `delete_many`
+//! CAS; `delete_if_match` is the delete-side dual — an If-Match
+//! guarded delete below the trim/tombstone/incarnation machinery,
+//! for GC-style consumers on data keys; `list_after` is
+//! exclusive-start-after, strictly ordered, bounded; deletes are
+//! namespaced and idempotent; `delete_many`
 //! reports per-key outcomes for resumable sweeps. Trim and retention
 //! (batch 5): an immutable create-once certificate at
 //! `{scope}/trims/{first_retained:020}` bounds a scope's retained
@@ -757,6 +760,90 @@ impl AtomicKeyspace {
             .map_err(|_| KeyspaceError::Unavailable {
                 operation: "keyspace delete",
             })
+    }
+
+    /// If-Match conditional delete: removes the value only when the
+    /// stored object's etag equals `expected_etag` — the same token
+    /// class [`Self::compare_exchange`] accepts, from
+    /// [`Self::get_with_etag`]. One operation where GC-style
+    /// consumers otherwise run read-check-delete dances whose check
+    /// and delete race.
+    ///
+    /// Layering: a raw keyspace primitive, the sibling of
+    /// `delete`/`delete_many` — NOT a variant of [`Self::destroy`].
+    /// It writes no tombstone and bumps no incarnation: a successful
+    /// `delete_if_match` leaves `read_state` `Absent` (not
+    /// `Destroyed`) and the incarnation counter untouched, exactly
+    /// like `delete`. Deliberate deletion that needs the existence
+    /// witness and the cross-era closure is `destroy`'s contract;
+    /// this primitive is for data-key retirement where the caller
+    /// already holds the era's token.
+    ///
+    /// - match → deleted;
+    /// - mismatch → [`KeyspaceError::PreconditionFailed`] carrying
+    ///   the observed etag, incarnation, and version (the era the
+    ///   caller lost to); the value is untouched;
+    /// - absent key (never-created or destroyed — the tombstone is
+    ///   not consulted) → `PreconditionFailed` with all-`None`
+    ///   observed fields, exactly `compare_exchange`'s absent shape.
+    ///   Absence is never converted into idempotent success: that is
+    ///   `delete`'s contract, not this one's.
+    ///
+    /// The guard is a single store-level conditional delete
+    /// (`DELETE` + `If-Match`), atomic against concurrent
+    /// `compare_exchange`, `create`, and other deletes: exactly one
+    /// mutation wins any etag era. Backends without the wire
+    /// primitive fail closed ([`KeyspaceError::Unavailable`]) —
+    /// never a silent unconditional delete. Reserved prefixes are
+    /// refused by the same [`Self::ensure_not_reserved_key`] guard
+    /// as every other delete path.
+    pub async fn delete_if_match(
+        &self,
+        key: &str,
+        expected_etag: &str,
+    ) -> Result<(), KeyspaceError> {
+        Self::ensure_not_reserved_key(key)?;
+        let object_key = self.object_key(key)?;
+        match self
+            .store
+            .delete_conditional(&object_key, expected_etag)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(ObjectStoreError::PreconditionFailed(_)) => {
+                // Name the era the caller lost to, mirroring
+                // compare_exchange's conflict enrichment.
+                let observed = match self.store.download_with_etag(&object_key).await {
+                    Ok(meta) => meta.etag,
+                    Err(_) => None,
+                };
+                let (observed_incarnation, observed_version) =
+                    match self.store.download(&object_key).await {
+                        Ok(bytes) => match ValueEnvelope::decode(key, &bytes) {
+                            Ok(envelope) => (Some(envelope.incarnation), Some(envelope.version)),
+                            Err(_) => (None, None),
+                        },
+                        Err(_) => (None, None),
+                    };
+                Err(KeyspaceError::PreconditionFailed {
+                    key: key.to_string(),
+                    expected_etag: expected_etag.to_string(),
+                    observed,
+                    observed_incarnation,
+                    observed_version,
+                })
+            }
+            Err(ObjectStoreError::NotFound(_)) => Err(KeyspaceError::PreconditionFailed {
+                key: key.to_string(),
+                expected_etag: expected_etag.to_string(),
+                observed: None,
+                observed_incarnation: None,
+                observed_version: None,
+            }),
+            Err(_) => Err(KeyspaceError::Unavailable {
+                operation: "keyspace delete_if_match",
+            }),
+        }
     }
 
     /// Delete many keys (namespaced, batch, idempotent). Returns a

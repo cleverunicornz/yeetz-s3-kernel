@@ -3,7 +3,11 @@
 //! shared in-memory store (the fault-injecting loopback counterpart
 //! gains LIST/DELETE handlers in the kernel's ignored loopback rig —
 //! see the state_kernel contract module); A7–A8 exercise the O(1)
-//! terminal read and the absent/present taxonomy on StateKernel.
+//! terminal read and the absent/present taxonomy on StateKernel;
+//! A11–A13 the versioned-value CAS; A17–A18 the conditional-delete
+//! guard and fail-closed rules. The conditional-delete wire contracts
+//! (A19–A23, G118) run on the kernel's loopback rig in the
+//! state_kernel contract module.
 
 use std::sync::Arc;
 
@@ -591,4 +595,85 @@ async fn a13_version_strictly_monotone_under_concurrent_cas() {
         .unwrap();
     assert_eq!(observed, payload);
     assert_eq!(final_version, RACERS);
+}
+
+// --- A17-A18: conditional delete — guard + fail-closed -------------------
+
+/// A17: `delete_if_match` refuses the kernel-reserved state with the
+/// same typed errors as every other delete path — the tombstone
+/// namespace, the incarnation-counter namespace, and the trim
+/// certificate segment (`{scope}/trims/{seq}` at any depth) — and a
+/// `delete_many` batch containing one refuses before ANY effect.
+#[tokio::test]
+async fn a17_conditional_delete_refuses_reserved_state_typed() {
+    let keyspace = keyspace("a-suite", "stream");
+    let cases: [(&str, fn(&KeyspaceError) -> bool); 3] = [
+        ("tombstones/ref", |error| {
+            matches!(error, KeyspaceError::TombstoneImmutable(_))
+        }),
+        ("incarnations/issue-1", |error| {
+            matches!(error, KeyspaceError::IncarnationCounterImmutable(_))
+        }),
+        ("stream-a/trims/00000000000000000001", |error| {
+            matches!(error, KeyspaceError::TrimCertificateImmutable(_))
+        }),
+    ];
+    for (reserved, is_typed) in cases {
+        match keyspace.delete_if_match(reserved, "any-etag").await {
+            Err(error) => assert!(
+                is_typed(&error),
+                "delete_if_match must refuse {reserved} with its reserved-state type, got {error:?}"
+            ),
+            Ok(()) => panic!("delete_if_match must refuse {reserved}"),
+        }
+        match keyspace.delete(reserved).await {
+            Err(error) => assert!(
+                is_typed(&error),
+                "delete refuses {reserved} with the same type (family uniformity), got {error:?}"
+            ),
+            Ok(()) => panic!("delete must refuse {reserved}"),
+        }
+    }
+    // Batch refusal is side-effect-free: the valid sibling survives.
+    keyspace.create("keep", value("v1")).await.unwrap();
+    match keyspace.delete_many(&["keep", "tombstones/ref"]).await {
+        Err(KeyspaceError::TombstoneImmutable(_)) => {}
+        other => panic!("delete_many must refuse reserved keys typed, got {other:?}"),
+    }
+    assert_eq!(
+        keyspace.get("keep").await.unwrap().as_deref(),
+        Some(b"v1".as_slice()),
+        "batch refusal precedes every effect"
+    );
+    // Keys that merely contain the reserved words stay deletable:
+    // the trims rule is a path-segment rule, not a substring rule.
+    keyspace.create("my-trims-note", value("v2")).await.unwrap();
+    keyspace.delete("my-trims-note").await.unwrap();
+}
+
+/// A18: backends without the conditional-delete wire primitive fail
+/// closed — typed `Unavailable`, value intact — never a silent
+/// unconditional delete. (In-memory test stores do not model If-Match
+/// deletes; a read-then-delete fallback would reopen the race the
+/// primitive exists to close.)
+#[tokio::test]
+async fn a18_conditional_delete_fails_closed_without_wire_support() {
+    let keyspace = keyspace("a-suite", "stream");
+    keyspace.create("cell", value("v1")).await.unwrap();
+    let (_, etag) = keyspace
+        .get_with_etag("cell")
+        .await
+        .unwrap()
+        .expect("value present");
+    match keyspace.delete_if_match("cell", &etag).await {
+        Err(KeyspaceError::Unavailable { operation }) => {
+            assert_eq!(operation, "keyspace delete_if_match");
+        }
+        other => panic!("in-memory conditional delete must fail closed, got {other:?}"),
+    }
+    assert_eq!(
+        keyspace.get("cell").await.unwrap().as_deref(),
+        Some(b"v1".as_slice()),
+        "fail-closed leaves the value intact"
+    );
 }
