@@ -12,6 +12,9 @@
 //!   identical bytes),
 //! - LIST-after-write visibility (the strong-LIST qualification,
 //!   sampled),
+//! - a conditional-multipart capability battery: CompleteMultipartUpload
+//!   with If-Match, abort/incomplete-upload visibility, and
+//!   GetObject-by-part,
 //! - the same A→B→A cycle through AtomicKeyspace, including versions,
 //!   stale-token rejection, and an identical-payload transition, plus
 //!   the batch-7 cross-deletion leg: destroy → re-create identical
@@ -24,7 +27,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use yeetz_sdk_s3::{ObjectStoreClient, S3Config};
+use yeetz_sdk_s3::{ObjectStoreClient, ObjectStoreError, S3Config};
 
 use crate::state_kernel::{
     CanonicalRecord, KernelError, KernelLineage, StateKernel, SuccessorPolicy,
@@ -33,6 +36,9 @@ use crate::{AtomicKeyspace, KEYSPACE_ROOT, KeyspaceError};
 
 /// Parallel racers for the If-None-Match create probe.
 const CREATE_RACERS: usize = 8;
+
+/// S3 requires every non-final multipart part to be at least 5 MiB.
+const MIN_MULTIPART_PART_BYTES: usize = 5 * 1024 * 1024;
 
 pub async fn run_real_s3_aba_probe(config: &S3Config) -> Result<Vec<String>, String> {
     let client = Arc::new(ObjectStoreClient::new(config).map_err(|e| format!("client: {e}"))?);
@@ -45,38 +51,63 @@ pub async fn run_real_s3_aba_probe(config: &S3Config) -> Result<Vec<String>, Str
     let lineage_name = format!("aba-probe/{run_id}-lineage");
     let lineage_prefix = format!("{lineage_name}/");
     let mut created: Vec<String> = Vec::new();
+    let mut multipart_uploads: Vec<(String, String)> = Vec::new();
     let mut verdicts: Vec<String> = Vec::new();
 
-    let result = match battery(&client, &prefix, &mut created, &mut verdicts).await {
-        Ok(()) => {
-            module_battery(
-                Arc::clone(&client),
-                &module_namespace,
-                &mut created,
-                &mut verdicts,
-            )
-            .await
-        }
-        Err(error) => Err(error),
-    };
-    let result = match result {
-        Ok(()) => {
-            lineage_battery(
-                Arc::clone(&client),
-                &lineage_name,
-                &mut created,
-                &mut verdicts,
-            )
-            .await
-        }
-        Err(error) => Err(error),
-    };
+    let result = async {
+        battery(&client, &prefix, &mut created, &mut verdicts).await?;
+        multipart_battery(
+            &client,
+            &prefix,
+            &mut created,
+            &mut multipart_uploads,
+            &mut verdicts,
+        )
+        .await?;
+        module_battery(
+            Arc::clone(&client),
+            &module_namespace,
+            &mut created,
+            &mut verdicts,
+        )
+        .await?;
+        lineage_battery(
+            Arc::clone(&client),
+            &lineage_name,
+            &mut created,
+            &mut verdicts,
+        )
+        .await
+    }
+    .await;
 
-    // Cleanup regardless of verdict — delete exactly what we created,
-    // then assert every run-scoped prefix is gone (loud if the store
-    // leaks).
+    // Cleanup regardless of verdict — abort every upload id we initiated,
+    // delete exactly the objects we created, then assert every run-scoped
+    // prefix is gone. Completed/already-aborted upload ids reject abort;
+    // those errors are expected and the list witness below decides whether
+    // any in-progress upload remains.
+    for (key, upload_id) in &multipart_uploads {
+        let _ = client.abort_multipart_upload(key, upload_id).await;
+    }
     for key in &created {
         let _ = client.delete(key).await;
+    }
+    match client.list_multipart_uploads_for_test(&prefix).await {
+        Ok(leftover) if !leftover.is_empty() => {
+            return Err(format!(
+                "multipart cleanup failed, uploads remain under {prefix}: {leftover:?}"
+            ));
+        }
+        Ok(_) => note(
+            &mut verdicts,
+            format!("multipart cleanup: no in-progress uploads under {prefix}"),
+        ),
+        Err(error) => note(
+            &mut verdicts,
+            format!(
+                "multipart cleanup visibility: UNWITNESSED (ListMultipartUploads failed: {error})"
+            ),
+        ),
     }
     for cleanup_prefix in [&prefix, &module_prefix, &lineage_prefix] {
         let leftover = client
@@ -113,8 +144,8 @@ async fn battery(
     verdicts: &mut Vec<String>,
 ) -> Result<(), String> {
     // Distinct, non-trivial payloads (64B — single PUT, the exact
-    // write path the kernel's keyspace uses; multipart etags are a
-    // different scheme and out of scope).
+    // write path the current keyspace uses). Multipart behavior is
+    // measured separately below.
     let payload_a: Bytes = Bytes::from(vec![0xA5; 64]);
     let payload_b: Bytes = Bytes::from(vec![0x5A; 64]);
     let payload_c: Bytes = Bytes::from((0u8..64).collect::<Vec<u8>>());
@@ -410,6 +441,247 @@ async fn battery(
     }
     verdicts
         .push("LIST-after-write/delete visibility: immediate, consistent (sampled)".to_string());
+
+    Ok(())
+}
+
+/// Real-backend capability measurement for the serious single-object
+/// alternative to chunk manifests. Unsupported legs are recorded, not
+/// treated as kernel regressions: this battery gathers a ruling witness.
+/// Successful operations still verify bytes and cleanup loudly.
+async fn multipart_battery(
+    client: &ObjectStoreClient,
+    prefix: &str,
+    created: &mut Vec<String>,
+    multipart_uploads: &mut Vec<(String, String)>,
+    verdicts: &mut Vec<String>,
+) -> Result<(), String> {
+    // --- MPU-1. Incomplete-upload visibility and abort -----------------
+    let abort_key = format!("{prefix}multipart-abort");
+    let abort_id = client
+        .initiate_multipart_upload(&abort_key, "application/octet-stream")
+        .await
+        .map_err(|error| format!("multipart abort leg initiate: {error}"))?;
+    multipart_uploads.push((abort_key.clone(), abort_id.clone()));
+    match client.list_multipart_uploads_for_test(prefix).await {
+        Ok(uploads) if uploads.contains(&(abort_key.clone(), abort_id.clone())) => note(
+            verdicts,
+            "ListMultipartUploads: initiated upload visible".to_string(),
+        ),
+        Ok(uploads) => note(
+            verdicts,
+            format!(
+                "ListMultipartUploads: PARTIAL — initiated upload hidden (observed {uploads:?})"
+            ),
+        ),
+        Err(error) => note(
+            verdicts,
+            format!("ListMultipartUploads: UNSUPPORTED/UNWITNESSED ({error})"),
+        ),
+    }
+    match client.abort_multipart_upload(&abort_key, &abort_id).await {
+        Ok(()) => note(verdicts, "AbortMultipartUpload: accepted".to_string()),
+        Err(error) => note(
+            verdicts,
+            format!("AbortMultipartUpload: UNSUPPORTED/FAILED ({error})"),
+        ),
+    }
+    match client.list_multipart_uploads_for_test(prefix).await {
+        Ok(uploads) if !uploads.contains(&(abort_key.clone(), abort_id.clone())) => note(
+            verdicts,
+            "AbortMultipartUpload visibility: upload absent after abort".to_string(),
+        ),
+        Ok(uploads) => note(
+            verdicts,
+            format!("AbortMultipartUpload visibility: PARTIAL — upload still listed ({uploads:?})"),
+        ),
+        Err(error) => note(
+            verdicts,
+            format!("AbortMultipartUpload visibility: UNWITNESSED ({error})"),
+        ),
+    }
+
+    // --- MPU-2. CompleteMultipartUpload + If-Match ---------------------
+    let conditional_key = format!("{prefix}multipart-conditional");
+    created.push(conditional_key.clone());
+    let base = Bytes::from_static(b"conditional-multipart-base");
+    let base_etag = create_etag(client, &conditional_key, &base).await?;
+    let first_part = Bytes::from(vec![0x31; MIN_MULTIPART_PART_BYTES]);
+    let second_part = Bytes::from(vec![0x32; 64 * 1024]);
+    let upload_id = client
+        .initiate_multipart_upload(&conditional_key, "application/octet-stream")
+        .await
+        .map_err(|error| format!("conditional multipart initiate: {error}"))?;
+    multipart_uploads.push((conditional_key.clone(), upload_id.clone()));
+    let part_1 = client
+        .upload_multipart_part_for_test(&conditional_key, &upload_id, 1, first_part.clone())
+        .await
+        .map_err(|error| format!("conditional multipart part 1: {error}"))?;
+    let part_2 = client
+        .upload_multipart_part_for_test(&conditional_key, &upload_id, 2, second_part.clone())
+        .await
+        .map_err(|error| format!("conditional multipart part 2: {error}"))?;
+    let parts = vec![part_1, part_2];
+
+    let conditional_supported = match client
+        .complete_multipart_upload_if_match_for_test(
+            &conditional_key,
+            &upload_id,
+            parts.clone(),
+            &base_etag,
+        )
+        .await
+    {
+        Ok(()) => {
+            note(
+                verdicts,
+                "CompleteMultipartUpload If-Match current etag: SUPPORTED".to_string(),
+            );
+            true
+        }
+        Err(error) => {
+            note(
+                verdicts,
+                format!(
+                    "CompleteMultipartUpload If-Match current etag: UNSUPPORTED/PARTIAL ({error})"
+                ),
+            );
+            match client
+                .complete_multipart_upload(&conditional_key, &upload_id, parts)
+                .await
+            {
+                Ok(_) => note(
+                    verdicts,
+                    "CompleteMultipartUpload unconditional fallback: accepted for capability measurement"
+                        .to_string(),
+                ),
+                Err(fallback_error) => {
+                    note(
+                        verdicts,
+                        format!(
+                            "CompleteMultipartUpload unconditional fallback: FAILED ({fallback_error})"
+                        ),
+                    );
+                    return Ok(());
+                }
+            }
+            false
+        }
+    };
+
+    let completed = client
+        .download(&conditional_key)
+        .await
+        .map_err(|error| format!("multipart completed object read: {error}"))?;
+    let expected_len = first_part.len() + second_part.len();
+    if completed.len() != expected_len
+        || completed[..first_part.len()] != first_part[..]
+        || completed[first_part.len()..] != second_part[..]
+    {
+        return Err(format!(
+            "multipart completion bytes disagree: expected {expected_len}, observed {}",
+            completed.len()
+        ));
+    }
+    note(
+        verdicts,
+        format!("multipart completion bytes: exact concatenation ({expected_len} bytes)"),
+    );
+
+    match (
+        client
+            .download_multipart_part_for_test(&conditional_key, 1)
+            .await,
+        client
+            .download_multipart_part_for_test(&conditional_key, 2)
+            .await,
+    ) {
+        (Ok(observed_1), Ok(observed_2))
+            if observed_1 == first_part && observed_2 == second_part =>
+        {
+            note(
+                verdicts,
+                "GetObject partNumber: SUPPORTED with original part boundaries".to_string(),
+            );
+        }
+        (Ok(observed_1), Ok(observed_2)) => note(
+            verdicts,
+            format!(
+                "GetObject partNumber: PARTIAL/INCOMPATIBLE (part lengths {} and {})",
+                observed_1.len(),
+                observed_2.len()
+            ),
+        ),
+        (observed_1, observed_2) => note(
+            verdicts,
+            format!(
+                "GetObject partNumber: UNSUPPORTED/PARTIAL (part1={:?}, part2={:?})",
+                observed_1
+                    .as_ref()
+                    .map(Bytes::len)
+                    .map_err(ToString::to_string),
+                observed_2
+                    .as_ref()
+                    .map(Bytes::len)
+                    .map_err(ToString::to_string)
+            ),
+        ),
+    }
+
+    // A matching conditional completion is useful only if the same upload
+    // is rejected once its destination etag becomes stale.
+    if conditional_supported {
+        let completed_etag = read_etag(client, &conditional_key).await?;
+        let stale_upload_id = client
+            .initiate_multipart_upload(&conditional_key, "application/octet-stream")
+            .await
+            .map_err(|error| format!("stale conditional multipart initiate: {error}"))?;
+        multipart_uploads.push((conditional_key.clone(), stale_upload_id.clone()));
+        let stale_part = client
+            .upload_multipart_part_for_test(
+                &conditional_key,
+                &stale_upload_id,
+                1,
+                Bytes::from_static(b"stale-multipart-candidate"),
+            )
+            .await
+            .map_err(|error| format!("stale conditional multipart part: {error}"))?;
+        let successor = Bytes::from_static(b"conditional-multipart-successor");
+        let _successor_etag =
+            cas_etag(client, &conditional_key, &successor, &completed_etag).await?;
+        let stale_result = client
+            .complete_multipart_upload_if_match_for_test(
+                &conditional_key,
+                &stale_upload_id,
+                vec![stale_part],
+                &completed_etag,
+            )
+            .await;
+        match &stale_result {
+            Err(ObjectStoreError::PreconditionFailed(_)) => note(
+                verdicts,
+                "CompleteMultipartUpload stale If-Match: PreconditionFailed".to_string(),
+            ),
+            Err(error) => note(
+                verdicts,
+                format!("CompleteMultipartUpload stale If-Match: PARTIAL error flavor ({error})"),
+            ),
+            Ok(()) => note(
+                verdicts,
+                "CompleteMultipartUpload stale If-Match: ACCEPTED — conditional completion unsafe"
+                    .to_string(),
+            ),
+        }
+        let after_stale = client
+            .download(&conditional_key)
+            .await
+            .map_err(|error| format!("stale conditional multipart readback: {error}"))?;
+        if stale_result.is_err() && after_stale != successor {
+            return Err(
+                "stale conditional multipart errored but changed destination bytes".to_string(),
+            );
+        }
+    }
 
     Ok(())
 }

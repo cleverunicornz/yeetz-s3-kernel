@@ -1,0 +1,664 @@
+# ADR 0003: Streaming-value I/O for `AtomicKeyspace`
+
+Status: **PROPOSED / DRAFT — human adjudication required; no implementation authorized**
+
+## Authorization trail
+
+This is the human-requested design artifact for streaming-value I/O. It is
+intentionally documentation only. Acceptance of this ADR would authorize a
+separate, tightly scoped kernel batch; this document does not authorize code,
+data migration, or a merge.
+
+The proposal is grounded against kernel main at `d170626` (v0.3.1 source
+state) and the sole consumer, `cleverunicornz/yeetz` main at `aeabc3b`
+(after its v0.3.1 kernel consumption). Physical paths below are
+kernel-private format sketches, not application API.
+
+## Source-grounded baseline
+
+The relevant behavior is not inferred:
+
+- `crates/yeetz-s3-kernel/src/atomic_keyspace.rs` stores every logical value
+  as one `Bytes` payload inside the v2
+  `{incarnation: u64, version: u64, payload}` envelope. `create` performs one
+  put-if-absent; `compare_exchange` first reads that whole object and then
+  conditionally replaces it; `get`, `get_with_etag`, and `read_state` return
+  the whole payload.
+- The same file makes the store etag the public CAS token, increments
+  `version` on every successful CAS, reads the per-key incarnation counter
+  before create, rechecks it after create, and increments it during
+  `destroy`. `destroy` writes the tombstone before counter advance and value
+  deletion. A partial streamed candidate therefore must not masquerade as a
+  new lifetime or advance this state.
+- `KeyState` is currently `Present { value, etag } | Destroyed { tombstone }
+  | OffsetExpired { first_retained } | Absent`. Certified trim is an
+  immutable logical floor; `delete_below` performs resumable physical
+  deletion of values, tombstones, and incarnation counters only below that
+  floor.
+- `crates/yeetz-s3-kernel/src/terminal_read.rs` keeps lineage terminal reads
+  separate: `read_terminal_record` is exactly the head plus the terminal
+  record it names, and `LineageHeadState` is `Present | Destroyed | Absent`.
+  These are small lineage control records, not `AtomicKeyspace` blob values.
+- `crates/yeetz-sdk-s3/src/store.rs` already has an unconditional multipart
+  `upload_stream` and a streaming download. Its assured conditional write,
+  `upload_conditional`, accepts a fully buffered `Bytes`. It has no ranged
+  read method. The current kernel therefore cannot compose streaming with
+  its conditional mutation law by calling an existing adapter method.
+- `crates/yeetz-s3-streams/src/envelope.rs` and `src/lib.rs` store one small
+  JSON envelope per event through the same whole-value keyspace methods.
+  Append, replay, cursors, trim, and terminal completeness must not inherit a
+  second network request merely because large values become possible.
+- In yeetz, `crates/yeetz-git-store/src/lib.rs` enforces
+  `DEFAULT_OBJECT_SIZE_CEILING = 64 MiB`, buffers `gix_object::Write` streams,
+  and uses `AtomicKeyspace::{create,get}`. `src/envelope.rs` bulk-compresses
+  and bulk-decompresses the whole `YGO1` zstd-at-rest value.
+  `src/object_cache.rs` caches verified whole loose preimages, one page per
+  OID, admits at most 16 MiB, and bypasses larger objects. The cache key is
+  shared across repositories only after the decompressed preimage verifies
+  against the OID.
+- Yeetz's `gix_object::Find` implementation necessarily fills a caller-owned
+  `Vec`, and `pack_generate.rs` uses that whole-object trait. Kernel streaming
+  removes the kernel's whole-value allocation requirement; it does not by
+  itself make every gitoxide call path end-to-end streaming.
+
+## Decision summary
+
+The proposed v1 has two representations behind one logical value API:
+
+1. **Inline values remain exactly the current v2 envelope** for values up to
+   16 MiB. Create remains one conditional PUT, get remains one GET, and CAS
+   retains its current read plus conditional PUT. Existing streams, refs,
+   cursors, and other common small values do not move to a manifest/chunk
+   request profile.
+2. **Larger values use a v3 manifest in the existing key object plus
+   immutable, fixed-size, SHA-256-addressed chunks in a separate
+   kernel-private root.** Every chunk is complete before the manifest can be
+   published. The successful conditional manifest PUT is the only commit
+   point.
+3. **The manifest/control object is the CAS unit.** Its store etag remains the
+   caller's opaque CAS token. `incarnation` and `version` live in the inline
+   envelope or manifest, never in chunks.
+4. **Readers always fetch and validate the control object first.** A full or
+   ranged stream then fetches the referenced chunks. v1 does not issue S3
+   Range GETs inside chunks.
+5. **Chunk GC is conservative and quiesced in v1.** Chunks are scoped by
+   namespace, logical key, and candidate generation, so GC never needs a
+   cross-key reference count. Certified trim remains the logical boundary;
+   physical chunk reclamation is a later, resumable sweep and never changes
+   what a read means.
+6. **The public surface is async and additive.** Concrete reader/writer
+   handles compose with Tokio I/O. Existing whole-value methods remain and
+   preserve their results by collecting a chunked value when necessary.
+
+## 1. Representation and CAS unit
+
+### 1.1 Inline fast path
+
+A value of at most `INLINE_MAX = 16 * 1024 * 1024` bytes uses the current
+`yeetz-keyspace-value/v2\0` envelope unchanged. Existing v2 objects remain
+readable; no rewrite is required. Existing whole-value calls and a streamed
+writer that finishes below the threshold both land inline.
+
+Keeping the bytes and request shape unchanged is deliberate. Small values
+are the common case, the streams crate rides this path, and a second format
+or indirection for them would buy nothing.
+
+### 1.2 Chunked manifest
+
+The existing logical key remains the only authoritative control object. A
+canonical v3 chunked envelope contains:
+
+```text
+magic = "yeetz-keyspace-value/v3\0"
+incarnation: u64
+version: u64
+kind = chunked-v1
+commit_id: [u8; 16]
+logical_len: u64
+value_root_sha256: [u8; 32]
+chunk_bytes: u32                 // exactly 16 MiB in v1
+chunk_count: u32
+chunks[chunk_count]: {
+    encoded_len: u32,
+    sha256: [u8; 32],
+}
+```
+
+Array order is chunk order; ordinal is therefore implicit.
+`value_root_sha256` is
+`SHA-256(domain || logical_len || chunk_bytes || chunk_count || ordered
+(encoded_len, chunk_sha256) entries)`: it commits to order, boundaries, and
+every chunk without requiring an unfetched range to hash unrelated bytes.
+`commit_id` is a writer-minted nonce retained across retries of the same
+`PendingValue`; it distinguishes an applied-but-lost response from an
+identical competing writer. Every non-final chunk is exactly 16 MiB; the
+final chunk is 1..=16 MiB. Empty values are inline. The decoder rejects
+non-canonical lengths, a bad value root, count/length disagreement, trailing
+or out-of-order fields, unsupported flags, an oversized manifest, and a
+digest/count outside the ruled bounds.
+
+Chunks live under a structurally separate, application-inaccessible root,
+conceptually:
+
+```text
+keyspace-chunks/v1/<namespace>/<encoded-logical-key>/
+    <candidate-incarnation>/<candidate-version>/<chunk-sha256>
+```
+
+The logical key is encoded canonically and reversibly inside this private
+root so a GC candidate can be checked by an exact logical-key read. The
+incarnation/version pair is the generation the writer attempted to publish.
+Chunks are content-addressed and immutable within that key generation:
+creation is put-if-absent; a conflicting existing chunk is accepted only
+after its length and SHA-256 verify. There is deliberately no cross-key
+storage deduplication or mutable reference count. Identical concurrent
+writers for the same successor generation converge on the same chunk
+objects; the cache may still share verified bytes globally by chunk digest.
+
+### 1.3 Linearization
+
+For create, the final manifest PUT uses `If-None-Match: *`. For CAS, it uses
+`If-Match: <expected manifest-or-inline etag>`. That single conditional PUT
+is the linearization point and the moment the streamed value **lands**.
+Before it succeeds, the logical key remains exactly its previous state
+(absent, inline, or an older manifest). After it succeeds, every referenced
+chunk already exists and has been verified by the writer.
+
+The guard is therefore the observed **logical value descriptor**, not each
+chunk and not an upload session. A CAS does not promise that no contender
+uploaded bytes; it promises that only one complete descriptor replaces the
+observed value.
+
+A lost response from a chunked manifest PUT is reconciled by an exact reread.
+If the current canonical envelope carries the same `commit_id`, bound
+incarnation/version, and digest, this writer succeeded. Byte-identical
+logical content with another writer's `commit_id` is a typed conflict, so
+create exclusivity and one-winner CAS do not become multi-success. Inline v2
+retains the current ambiguous-write `Unavailable` behavior. The kernel never
+guesses from chunk presence.
+
+## 2. Versions, incarnations, and concurrent writers
+
+- Inline v2 and manifest v3 share one monotonic sequence. `create` publishes
+  version 0 at the current incarnation. A successful CAS publishes
+  `current.version + 1`, whether either side is inline or chunked. Overflow
+  still fails closed.
+- The incarnation is copied into the manifest. Chunks contain no mutable era
+  state; their private generation is only an ownership/GC partition.
+- Beginning or partially completing a streamed upload does **not** create the
+  logical key, write a tombstone, bump an incarnation, or reserve a version.
+  It leaves only unreachable immutable chunks.
+- `destroy` reads only the small control object to obtain incarnation and
+  version, writes the existing tombstone, advances the incarnation counter,
+  and deletes the control object in the existing order. Chunk reclamation is
+  deferred. Re-create publishes version 0 at the new incarnation.
+- Streamed create retains batch 7's post-PUT incarnation recheck. If destroy
+  advanced the counter around publication, stale-manifest bytes are removed
+  only after an exact candidate match and the commit returns a typed
+  `StaleIncarnation`; a consumed input is never silently replayed. A caller
+  that needs retryability supplies a replayable source or spool.
+- Two writers may stream concurrently to the same key. They may share
+  identical candidate chunks but mint different commit IDs. For create, one
+  manifest wins. For CAS against one etag, one manifest wins and advances the
+  version exactly once; every loser receives `AlreadyExists` or
+  `PreconditionFailed`. Different loser chunks are garbage, never a partial
+  value.
+
+## 3. Read path and read algebra
+
+### 3.1 Full and ranged reads
+
+`open_stream` performs one exact control-object GET with etag:
+
+- v2 inline: validate the current envelope and yield its payload; no chunk
+  request exists.
+- v3 chunked: validate the whole manifest and value root before yielding
+  bytes, then fetch referenced chunks in order with bounded prefetch. Each
+  full chunk is length- and SHA-256-verified before any byte from that chunk
+  is yielded. At EOF, verify the total yielded length.
+
+A reader is a snapshot of the manifest it opened. A later CAS or destroy does
+not retarget it to the new control object; immutable chunk references keep
+that observation stable until the reader completes. Storage/unavailability
+may still terminate a stream, as it can terminate any network body.
+
+A logical byte range first reads the same control object, validates the value
+root over the ordered manifest table, maps the requested half-open range to
+manifest entries, fetches only overlapping **whole** chunks, verifies them,
+and slices the boundary chunks. v1 intentionally does not use backend Range
+GETs:
+
+- a full 16 MiB object has a portable integrity identity and is directly
+  cacheable;
+- a partial chunk cannot be checked against its manifest SHA-256;
+- the current adapter has no range primitive; and
+- one bounded representation avoids backend-specific range behavior.
+
+The cost is less than 32 MiB of boundary overfetch for a non-empty range.
+
+### 3.2 Typed states
+
+Existing methods keep their existing results:
+
+- `get` and `get_with_etag` collect a chunked reader and return `Bytes`;
+- `read_state` still returns the current `KeyState`, collecting only for its
+  `Present { value, etag }` arm;
+- malformed manifest, missing chunk, length/digest mismatch, or malformed
+  inline envelope is integrity, never `None`/`Absent`;
+- a control object absent with a tombstone is `Destroyed`; a seq below a
+  covering certificate is `OffsetExpired`; neither state fetches chunks.
+
+An additive streaming algebra avoids forcing collection:
+
+```text
+AtomicKeyspace::open_stream(key)
+    -> Result<Option<ValueReader>, KeyspaceError>
+AtomicKeyspace::open_stream_range(key, Range<u64>)
+    -> Result<Option<ValueReader>, KeyspaceError>
+AtomicKeyspace::read_state_stream(key)
+    -> Result<StreamKeyState, KeyspaceError>
+```
+
+All are async. The range is validated against `logical_len`; an unsatisfiable
+range is typed rather than silently clamped.
+
+```text
+StreamKeyState =
+    Present { reader: ValueReader, metadata: ValueMetadata }
+  | Destroyed { tombstone: Tombstone }
+  | OffsetExpired { first_retained: u64 }
+  | Absent
+```
+
+`ValueMetadata` exposes logical length, the opaque control etag, an optional
+opaque v3 value root, and whether the value is inline or chunked. Inline v2
+does not gain a mandatory hash pass merely to populate metadata. The type
+does not expose incarnation/version or a physical object path.
+`ValueReader` can produce ordered
+`VerifiedChunk { ordinal, digest, bytes }` values and also
+implements `tokio::io::AsyncRead`; the digest is an opaque cache identity,
+not a storage capability.
+
+A streaming consumer can receive a verified prefix before a later chunk or
+whole-value failure. That is a property of every streaming integrity check.
+Consumers with transactional side effects must commit only after verified
+EOF. The existing whole methods preserve their old all-or-error behavior by
+buffering until full verification succeeds.
+
+### 3.3 Terminal reads and streams
+
+`StateKernel::read_terminal_record` and `LineageHeadState` do not change.
+Lineage heads and canonical records remain whole control-plane objects; a
+terminal read remains its documented two GETs.
+
+The streams crate does not adopt the streaming API in v1. Its event,
+genesis, tail-hint, and cursor envelopes remain below the inline threshold,
+so S-suite semantics and request counts stay unchanged. A future genuinely
+large stream event would require its own consumer-level envelope and
+backpressure decision rather than silently changing replay behavior here.
+
+### 3.4 Cachey composition
+
+Caching stays outside the storage kernel. The kernel supplies verified
+chunks; it does not acquire a foyer/cachey dependency or a second storage
+truth.
+
+Yeetz keeps its current whole-preimage cache for **decompressed Git
+preimages** at or below 16 MiB. For a larger preimage, a chunked kernel value
+uses a kernel-verified encoded chunk as the cache unit, not
+`(repo, OID, ordinal)`. A highly compressible large preimage whose encoded
+kernel value remains inline bypasses large-preimage cache admission in v1;
+caching it safely before the control GET needs a representation-aware key
+and is not required to remove whole-value storage I/O.
+
+- each encoded chunk entry is at most cachey's 16 MiB value limit;
+- a hit is SHA-256-checked against the manifest entry before use;
+- identical encoded chunks may be shared across repos without assuming the
+  repos chose the same zstd level or envelope representation; and
+- a cache miss calls `ValueReader::read_chunk`, so every storage read still
+  goes through the kernel.
+
+Kernel chunk verification does not replace yeetz's Git OID verification.
+The decompressed loose preimage is still hashed through EOF before a Git
+operation declares success. Cache metrics must distinguish whole-object and
+chunk hits; changing that taxonomy is a downstream decision, not a kernel
+contract.
+
+## 4. Write protocol and crash windows
+
+### 4.1 Additive writer lifecycle
+
+The primary API is a concrete async writer, not a public adapter trait:
+
+```text
+AtomicKeyspace::begin_stream_create(key)
+    -> Result<ValueWriter, KeyspaceError>
+AtomicKeyspace::begin_stream_compare_exchange(key, expected_etag)
+    -> Result<ValueWriter, KeyspaceError>
+
+ValueWriter: tokio::io::AsyncWrite
+ValueWriter::seal(self) -> Result<PendingValue, KeyspaceError>
+PendingValue::commit(self) -> Result<CommitReceipt, KeyspaceError>
+PendingValue::abort(self) -> best-effort cleanup result
+```
+
+`CommitReceipt` carries the new control etag, logical length, and optional
+v3 value root.
+
+`begin_stream_compare_exchange` validates the supplied etag and binds the
+successor incarnation/version **before consuming input**. `seal` flushes and
+verifies the final chunk and builds the canonical manifest but does not
+publish it. This gap lets a consumer finalize an independent digest (for
+example a Git OID) and reject the candidate before storage commit. `commit`
+is the only publish operation. A convenience method may drive
+writer→seal→commit for callers without an external validation step.
+
+The key is known when the writer begins. v1 deliberately omits a key-late
+`PreparedValue` that can be attached to an arbitrary key: it would require a
+second staging namespace, expiry/lease semantics, or a full copy at commit.
+A caller whose key is derived only at EOF uses a bounded local spool, derives
+the key, then streams the spool once into the kernel. This is explicit in the
+yeetz migration cost.
+
+Existing `create`, `compare_exchange`, `get`, and `get_with_etag` remain
+supported, not deprecated. Whole writes of at most 16 MiB take the direct v2
+path. A larger `Bytes` input is sliced through the same chunk writer. Whole
+reads collect the stream. This keeps one logical contract and no permanent
+legacy alias.
+
+### 4.2 Ordering and failure table
+
+| Cut | Durable physical state | Logical read | Recovery |
+|---|---|---|---|
+| Before first chunk | Nothing new | Old value/state | Retry from source |
+| Between chunk PUTs | Some immutable candidate chunks | Old value/state | Retry reuses verified matching chunks; abort/GC may reclaim |
+| After all chunks, before manifest | Complete unreachable candidate | Old value/state | `PendingValue::commit` may publish; otherwise GC |
+| Manifest PUT rejected | Candidate chunks plus old control | Old winner/current value | Typed create/CAS conflict; GC loser chunks |
+| Manifest PUT applied, response lost | Complete chunks plus new control | New value | Same `commit_id` on exact control reread reconciles this writer's success |
+| After successful manifest | Complete chunks plus new control | New value only | No repair needed |
+| Chunk missing/corrupt after landing | Manifest names damaged history | Integrity error, never absence | Repair from authoritative source; GC must not hide it |
+| Destroy after landing | Tombstone + advanced counter; control absent | `Destroyed` | Deferred chunk GC |
+
+Chunk PUTs are put-if-absent. A lost chunk response is resolved by an exact
+GET and digest verification; an existing wrong object is corruption, not an
+idempotent success. Uploading chunks in ordinal order is recommended for
+bounded memory and simple fault traces, but publication does not depend on
+LIST or upload order—only on the complete verified manifest candidate.
+
+### 4.3 Orphans, trim, and GC
+
+Chunks use a separate private root, so `AtomicKeyspace::list_after` continues
+to list only logical keys. Chunk objects are never tombstones and never
+carry incarnation counters.
+
+The v1 collector is deliberately conservative:
+
+1. Best-effort abort may stop work, but it does not blindly delete a digest
+   another concurrent candidate could use.
+2. A bounded **chunk reachability sweep** runs only under an explicit
+   namespace quiescence: no streamed writer and no open streamed reader;
+   a maintenance fence refuses new ones while the sweep runs. This is a
+   reconciler/library operation, not a daemon.
+3. The sweep lists chunk objects, not manifests. From each private chunk path
+   it recovers the logical key and candidate generation, then exact-reads
+   that key's current control state. It keeps exactly the chunk references in
+   the current validated manifest. Inline, `Destroyed`, `OffsetExpired`, and
+   `Absent` states retain no chunks. An unavailable/corrupt control read
+   fails closed for that key and deletes nothing.
+4. Deletes are bounded, idempotent, and resumable with per-key outcomes. A
+   stale/frozen chunk LIST can cause a leak by hiding garbage; it cannot make
+   a referenced chunk eligible, because eligibility comes from the exact
+   control read. Re-running after quiescence converges.
+5. Certified trim remains the logical commit. `delete_below` may remove a
+   chunked control manifest only under its existing certificate, but it does
+   not synchronously chase chunks. The later quiesced sweep sees
+   `OffsetExpired` and reclaims every generation for that key. A crash between
+   logical trim and chunk sweep leaves extra bytes, never resurrected data.
+6. `destroy` likewise makes `Destroyed` authoritative before chunks are
+   reclaimed. Raw `delete` keeps its existing raw-delete semantics and may
+   leave chunk garbage until the same sweep.
+
+This design refuses to invent a time-based reader lease. Online reclamation
+would need durable reader/upload leases or an epoch protocol whose safety is
+part of the proof, not a guessed TTL. Until the human rules otherwise,
+quiescence is the deletion precondition and extra chunks are preferred over
+removing one live byte.
+
+## 5. Bounds: what replaces 64 MiB
+
+The 64 MiB limit does **not** become a manifest limit and does not remain a
+logical-value ceiling on streaming paths.
+
+Proposed v1 constants:
+
+| Bound | Value | Effect |
+|---|---:|---|
+| Inline/chunk size | 16 MiB (`16,777,216`) | Small path stays one object; one cachey-compatible chunk is bounded |
+| Maximum chunks | 65,536 | Ordinals fit `0..=u16::MAX`; bounded manifest work |
+| Maximum logical value | 1 TiB (`1,099,511,627,776`) | Exact product of the two bounds |
+| Maximum encoded manifest | 4 MiB (`4,194,304`) | Control reads/CAS remain whole and bounded; the proposed 36-byte entries use about 2.25 MiB at max count |
+| Maximum in-flight chunks | 4 | At most 64 MiB of chunk payload per reader/writer, plus codec and manifest overhead |
+
+The 1 TiB bound applies to the kernel's opaque logical bytes. A consumer that
+compresses before calling the kernel still owns its decompressed-size,
+inflation-ratio, and format limits.
+
+Thus 64 MiB becomes a default **working-set window**, not an object-size
+ceiling. Backpressure holds memory constant as logical size grows. The limit
+is structural and validated before allocation: no count-derived allocation
+occurs until count, manifest length, chunk lengths, and total length agree.
+
+The kernel whole-value methods do not gain a surprise 64 MiB rejection; they
+preserve semantics and can allocate up to the stored logical length because
+the caller explicitly chose a whole-value API. New code handling untrusted
+sizes must use streaming or an explicit bounded-collect helper.
+
+In yeetz, `ObjectTooLarge` cannot simply disappear everywhere. It is removed
+from end-to-end streaming paths. It remains, renamed as a whole-adapter guard,
+where `gix_object::Find` or another API necessarily materializes a complete
+object, until those call paths are redesigned. LFS and OCI blob paths can use
+the streaming 1 TiB kernel bound without inheriting that guard.
+
+## 6. Costs, performance, and breakage
+
+### Small values
+
+No network regression is acceptable. Inline create remains one conditional
+PUT, get remains one GET, and CAS retains its current control read plus
+conditional PUT, all with the existing v2 bytes. The streams S-suite must
+observe no chunk-root requests. There is no manifest GET, chunk hash, or LIST
+on this path.
+
+### Large values
+
+For `N` chunks:
+
+- write: up to `N` conditional chunk PUTs plus one conditional manifest PUT;
+- a chunk create conflict requires a full-chunk read/hash before it is
+  accepted as identical, so identical concurrent writers can add `N` GETs;
+- read: one manifest GET plus `N` chunk GETs;
+- time to first byte: the manifest round trip plus a full first-chunk
+  transfer and SHA-256 verification before bytes may be yielded;
+- range: one manifest GET plus the intersecting full chunks;
+- CPU: one SHA-256 per chunk plus one small ordered-table root;
+- storage: a bounded manifest and transient loser/crash chunks; no cross-key
+  storage deduplication in v1; and
+- CAS of a large value may upload a complete successor before discovering a
+  final manifest race. That cost is the price of keeping partial values
+  invisible without a multi-object transaction.
+
+Bounded prefetch hides some per-chunk latency but increases the per-operation
+working set to the ruled 64 MiB maximum. A 1-byte random read can overfetch
+one 16 MiB chunk. These are real costs, not implementation accidents.
+
+### Compatibility and breakage
+
+- Existing public whole-value signatures and logical results remain unchanged
+  through the 1 TiB format bound. A larger input, previously unspecified and
+  impractical on the whole-`Bytes` path, becomes a typed bound violation.
+- Existing v2 values remain valid. Only new large values use v3; there is no
+  eager data rewrite.
+- New error variants are expected for manifest/chunk corruption, bound
+  violations, stale streamed incarnation, and maintenance fencing. This can
+  break exhaustive matches in the sole 0.x consumer and must be migrated in
+  the downstream batch.
+- The adapter closure needs bounded conditional chunk PUTs and metadata-rich
+  streaming GETs, but no application gains an adapter type or physical path.
+- The in-memory store and loopback counterpart gain chunk-root fidelity and
+  new fault cuts. `list_after` and every existing logical key layout remain
+  unchanged.
+- Large streamed reads can yield a prefix then fail. Existing whole methods
+  remain all-or-error. New consumers must make EOF verification their side-
+  effect commit boundary.
+
+## 7. Sole-consumer migration: yeetz
+
+No external consumer or compatibility shim exists. The downstream migration
+is concentrated but not free:
+
+1. `yeetz-git-store/src/envelope.rs`: keep the `YGO1` semantic format, replace
+   bulk zstd encode/decode on large paths with incremental codec state, and
+   continue hashing the decompressed canonical loose preimage.
+2. `yeetz-git-store/src/lib.rs`: use `ValueWriter::seal` so a claimed Git OID
+   is re-derived before manifest commit; use `ValueReader` for large reads;
+   keep whole methods for gitoxide traits that require a slice.
+3. Unknown-ID `gix_object::Write::write_stream` cannot name its kernel key at
+   begin. v1 must spool that input to the existing ephemeral scratch model,
+   derive the OID, then stream the spool into the key-known kernel writer.
+   Known-ID pack-ingest jobs can stream directly after their independent hash
+   validation.
+4. `object_cache.rs`: retain verified whole-preimage caching when the
+   decompressed Git preimage is at most 16 MiB; use kernel-digest pages (or
+   bypass admission) for larger preimages. Kernel digest verification occurs
+   per encoded page; Git OID verification still gates Git-level success.
+5. `pack_generate.rs` and `gix_object::Find` currently materialize objects.
+   Supporting ordinary Git blobs above the whole-adapter guard requires a
+   separate end-to-end pack/read redesign. Kernel streaming alone is enough
+   for LFS/OCI-style streaming consumers but is not evidence that this work is
+   done.
+6. Update the Git object contract/loopback rigs for streaming zstd identity,
+   known-ID rejection before manifest publication, cache hit equivalence,
+   partial-response failure, and no raw adapter path.
+
+Existing stored Git objects need no rewrite: their keyspace v2 envelope and
+`YGO1` payload remain readable. The migration is code/test work, not a data
+migration. The streams crate needs only regression evidence; its application
+code should not move.
+
+## 8. Rejected alternatives
+
+### A. One native multipart object at the logical key
+
+**Serious benefit:** one stored object, one streaming GET, native byte ranges,
+provider multipart abort/lifecycle machinery, and no chunk manifest/GC layer.
+Amazon S3's current
+[`CompleteMultipartUpload`](https://docs.aws.amazon.com/AmazonS3/latest/API/API_CompleteMultipartUpload.html)
+API documents `If-Match` and `If-None-Match`, so this is no longer
+dismissible as impossible.
+
+**Rejected for this assured v1:** the current adapter's `upload_stream`
+completes unconditionally, while only the buffered PUT path is conditional.
+Conditional multipart completion is not yet represented by the pinned
+`object_store` surface and has no Exoscale SOS witness. Making that AWS
+behavior load-bearing across S3-compatible backends would replace
+already-measured conditional PUT semantics with an unmeasured operation.
+Multipart completion also has a `200 OK` response that may contain a later
+error, making its lost-response oracle part of the kernel proof.
+
+A real-backend probe could change this decision. Until then, bounded
+conditional PUTs plus a conditional manifest use only the kernel's existing
+assured primitive.
+
+### B. Mutable numbered chunks under the logical key, discovered by LIST
+
+In this shape a writer updates `chunk/0`, `chunk/1`, ... and a length/head
+record. It appears simpler and permits append-like upload.
+
+**Rejected:** there is no atomic multi-object replacement. Publishing length
+before chunks exposes a partial value; publishing it after chunks leaves old
+and new chunk generations ambiguous unless it becomes the same manifest
+scheme under another name. Discovering completeness through LIST makes
+correctness depend on a listing not omitting a suffix—the exact stale/frozen
+LIST failure the existing streams proofs refuse to trust. Mutable chunks
+also reopen ABA independently at each chunk.
+
+### C. Temporary whole object followed by server-side copy to the key
+
+**Rejected:** it doubles durable write bandwidth, still needs a portable
+conditional operation on the destination at copy time, complicates lost-copy
+reconciliation, and leaves temporary-object lifecycle state. If conditional
+multipart completion becomes assured, direct multipart is strictly better;
+without it, the manifest design is the portable commit record.
+
+### D. Global content-addressed chunks with mutable reference counts
+
+**Rejected for v1:** it offers cross-key storage deduplication but makes every
+chunk write update a hot CAS counter and requires transaction-like ordering
+between counter increments, manifest publication, decrements, and chunk
+deletion. Crash-safe over-counting leaks; under-counting deletes live data;
+a zero-count/delete race needs another tombstone protocol. Per-key generation
+scoping spends storage to keep collection exact and boring.
+
+## 9. Proof plan: promise / witness / oracle
+
+Acceptance requires contract evidence, not just types. Proposed numbering
+continues the A-suite; existing A/I/W/R and S contracts rerun unchanged.
+
+| Promise | Witness | Independent oracle / rig attack |
+|---|---|---|
+| P1. Before manifest commit a candidate is invisible; afterward the whole logical value is visible. | **A15** `stream_create_manifest_is_only_commit_point`; **A16** `whole_and_stream_reads_are_byte_equivalent`. | Pure map oracle has only old/new bytes. Cut before/after every chunk PUT and manifest PUT; no observed prefix state is legal. |
+| P2. Streamed create/CAS preserves one winner, strict successor version, and stale-token rejection. | **A17** concurrent create/CAS matrix; existing A1/A2/A11-A13 rerun across inline→chunked, chunked→chunked, and chunked→inline. | Model `(incarnation, version, value)`; schedule racers with different and identical content/commit IDs; exactly one writer reports the published target generation. |
+| P3. Delete/recreate cannot carry a streamed CAS token across incarnations. | **A18** streamed destroy/create overlap; existing I1-I6 rerun with chunked values. | Arm destroy around create post-check and manifest commit; raw content etags may recur, but manifest incarnation must differ and stale CAS must fail. |
+| P4. Full and ranged reads return the snapshot's exact bytes or typed integrity failure, never absence. | **A19** full/range boundary table (empty, 1, 16 MiB−1, 16 MiB, 16 MiB+1, max count); **A20** missing/corrupt/reordered chunk taxonomy. | Oracle slices one generated byte vector. Delete, truncate, swap, or mutate every chunk position; a damaged suffix may yield a prefix only on the streaming API and must fail before verified EOF. |
+| P5. Existing read algebra does not move. | **A21** `Present/Destroyed/OffsetExpired/Absent` parity for inline and manifest values; existing W1-W5 and R1-R9 rerun. | State-machine oracle applies create/CAS/destroy/trim; physical chunks never create a fifth logical state. |
+| P6. Small values retain one-object latency and streams remain unchanged. | **A22** inline request-count contract; **S11** runs create/append/replay/cursor/trim while asserting no chunk-root request. Existing S1-S10 rerun byte-for-byte. | Loopback operation log is the oracle: create/get remain one control request, CAS remains its current read+PUT, and all use zero chunk requests for values ≤16 MiB. |
+| P7. Bounds hold without whole-value allocation. | **A23** manifest/count/length adversarial decoder table and bounded-backpressure probe. | Allocation/request counters assert ≤4 in-flight chunks and rejection before count-derived allocation; generated valid max-count manifest remains decodable. |
+| P8. Lost responses converge and crashes leave old/new plus optional garbage, never a broken published value. | **A24** chunk/manifest lost-response cases and commit-ID reconciliation. | Crash after every storage request; restart and compare logical state to sequential oracle. Same-ID retry may reconcile success; identical bytes under another ID remain a conflict. Garbage is permitted, a manifest naming an absent chunk is not. |
+| P9. GC deletes only unreachable chunks and certified trim remains the logical boundary. | **A25** quiesced mark/sweep, idempotence, interruption, unavailable-control fail-closed, trim/destroy interaction. | Freeze/under-report chunk LIST, fail exact control GETs, and cut deletes before/after effect. Hidden garbage may remain; any current manifest chunk deletion is fatal. |
+| P10. The selected primitive works on the assured backend. | Extend the real-S3 rig with >1-chunk create, CAS race, range reconstruction, lost-response reconciliation where injectable, and empty cleanup under an isolated prefix. | Independent SHA-256/length oracle over downloaded bytes; provider operation log proves conditional manifest behavior rather than inferring it from final bytes. |
+
+A new durable `streaming_values_contracts` rig should drive P1-P9 through the
+loopback counterpart. It needs explicit fault cuts for chunk create/read/
+delete and manifest create/CAS/read, content corruption/truncation, delayed
+and reordered responses, frozen LIST, and process restart. Its final verdict
+compares logical values against a small sequential model and physical garbage
+against the weaker rule `live ⊆ retained`; equality is required only after a
+successful quiesced sweep.
+
+The S-suite extension is intentionally one regression witness, not a second
+streaming implementation. Yeetz's Git/LFS/OCI proofs live downstream because
+zstd, OIDs, cachey, and protocol side effects are not kernel vocabulary.
+
+## 10. Human adjudication required
+
+The planner recommends the manifest design above but will not make these
+product/retention decisions unilaterally:
+
+1. **Manifest design vs conditional multipart.** Approve the portable
+   manifest/chunk design, or authorize an Exoscale conditional-complete probe
+   and reconsider the materially cheaper single-object alternative before
+   implementation.
+2. **Bounds.** Approve 16 MiB chunks/inline threshold, 65,536 chunks, 1 TiB
+   logical maximum, 4 MiB manifest, and four-chunk (64 MiB) in-flight window.
+   These values align with cachey's existing page codec; they are not derived
+   from an S3 hard limit.
+3. **GC availability.** Approve quiesced-only physical chunk collection for
+   v1. If online collection is required, stop: durable reader/upload leases
+   or an epoch design needs its own adjudicated protocol and proof. A guessed
+   age/TTL is explicitly rejected.
+4. **Cross-key deduplication.** Approve per-key generation scoping (simple GC,
+   no storage dedup across keys) versus paying the reference-accounting cost
+   for global chunks. The proposed cache can deduplicate reads independently.
+5. **Large ordinary Git objects.** Decide whether 64 MiB remains as a
+   whole-adapter guard for gitoxide `Find`/current pack generation while LFS
+   and OCI stream, or whether the downstream program must include an
+   end-to-end Git read/pack redesign before the user-facing LFS guidance is
+   removed.
+6. **Key-late writers.** Approve v1's bounded ephemeral spool for inputs whose
+   key is known only at EOF, or require a durable key-late prepared-upload
+   protocol. The latter adds staging lifecycle and GC state and should not be
+   smuggled into implementation as convenience.
+
+No implementation batch should start until these six rulings are recorded by
+a human in an accepted successor/addendum. This proposed record remains
+immutable.

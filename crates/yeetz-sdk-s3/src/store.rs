@@ -4,6 +4,8 @@ use aws_sdk_s3::Client as AwsS3Client;
 use aws_sdk_s3::config::{Credentials as AwsCredentials, Region};
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::presigning::PresigningConfig;
+#[cfg(feature = "test-support")]
+use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 use bytes::Bytes;
 use futures::stream::BoxStream;
@@ -360,7 +362,18 @@ impl ObjectStoreClient {
         &self,
         path: &str,
         upload_id: &str,
+        parts: Vec<CompletedMultipartPart>,
+    ) -> Result<Option<String>, ObjectStoreError> {
+        self.complete_multipart_upload_inner(path, upload_id, parts, None)
+            .await
+    }
+
+    async fn complete_multipart_upload_inner(
+        &self,
+        path: &str,
+        upload_id: &str,
         mut parts: Vec<CompletedMultipartPart>,
+        expected_etag: Option<&str>,
     ) -> Result<Option<String>, ObjectStoreError> {
         if parts.is_empty() {
             return Err(ObjectStoreError::UploadFailed(
@@ -384,24 +397,50 @@ impl ObjectStoreClient {
                     .build()
             })
             .collect();
-
         let completed_upload = CompletedMultipartUpload::builder()
             .set_parts(Some(completed_parts))
             .build();
 
-        let response = client
+        let mut request = client
             .complete_multipart_upload()
             .bucket(&self.bucket)
             .key(path)
             .upload_id(upload_id)
-            .multipart_upload(completed_upload)
-            .send()
-            .await
-            .map_err(|e| {
-                ObjectStoreError::UploadFailed(format!("complete multipart upload failed: {e}"))
-            })?;
+            .multipart_upload(completed_upload);
+        if let Some(etag) = expected_etag {
+            request = request.if_match(format!("\"{}\"", etag.trim_matches('"')));
+        }
+        let response = request.send().await.map_err(|error| {
+            match error.as_service_error().and_then(|service| service.code()) {
+                Some("PreconditionFailed" | "ConditionalRequestConflict") => {
+                    ObjectStoreError::PreconditionFailed(format!(
+                        "conditional multipart completion failed for {path}: etag mismatch"
+                    ))
+                }
+                Some("NoSuchUpload") => ObjectStoreError::NotFound(upload_id.to_string()),
+                _ => ObjectStoreError::UploadFailed(format!(
+                    "complete multipart upload failed: {}",
+                    provider_error_text(&error)
+                )),
+            }
+        })?;
 
         Ok(response.location().map(str::to_string))
+    }
+
+    /// Probe-only conditional multipart completion (`CompleteMultipartUpload`
+    /// + `If-Match`) against an endpoint backend.
+    #[cfg(feature = "test-support")]
+    pub async fn complete_multipart_upload_if_match_for_test(
+        &self,
+        path: &str,
+        upload_id: &str,
+        parts: Vec<CompletedMultipartPart>,
+        expected_etag: &str,
+    ) -> Result<(), ObjectStoreError> {
+        self.complete_multipart_upload_inner(path, upload_id, parts, Some(expected_etag))
+            .await
+            .map(|_| ())
     }
 
     /// Abort a multipart upload.
@@ -428,6 +467,117 @@ impl ObjectStoreClient {
             })?;
 
         Ok(())
+    }
+
+    /// Probe-only direct part upload through the pinned AWS client.
+    #[cfg(feature = "test-support")]
+    pub async fn upload_multipart_part_for_test(
+        &self,
+        path: &str,
+        upload_id: &str,
+        part_number: i32,
+        data: Bytes,
+    ) -> Result<CompletedMultipartPart, ObjectStoreError> {
+        let client = self.multipart_client.as_ref().ok_or_else(|| {
+            ObjectStoreError::PresignUnsupported(
+                "multipart operations are unsupported for this backend".to_string(),
+            )
+        })?;
+        let response = client
+            .upload_part()
+            .bucket(&self.bucket)
+            .key(path)
+            .upload_id(upload_id)
+            .part_number(part_number)
+            .body(ByteStream::from(data))
+            .send()
+            .await
+            .map_err(|error| {
+                ObjectStoreError::UploadFailed(format!(
+                    "upload multipart part {part_number} failed: {}",
+                    provider_error_text(&error)
+                ))
+            })?;
+        let e_tag = response.e_tag().map(str::to_string).ok_or_else(|| {
+            ObjectStoreError::UploadFailed(format!(
+                "upload multipart part {part_number} returned no etag"
+            ))
+        })?;
+        Ok(CompletedMultipartPart { part_number, e_tag })
+    }
+
+    /// Probe-only `GetObject?partNumber=N` against a completed multipart
+    /// object.
+    #[cfg(feature = "test-support")]
+    pub async fn download_multipart_part_for_test(
+        &self,
+        path: &str,
+        part_number: i32,
+    ) -> Result<Bytes, ObjectStoreError> {
+        let client = self.multipart_client.as_ref().ok_or_else(|| {
+            ObjectStoreError::PresignUnsupported(
+                "multipart operations are unsupported for this backend".to_string(),
+            )
+        })?;
+        let response = client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(path)
+            .part_number(part_number)
+            .send()
+            .await
+            .map_err(|error| {
+                ObjectStoreError::DownloadFailed(format!(
+                    "download multipart part {part_number} failed: {}",
+                    provider_error_text(&error)
+                ))
+            })?;
+        response
+            .body
+            .collect()
+            .await
+            .map(|body| body.into_bytes())
+            .map_err(|error| {
+                ObjectStoreError::DownloadFailed(format!(
+                    "download multipart part {part_number} body failed: {error}"
+                ))
+            })
+    }
+
+    /// Probe-only listing of in-progress multipart uploads under `prefix`.
+    #[cfg(feature = "test-support")]
+    pub async fn list_multipart_uploads_for_test(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<(String, String)>, ObjectStoreError> {
+        let client = self.multipart_client.as_ref().ok_or_else(|| {
+            ObjectStoreError::PresignUnsupported(
+                "multipart operations are unsupported for this backend".to_string(),
+            )
+        })?;
+        let response = client
+            .list_multipart_uploads()
+            .bucket(&self.bucket)
+            .prefix(prefix)
+            .max_uploads(1000)
+            .send()
+            .await
+            .map_err(|error| {
+                ObjectStoreError::ListFailed(format!(
+                    "list multipart uploads failed: {}",
+                    provider_error_text(&error)
+                ))
+            })?;
+        if response.is_truncated().unwrap_or(false) {
+            return Err(ObjectStoreError::ListFailed(format!(
+                "multipart upload list for {prefix} was unexpectedly truncated"
+            )));
+        }
+        Ok(response
+            .uploads()
+            .iter()
+            .filter_map(|upload| Some((upload.key()?.to_string(), upload.upload_id()?.to_string())))
+            .collect())
     }
 
     /// Upload bytes to a path.
