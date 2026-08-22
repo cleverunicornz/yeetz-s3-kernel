@@ -1137,7 +1137,7 @@ impl AtomicKeyspace {
         let window = match range {
             None => 0..logical_len,
             Some(range) => {
-                if range.end > logical_len {
+                if range.start > range.end || range.end > logical_len {
                     return Err(KeyspaceError::InvalidRange {
                         key: key.to_string(),
                         start: range.start,
