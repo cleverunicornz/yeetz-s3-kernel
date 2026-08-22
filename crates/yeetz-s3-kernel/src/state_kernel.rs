@@ -7,6 +7,8 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use yeetz_sdk_s3::{ObjectStoreClient, ObjectStoreError, S3Config};
 
+use crate::tombstone::Tombstone;
+
 const SUPPORTED_PROTOCOL_EPOCH: u16 = 1;
 const RECORD_ENVELOPE: &str = "llm_gateway_state_record/v1";
 const HEAD_ENVELOPE: &str = "llm_gateway_state_head/v1";
@@ -57,6 +59,11 @@ impl KernelLineage {
 
     fn head_key(&self) -> String {
         format!("{}/head", self.value)
+    }
+
+    /// The existence witness for an intentionally deleted head
+    pub(crate) fn tombstone_key(&self) -> String {
+        format!("{}/tombstone", self.value)
     }
 
     fn checkpoint_key(&self, digest: &RecordDigest) -> String {
@@ -508,7 +515,7 @@ impl SafeReference {
         }
     }
 
-    fn for_lineage(lineage: &KernelLineage) -> Self {
+    pub(crate) fn for_lineage(lineage: &KernelLineage) -> Self {
         Self {
             lineage: lineage.value.clone(),
             generation: None,
@@ -554,6 +561,11 @@ pub enum KernelError {
     },
     #[error("SUCCESSOR_NOT_ALLOWED")]
     SuccessorNotAllowed { reference: SafeReference },
+    /// A lineage tombstone is present but malformed or uses an
+    /// unsupported format — stored evidence corruption, distinct
+    /// from absence (batch 6).
+    #[error("TOMBSTONE_CORRUPT")]
+    TombstoneCorrupt { reference: SafeReference },
     #[error("GATEWAY_STATE_UNAVAILABLE")]
     StateUnavailable { operation: &'static str },
 }
@@ -919,7 +931,7 @@ impl FoldProjection {
 /// }
 /// ```
 pub struct StateKernel {
-    object_store: Arc<ObjectStoreClient>,
+    pub(crate) object_store: Arc<ObjectStoreClient>,
     pub(crate) lineage: KernelLineage,
 }
 
@@ -1000,6 +1012,51 @@ impl StateKernel {
             object_store,
             lineage,
         }
+    }
+
+    /// Intentional deletion with an existence witness (batch 6): an
+    /// immutable tombstone at `{lineage}/tombstone` —
+    /// `{deleted_at_gen, cause, actor, ts}`, `deleted_at_gen` = the
+    /// head's generation — is written BEFORE the head object is
+    /// deleted. Idempotent for an already-destroyed lineage (the
+    /// first tombstone stands); a no-op for a never-created one. A
+    /// re-created lineage (fresh genesis) supersedes the tombstone:
+    /// the new head's existence IS the truth; the witness remains as
+    /// history. Records are NOT deleted — repair-by-replay stays
+    /// possible for a reborn lineage; sweeping them is a separate,
+    /// deliberately-unshipped operation.
+    pub async fn destroy(&self, cause: &str, actor: &str) -> Result<(), KernelError> {
+        let loaded = match self.load_head().await {
+            Ok(loaded) => loaded,
+            Err(KernelError::StateHistoryIncomplete { .. }) => return Ok(()),
+            Err(err) => return Err(err),
+        };
+        let tombstone = Tombstone::new(loaded.head.generation, cause, actor);
+        let bytes = tombstone
+            .encode()
+            .map_err(|_| KernelError::StateUnavailable {
+                operation: "tombstone encode",
+            })?;
+        match self
+            .object_store
+            .upload_conditional(&self.lineage.tombstone_key(), bytes.into(), None)
+            .await
+        {
+            // Put-if-absent; PreconditionFailed = an earlier
+            // lifetime's tombstone stands (immutable history).
+            Ok(_) | Err(ObjectStoreError::PreconditionFailed(_)) => {}
+            Err(_) => {
+                return Err(KernelError::StateUnavailable {
+                    operation: "tombstone conditional create",
+                });
+            }
+        }
+        self.object_store
+            .delete(&self.lineage.head_key())
+            .await
+            .map_err(|_| KernelError::StateUnavailable {
+                operation: "head deletion",
+            })
     }
 
     /// Remove every object in this lineage for a rebuild/corruption test.
@@ -1822,6 +1879,7 @@ fn diagnostic_kernel_error_code(error: &KernelError) -> &'static str {
         KernelError::ProtocolEpochUnsupported { .. } => "PROTOCOL_EPOCH_UNSUPPORTED",
         KernelError::SuccessorNotAllowed { .. } => "SUCCESSOR_NOT_ALLOWED",
         KernelError::StateUnavailable { .. } => "GATEWAY_STATE_UNAVAILABLE",
+        KernelError::TombstoneCorrupt { .. } => "TOMBSTONE_CORRUPT",
     }
 }
 
@@ -2341,6 +2399,7 @@ impl CheckpointRejection {
             }),
             KernelError::LineageHeadConflict { .. }
             | KernelError::SuccessorNotAllowed { .. }
+            | KernelError::TombstoneCorrupt { .. }
             | KernelError::StateUnavailable { .. } => None,
         }
     }

@@ -400,3 +400,75 @@ stronger cross-deletion guarantee is a separate human ruling.
 
 K1-K7 do not move. The change is confined to the assured kernel closure
 and its contract/probe surfaces; application callers do not migrate.
+
+---
+
+## Ruled addendum: Batch 6 — tombstones (existence witnesses)
+
+Status: accepted (human-authorized kernel batch 6, deferred-items
+ruling session 2026-08-21; built on batch 5's certified trim).
+
+### The problem
+
+`read_head_state` returned `Absent` for both a never-created lineage
+and one whose head was deleted; callers distinguished them through
+parent-aggregate witnesses (the registry lineages) — a convention,
+not a mechanism. This batch puts the distinction in the kernel: the
+witness convention, mechanized.
+
+### The design
+
+1. **Tombstone records.** On intentional deletion —
+   `AtomicKeyspace::destroy(key, cause, actor)` (the spec's
+   tombstoning `delete`; plain `delete` stays the raw object delete
+   used by GC and damage tests) and `StateKernel::destroy(cause,
+   actor)` (the lineage head deletion) — an immutable create-once
+   witness is written BEFORE the deletion: keyspace
+   `tombstones/{key}`, lineage `{lineage}/tombstone`. It carries
+   `{deleted_at_gen, cause, actor, ts}` — proof the key existed and
+   was deliberately deleted, by whom, why, and at which generation
+   (keyspace version / head generation). Destroying an absent key
+   fabricates nothing (idempotent no-op).
+2. **The existence read.** `AtomicKeyspace::read_state(key)` →
+   `KeyState`: `Present { value, etag }` | `Destroyed { tombstone }`
+   | `Absent` | `OffsetExpired { first_retained }`. Lineage:
+   `LineageHeadState` gains `Destroyed(Tombstone)`. Malformed stored
+   tombstones are `TombstoneCorrupt`, never absence (law 7).
+3. **Create-after-destroy supersedes.** A re-create succeeds as a
+   fresh identity (version 0 / generation 0); the new existence IS
+   the truth (`Present`), and the tombstone remains as historical
+   record until a certified trim retires it. A lineage reborns the
+   same way through a fresh genesis; its records survive destroy
+   (repair-by-replay stays possible; record sweeping is deliberately
+   unshipped).
+4. **Immutability.** The reserved `tombstones/` prefix refuses
+   direct `create`, `compare_exchange`, `delete`, and `delete_many`
+   (`TombstoneImmutable`). Tombstones are removed only by the
+   batch-5 sweeper: `delete_below` now also sweeps mirrored
+   `tombstones/{data_prefix}{seq}` below the floor, and `read_state`
+   of a seq-shaped key below the namespace's root certificate reads
+   `OffsetExpired` — the certificate witnesses the history, never
+   object absence, and never a zombie's `Present`. (Lineage
+   tombstones are not seq-keyed and are immortal.)
+5. **Tombstones are raw objects**, not versioned envelopes: they are
+   create-once by construction (put-if-absent, first witness stands
+   across re-created lifetimes), so the versioning that protects
+   CAS'd values is unnecessary; immutability is enforced by the
+   guarded prefix instead.
+
+### Contract suite (W1–W5)
+
+`crates/yeetz-s3-kernel/tests/tombstone_contract.rs`:
+`w1_present_destroyed_absent_lifecycle`,
+`w2_create_after_destroy_supersedes`,
+`w3_tombstones_are_immutable`,
+`w4_trim_retires_tombstones_below_the_floor`,
+`w5_lineage_tombstone_equivalent`.
+
+### Not shipped (deliberate)
+
+- Record sweeping on lineage destroy (replay repair stays possible).
+- Tombstone GC beyond the certified trim floor.
+- Stream-log tombstones: streams keep their `OffsetExpired` contract
+  (batch 5); per-event tombstones would double storage for no new
+  distinction.

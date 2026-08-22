@@ -13,12 +13,15 @@
 pub mod state_kernel;
 
 pub mod atomic_keyspace;
+pub mod tombstone;
 
 pub use atomic_keyspace::{
-    AtomicKeyspace, DeleteBelowReport, DeleteOutcome, KEYSPACE_ROOT, KeyspaceError, TrimState,
+    AtomicKeyspace, DeleteBelowReport, DeleteOutcome, KEYSPACE_ROOT, KeyState, KeyspaceError,
+    TrimState,
 };
 pub use state_kernel::{KernelHandle, KernelInitError};
 pub use terminal_read::{LineageHeadState, TerminalRecordRead};
+pub use tombstone::Tombstone;
 pub use yeetz_sdk_s3::S3Config;
 
 #[cfg(feature = "test-support")]
