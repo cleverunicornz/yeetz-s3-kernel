@@ -7,5 +7,6 @@
 //! named ADR contract; the real-backend probe additionally cites its
 //! ci-dev run URL as the durable witness.
 
+pub mod batch57_adversary;
 pub mod real_s3_aba_probe;
 pub mod streams_contracts;

@@ -3373,6 +3373,7 @@ checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 name = "yeetz-rigs"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "futures",
  "tokio",
  "yeetz-s3-kernel",

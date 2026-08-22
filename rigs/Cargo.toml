@@ -6,8 +6,8 @@ license.workspace = true
 description = "Durable verification rigs for the S3 kernel closure"
 
 [dependencies]
+bytes.workspace = true
 futures.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 yeetz-s3-kernel = { workspace = true, features = ["test-support"] }
 yeetz-s3-streams.workspace = true
-
