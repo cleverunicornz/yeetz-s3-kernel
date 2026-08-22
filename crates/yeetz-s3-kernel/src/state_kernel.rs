@@ -5903,4 +5903,182 @@ pub mod gateway_state_contract {
         keyspace.delete("cell").await.unwrap();
         let _ = counterpart.shutdown().await;
     }
+    /// A15 (teardown pass 2026-08-22, batch 7): a `create` racing a
+    /// `destroy` must never mint a value envelope from the destroyed
+    /// era's incarnation. The window is `create`'s incarnation read
+    /// landing before the destroy's counter bump while its
+    /// put-if-absent lands after the destroy's value delete. The
+    /// counterpart's conditional-PUT barrier parks the racing
+    /// create's PUT server-side (its incarnation read completes
+    /// first), the destroy then runs to completion through the gate,
+    /// and a second create releases the gate. Exactly one of the two
+    /// parked-and-released PUTs lands; if the era-1 writer wins, its
+    /// envelope is byte-identical to the destroyed era's — and on
+    /// this content-etag counterpart an era-1 token then CASes the
+    /// "new" lifetime, the exact ABA batch 7 exists to prevent.
+    /// Fail-on-detect canary over bounded attempts; green means the
+    /// sampled interleavings never crossed eras.
+    #[tokio::test]
+    async fn a15_create_destroy_race_cannot_cross_eras() {
+        let (store, keyspace, counterpart) = keyspace_fixture("a15").await;
+        const ATTEMPTS: usize = 40;
+        let payload = Bytes::from_static(b"same-bytes-in-both-eras");
+        for attempt in 0..ATTEMPTS {
+            let key = format!("cell{attempt}");
+            let physical = format!("keyspace/a15/{key}");
+
+            // Era 1: the value exists at incarnation 0, version 0.
+            keyspace
+                .create(&key, payload.clone())
+                .await
+                .expect("era-1 create");
+            let (_, era1_etag) = keyspace
+                .get_with_etag(&key)
+                .await
+                .expect("era-1 read")
+                .expect("era-1 value present");
+
+            // Park the racing writer: arm the two-party conditional-PUT
+            // barrier on the value key, then start the create. Its
+            // incarnation read (a GET) passes; its If-None-Match PUT
+            // becomes barrier arrival #1.
+            counterpart.arm_conditional_head_barrier(&physical).await;
+            let writer = tokio::spawn({
+                let store = Arc::clone(&store);
+                let key = key.clone();
+                let payload = payload.clone();
+                async move {
+                    AtomicKeyspace::new(store, "a15")
+                        .expect("writer keyspace")
+                        .create(&key, payload)
+                        .await
+                }
+            });
+            // Deterministic arrival: poll the counterpart until the
+            // barrier observed the writer's PUT.
+            tokio::time::timeout(std::time::Duration::from_secs(10), {
+                let counterpart = &counterpart;
+                async {
+                    loop {
+                        let snapshot = counterpart.snapshot().await;
+                        if snapshot.barrier.expect("barrier stays armed").arrivals >= 1 {
+                            return;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    }
+                }
+            })
+            .await
+            .expect("writer PUT parks at the barrier");
+
+            // Destroy fully while the writer is parked: tombstone,
+            // counter bump, value delete. None of those requests hit
+            // the barrier key.
+            keyspace
+                .destroy(&key, "teardown-race", "a15")
+                .await
+                .expect("destroy under the gate");
+            assert_eq!(
+                keyspace
+                    .incarnation_for_test(&key)
+                    .await
+                    .expect("counter read"),
+                1,
+                "the destroy bumped the incarnation while the writer was parked"
+            );
+
+            // Release the gate: a fresh create whose incarnation read
+            // observes the post-bump counter becomes arrival #2; both
+            // parked PUTs proceed and exactly one lands.
+            let releaser = tokio::spawn({
+                let store = Arc::clone(&store);
+                let key = key.clone();
+                let payload = payload.clone();
+                async move {
+                    AtomicKeyspace::new(store, "a15")
+                        .expect("releaser keyspace")
+                        .create(&key, payload)
+                        .await
+                }
+            });
+            let _writer_outcome = writer.await.expect("writer task joins");
+            let _releaser_outcome = releaser.await.expect("releaser task joins");
+
+            // The batch-7 promise: an era-1 token is never accepted
+            // across the destruction boundary, no matter which writer
+            // landed.
+            match keyspace
+                .compare_exchange(&key, &era1_etag, Bytes::from_static(b"stale-era-writer"))
+                .await
+            {
+                // The only correct outcome: the era-1 token lost.
+                Err(crate::KeyspaceError::PreconditionFailed { .. }) => {}
+                Ok(new_etag) => panic!(
+                    "A15 DEFECT (attempt {attempt}): an era-1 etag was ACCEPTED \
+                     across a destroy (counter now 1); the racing create minted \
+                     a stale-era envelope, so era-1 bytes recurred on a \
+                     content-etag backend and the stale token CASed the new \
+                     lifetime (new etag {new_etag})"
+                ),
+                Err(other) => panic!("A15: unexpected CAS error shape: {other:?}"),
+            }
+        }
+        let _ = counterpart.shutdown().await;
+    }
+
+    /// A16 (teardown pass 2026-08-22, batch 7): the v2 value envelope
+    /// fails closed on every non-v2 shape — the deliberate 0.x format
+    /// break. Raw plants (the only way such bytes can exist; the
+    /// module surface cannot write them) must surface as
+    /// `ValueEnvelopeMalformed` on every read path — never as payload,
+    /// never as absence (law 7).
+    #[tokio::test]
+    async fn a16_value_envelope_fails_closed_on_non_v2_shapes() {
+        let (store, keyspace, counterpart) = keyspace_fixture("a16").await;
+        // Batch-4 v1 shape: 8-byte big-endian version, then payload.
+        let mut v1 = Vec::new();
+        v1.extend_from_slice(&0u64.to_be_bytes());
+        v1.extend_from_slice(b"v1-payload");
+        // Truncated v2: the 24-byte prefix + incarnation, no version.
+        let mut truncated = b"yeetz-keyspace-value/v2\0".to_vec();
+        truncated.extend_from_slice(&0u64.to_be_bytes());
+        // A counter-shaped object (8 raw bytes) at a value key.
+        let counter_shaped = 1u64.to_be_bytes().to_vec();
+        let plants: [(&str, Vec<u8>); 4] = [
+            ("v1", v1),
+            ("truncated", truncated),
+            ("counter-shaped", counter_shaped),
+            ("garbage", b"not-an-envelope".to_vec()),
+        ];
+        for (name, bytes) in plants {
+            let physical = format!("keyspace/a16/{name}");
+            store
+                .upload_conditional(&physical, Bytes::from(bytes), None)
+                .await
+                .expect("plant raw shape")
+                .expect("counterpart returns etags");
+            assert!(
+                matches!(
+                    keyspace.get(name).await,
+                    Err(crate::KeyspaceError::ValueEnvelopeMalformed(_))
+                ),
+                "A16: {name} must fail closed on get"
+            );
+            assert!(
+                matches!(
+                    keyspace.get_with_etag(name).await,
+                    Err(crate::KeyspaceError::ValueEnvelopeMalformed(_))
+                ),
+                "A16: {name} must fail closed on get_with_etag"
+            );
+            assert!(
+                matches!(
+                    keyspace.read_state(name).await,
+                    Err(crate::KeyspaceError::ValueEnvelopeMalformed(_))
+                ),
+                "A16: {name} must fail closed on read_state"
+            );
+        }
+        let _ = counterpart.shutdown().await;
+    }
 }

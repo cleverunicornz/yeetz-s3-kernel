@@ -306,7 +306,11 @@ addendum ships the trim that unblock permits.
    certificate, never object absence, is the boundary, so a stale
    writer cannot resurrect a lower floor by recreating what the
    sweeper deleted. Equal proposals are idempotent; a concurrent
-   higher proposal wins by max-by-key. The floor walk steps
+   higher proposal wins by max-by-key. The immutability is
+   structural (teardown finding T1, 2026-08-22): a `trims` path
+   segment naming a following component is a reserved certificate
+   key and refuses direct caller create/CAS/delete — a deletable
+   maximum certificate is a regressable floor. The floor walk steps
    over sibling keys sorting before the certificate range
    (`{scope}/trims-x` and friends) and terminates only at the first
    key at or past the range (teardown finding T2, 2026-08-22).
