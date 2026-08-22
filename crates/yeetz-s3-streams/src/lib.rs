@@ -54,7 +54,9 @@ mod envelope;
 mod error;
 pub mod migration;
 
-pub use envelope::{ENVELOPE_FORMAT_VERSION, Envelope, GENESIS_SCHEMA_ID};
+pub use envelope::{
+    ENVELOPE_FORMAT_VERSION, Envelope, GENESIS_SCHEMA_ID, MAX_ENCODED_ENVELOPE_BYTES,
+};
 pub use error::{Replay, StreamsError};
 
 use serde::{Deserialize, Serialize};

@@ -15,7 +15,7 @@ ALLOWLIST="tools/storage-boundary-allowlist"
 # Adapter-surface identifiers: near-zero false-positive names that every
 # bypass must use to reach storage (the adapter type, its import path,
 # or its method names).
-PATTERN='ObjectStoreClient|yeetz_sdk_s3|object_store|aws_sdk_s3|AmazonS3Builder|list_prefix|upload_conditional|download_if_changed|get_object|put_object|delete_object|list_objects_v2'
+PATTERN='ObjectStoreClient|yeetz_sdk_s3|object_store|aws_sdk_s3|AmazonS3Builder|list_prefix|upload_conditional|download_if_changed|get_object|put_object|delete_object|list_objects_v2|keyspace-chunks'
 
 is_sanctioned() {
   case "$1" in

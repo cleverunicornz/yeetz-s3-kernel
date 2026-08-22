@@ -734,6 +734,41 @@ impl ObjectStoreClient {
             .collect())
     }
 
+    /// List at most `limit` objects with a prefix after an optional
+    /// exclusive offset key, returning keys WITH object sizes (the
+    /// kernel's chunk metering reads sizes from the LIST itself, not
+    /// per-object HEADs).
+    pub async fn list_prefix_after_with_sizes(
+        &self,
+        prefix: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(String, u64)>, ObjectStoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let prefix_path = ObjectPath::from(prefix);
+        let stream = match after {
+            Some(after) => {
+                let offset = ObjectPath::from(after);
+                self.store.list_with_offset(Some(&prefix_path), &offset)
+            }
+            None => self.store.list(Some(&prefix_path)),
+        };
+
+        let objects: Vec<_> = stream
+            .take(limit)
+            .try_collect()
+            .await
+            .map_err(|e| ObjectStoreError::ListFailed(e.to_string()))?;
+
+        Ok(objects
+            .into_iter()
+            .map(|meta| (meta.location.to_string(), meta.size))
+            .collect())
+    }
+
     /// Delete an object.
     pub async fn delete(&self, path: &str) -> Result<(), ObjectStoreError> {
         let location = ObjectPath::from(path);

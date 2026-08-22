@@ -79,6 +79,8 @@ struct CounterpartState {
     inner: std::sync::Mutex<Inner>,
     request_index: AtomicU64,
     fault_fired: AtomicU64,
+    /// (method, key) per storage request — the S11 wire witness.
+    request_log: std::sync::Mutex<Vec<RequestRecord>>,
 }
 
 impl CounterpartState {
@@ -92,6 +94,7 @@ impl CounterpartState {
             }),
             request_index: AtomicU64::new(0),
             fault_fired: AtomicU64::new(0),
+            request_log: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -102,6 +105,13 @@ pub struct Loopback {
     state: Arc<CounterpartState>,
     control: reqwest::Client,
     shutdown: Option<oneshot::Sender<()>>,
+}
+
+/// One recorded storage request (S11 wire witnesses).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequestRecord {
+    pub method: String,
+    pub key: String,
 }
 
 impl Loopback {
@@ -228,6 +238,18 @@ impl Loopback {
     /// The number of storage requests served so far.
     pub fn request_count(&self) -> u64 {
         self.state.request_index.load(Ordering::SeqCst)
+    }
+
+    /// The (method, key) log of every storage request served — the
+    /// S11 witness: streams writes must be single PUTs under
+    /// `keyspace/` and never touch the chunk root. A poisoned lock
+    /// (a panicked handler) still yields the log recorded so far.
+    pub fn request_log(&self) -> Vec<RequestRecord> {
+        self.state
+            .request_log
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// Whether the armed fault fired (for crash-matrix completeness).
@@ -411,6 +433,17 @@ async fn s3_request(State(state): State<Arc<CounterpartState>>, request: Request
         .map(ToOwned::to_owned);
     let index = state.request_index.fetch_add(1, Ordering::SeqCst);
     let op = op_of(&method, list_request, bulk_delete_request);
+    if let Some(key) = key.as_deref() {
+        let record = RequestRecord {
+            method: method.to_string(),
+            key: key.to_string(),
+        };
+        let mut log = state
+            .request_log
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        log.push(record);
+    }
 
     // One-shot fault cut: Before → refuse (nothing applied); After →
     // apply the effect, lose the response.
@@ -441,7 +474,7 @@ async fn s3_request(State(state): State<Arc<CounterpartState>>, request: Request
         }
     };
 
-    let bytes = match to_bytes(body, 8 * 1024 * 1024).await {
+    let bytes = match to_bytes(body, 64 * 1024 * 1024).await {
         Ok(bytes) => bytes,
         Err(_) => return response(StatusCode::PAYLOAD_TOO_LARGE, None, Vec::new()),
     };
