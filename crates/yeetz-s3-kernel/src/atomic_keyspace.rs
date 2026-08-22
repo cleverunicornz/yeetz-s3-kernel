@@ -371,7 +371,14 @@ impl AtomicKeyspace {
     /// `keyspace/{namespace}/{key}`.
     pub(crate) fn object_key(&self, key: &str) -> Result<String, KeyspaceError> {
         validate_identifier("key", key)?;
-        Ok(format!("{KEYSPACE_ROOT}/{}/{}", self.namespace, key))
+        let object_key = format!("{KEYSPACE_ROOT}/{}/{}", self.namespace, key);
+        // Namespace and key are both slash-joined identifiers. Guard
+        // the composed physical path so neither can supply part of a
+        // different namespace's exact `fences/gc` control location.
+        if object_key.ends_with("/fences/gc") {
+            return Err(KeyspaceError::MaintenanceFenceImmutable(key.to_string()));
+        }
+        Ok(object_key)
     }
 
     /// Reserved tombstone sub-root: `tombstones/{key}` mirrors the

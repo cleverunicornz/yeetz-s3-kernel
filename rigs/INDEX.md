@@ -22,6 +22,12 @@ tasks; A28/A32/A35 public-API legs live in
 `crates/yeetz-s3-kernel/tests/streaming_contract.rs`, and S11 in
 `crates/yeetz-s3-streams/tests/streams_envelope_bound.rs`.
 
+The batch-10 teardown fence-namespace witness is
+`teardown_fence_aliases_are_rejected_after_path_composition` in the
+public streaming contract suite. It proves that namespace/key segment
+splits cannot compose another namespace's exact `fences/gc` object,
+while a non-control near miss remains usable.
+
 The forge-facing rigs (connect transport legs, gRPC legs, write-path
 concurrency, events migration) stayed in the parent `yeetz` repo —
 they prove forge behavior against forge types.
