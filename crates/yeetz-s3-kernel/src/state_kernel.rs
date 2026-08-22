@@ -2825,6 +2825,10 @@ pub mod gateway_state_contract {
         /// AfterEffect applies the delete and loses the response —
         /// the caller re-reads to converge (G118).
         KeyspaceConditionalDelete,
+        /// The post-landing lineage-incarnation re-read used by
+        /// `create_head`. A BeforeEffect cut models the writer losing
+        /// the counter read after its stale-era head PUT has landed.
+        LineageIncarnationRead,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2884,6 +2888,9 @@ pub mod gateway_state_contract {
                 }
                 StorageFaultCut::KeyspaceConditionalDelete => {
                     *method == Method::DELETE && key.starts_with("keyspace/") && if_match.is_some()
+                }
+                StorageFaultCut::LineageIncarnationRead => {
+                    *method == Method::GET && key.ends_with("/incarnation")
                 }
             }
         }
@@ -3441,6 +3448,13 @@ pub mod gateway_state_contract {
                     // Delete applied; the response is lost (G117/G118).
                     | StorageFaultCut::KeyspaceDelete
                     | StorageFaultCut::KeyspaceConditionalDelete => {
+                        status = T002_FAULT_STATUS;
+                        etag = None;
+                        response_body.clear();
+                    }
+                    // A read cut loses the successful response without
+                    // changing the stored object.
+                    StorageFaultCut::LineageIncarnationRead => {
                         status = T002_FAULT_STATUS;
                         etag = None;
                         response_body.clear();
@@ -4218,7 +4232,8 @@ pub mod gateway_state_contract {
             | (StorageFaultCut::HeadCreate, StorageFaultPhase::AfterEffect)
             | (StorageFaultCut::HeadUpdate, StorageFaultPhase::AfterEffect)
             | (StorageFaultCut::KeyspaceDelete, StorageFaultPhase::AfterEffect)
-            | (StorageFaultCut::KeyspaceConditionalDelete, StorageFaultPhase::AfterEffect) => {
+            | (StorageFaultCut::KeyspaceConditionalDelete, StorageFaultPhase::AfterEffect)
+            | (StorageFaultCut::LineageIncarnationRead, StorageFaultPhase::AfterEffect) => {
                 T002_FAULT_STATUS.as_u16()
             }
             (StorageFaultCut::ImmutableChecksum, StorageFaultPhase::AfterEffect)
@@ -4400,8 +4415,10 @@ pub mod gateway_state_contract {
             // Keyspace deletes are proven by their own loopback
             // contract (a9_delete_many_resumes_after_lost_response_cut);
             // they carry no lineage semantics.
-            StorageFaultCut::KeyspaceDelete | StorageFaultCut::KeyspaceConditionalDelete => {
-                unreachable!("keyspace delete cuts have no lineage receipt")
+            StorageFaultCut::KeyspaceDelete
+            | StorageFaultCut::KeyspaceConditionalDelete
+            | StorageFaultCut::LineageIncarnationRead => {
+                unreachable!("specialized cuts have no lineage receipt")
             }
         }
     }
@@ -7124,5 +7141,352 @@ pub mod gateway_state_contract {
             "a stale HeadRead from the destroyed lifetime must not CAS the recreated lineage"
         );
         let _ = counterpart.shutdown().await;
+    }
+
+    async fn wait_for_first_head_barrier_arrival(counterpart: &LoopbackCounterpart) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let snapshot = counterpart.snapshot().await;
+                if snapshot
+                    .barrier
+                    .as_ref()
+                    .expect("head barrier stays armed")
+                    .arrivals
+                    >= 1
+                {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("parked head PUT reaches the barrier");
+    }
+
+    /// L8 (batch-9 teardown): the stale-era eviction is a mutation,
+    /// so the byte check and delete must be one store-level If-Match
+    /// operation. A GET followed by an unconditional DELETE admits a
+    /// fresh head between the two requests and then removes it.
+    #[tokio::test]
+    async fn l8_stale_genesis_eviction_is_if_match_guarded() {
+        let (store, _keyspace, counterpart) = keyspace_fixture("l8-eviction-wire").await;
+        let lineage =
+            KernelLineage::new("l8/eviction-wire", SuccessorPolicy::SuccessorCapable).unwrap();
+        let kernel = StateKernel::new(Arc::clone(&store), lineage.clone());
+        let head_key = lineage.head_key();
+        let genesis_record = record(&lineage, 0, None, b"l8-same-genesis");
+        kernel
+            .append_genesis(&genesis_record)
+            .await
+            .expect("era-1 genesis");
+
+        counterpart.arm_conditional_head_barrier(&head_key).await;
+        let writer = tokio::spawn({
+            let store = Arc::clone(&store);
+            let lineage = lineage.clone();
+            let record = genesis_record.clone();
+            async move {
+                StateKernel::new(store, lineage)
+                    .append_genesis(&record)
+                    .await
+            }
+        });
+        wait_for_first_head_barrier_arrival(&counterpart).await;
+
+        kernel
+            .destroy("l8-race", "batch9-teardown")
+            .await
+            .expect("destroy while stale writer is parked");
+
+        // A doomed If-Match is arrival two: it opens the barrier but
+        // cannot write, so the parked stale-era If-None-Match lands
+        // deterministically and takes the moved-counter eviction path.
+        assert!(
+            store
+                .upload_conditional(
+                    &head_key,
+                    b"doomed-gate-opener".to_vec().into(),
+                    Some("etag-that-cannot-match"),
+                )
+                .await
+                .is_err(),
+            "the gate opener must not create a head"
+        );
+        let repaired = writer
+            .await
+            .expect("parked writer joins")
+            .expect("stale writer evicts and retries at the fresh era");
+        assert_eq!(repaired.incarnation(), 1);
+
+        let snapshot = counterpart.snapshot().await;
+        let conditional_head_deletes: Vec<_> = snapshot
+            .requests
+            .iter()
+            .filter(|request| {
+                request.method == Method::DELETE.as_str()
+                    && request.key.as_deref() == Some(head_key.as_str())
+                    && request.if_match.is_some()
+            })
+            .collect();
+        assert_eq!(
+            conditional_head_deletes.len(),
+            1,
+            "L8 DEFECT: stale-era eviction is an unconditional DELETE after a separate GET; \
+             a fresh-era writer can replace the checked bytes before it is deleted. \
+             Wire requests: {:?}",
+            snapshot.requests
+        );
+        let _ = counterpart.shutdown().await;
+    }
+
+    /// L9 (batch-9 teardown): the post-landing re-check is not a
+    /// publication fence. If its counter GET fails (or the writer
+    /// crashes) after the stale PUT lands, the destroyed era's exact
+    /// head bytes remain visible and the pre-destroy HeadRead can CAS
+    /// them. This is the partial-state window the sequential L1/L7
+    /// witnesses do not exercise.
+    #[tokio::test]
+    async fn l9_post_landing_recheck_failure_cannot_publish_a_destroyed_era() {
+        let (store, _keyspace, counterpart) = keyspace_fixture("l9-post-landing-cut").await;
+        let lineage =
+            KernelLineage::new("l9/post-landing-cut", SuccessorPolicy::SuccessorCapable).unwrap();
+        let kernel = StateKernel::new(Arc::clone(&store), lineage.clone());
+        let head_key = lineage.head_key();
+        let genesis_record = record(&lineage, 0, None, b"l9-identical-genesis");
+        let era1 = kernel
+            .append_genesis(&genesis_record)
+            .await
+            .expect("era-1 genesis");
+
+        counterpart.arm_conditional_head_barrier(&head_key).await;
+        let writer = tokio::spawn({
+            let store = Arc::clone(&store);
+            let lineage = lineage.clone();
+            let record = genesis_record.clone();
+            async move {
+                StateKernel::new(store, lineage)
+                    .append_genesis(&record)
+                    .await
+            }
+        });
+        wait_for_first_head_barrier_arrival(&counterpart).await;
+        kernel
+            .destroy("l9-race", "batch9-teardown")
+            .await
+            .expect("destroy while stale writer is parked");
+
+        counterpart
+            .arm_storage_fault(
+                StorageFaultCut::LineageIncarnationRead,
+                StorageFaultPhase::BeforeEffect,
+                &lineage.incarnation_key(),
+            )
+            .await;
+        assert!(
+            store
+                .upload_conditional(
+                    &head_key,
+                    b"doomed-gate-opener".to_vec().into(),
+                    Some("etag-that-cannot-match"),
+                )
+                .await
+                .is_err(),
+            "the gate opener must not create a head"
+        );
+        assert!(
+            matches!(
+                writer.await.expect("parked writer joins"),
+                Err(KernelError::StateUnavailable {
+                    operation: "lineage incarnation counter read"
+                })
+            ),
+            "the post-landing counter read must hit the armed cut"
+        );
+
+        let published_stale = kernel
+            .read_head()
+            .await
+            .expect("stale head remains after the re-check cut");
+        assert_eq!(published_stale.incarnation(), 0);
+        assert_eq!(published_stale.head, era1.head);
+        assert_eq!(published_stale.etag, era1.etag);
+
+        let stale_successor = record(
+            &lineage,
+            1,
+            Some(era1.record_position()),
+            b"l9-stale-successor",
+        );
+        match kernel.append_successor(&stale_successor, &era1).await {
+            Err(KernelError::LineageHeadConflict { .. }) => {}
+            Ok(advanced) => panic!(
+                "L9 DEFECT: the era-1 HeadRead CASed a head published after its destroy; \
+                 generation {} still carries destroyed incarnation {}",
+                advanced.generation(),
+                advanced.incarnation()
+            ),
+            Err(other) => panic!("L9: unexpected stale-token result: {other:?}"),
+        }
+        let _ = counterpart.shutdown().await;
+    }
+
+    /// L10 (batch-9 teardown): destroy observed one exact head and
+    /// bumped the counter for that lifetime. Its tail may delete only
+    /// that observed etag; an unconditional DELETE can remove a head
+    /// recreated by a concurrent destroy/writer after the bump.
+    #[tokio::test]
+    async fn l10_destroy_deletes_only_the_observed_head_etag() {
+        let fixture =
+            new_named_fixture("l10/destroy-wire", SuccessorPolicy::SuccessorCapable).await;
+        let genesis_record = record(&fixture.lineage, 0, None, b"l10-genesis");
+        let observed = fixture
+            .kernel
+            .append_genesis(&genesis_record)
+            .await
+            .expect("genesis");
+        fixture
+            .kernel
+            .destroy("l10", "batch9-teardown")
+            .await
+            .expect("destroy");
+
+        let snapshot = fixture.counterpart.snapshot().await;
+        let deletion = snapshot.requests.iter().find(|request| {
+            request.method == Method::DELETE.as_str()
+                && request.key.as_deref() == Some(fixture.lineage.head_key().as_str())
+        });
+        let Some(deletion) = deletion else {
+            panic!(
+                "L10 DEFECT: destroy emitted no conditional head DELETE; its unconditional \
+                 bulk-delete tail can erase a fresh incarnation without bumping its era. \
+                 Wire requests: {:?}",
+                snapshot.requests
+            );
+        };
+        assert_eq!(
+            deletion.if_match.as_deref().map(unquoted_etag),
+            Some(observed.etag.as_str()),
+            "L10 DEFECT: destroy's head DELETE is not fenced to the head it loaded; \
+             a late destroy can erase a fresh incarnation without bumping its era"
+        );
+        fixture.shutdown().await;
+    }
+
+    /// L11: dual decode is exact. A v1 envelope carrying the v2 field
+    /// and a v2 envelope missing it both fail closed; neither shape is
+    /// accepted through the other decoder.
+    #[test]
+    fn l11_v1_v2_head_shapes_cannot_be_confused() {
+        let lineage = KernelLineage::new("l11/decode", SuccessorPolicy::SuccessorCapable).unwrap();
+        let digest = "a".repeat(64);
+        let v1_label_on_v2_shape = serde_json::to_vec(&HeadWire {
+            envelope: HEAD_ENVELOPE_V1.to_owned(),
+            generation: 0,
+            incarnation: 0,
+            lineage: "l11/decode".to_owned(),
+            prior: None,
+            record_digest: digest.clone(),
+        })
+        .unwrap();
+        let v2_label_on_v1_shape = serde_json::to_vec(&HeadWireV1 {
+            envelope: HEAD_ENVELOPE_V2.to_owned(),
+            generation: 0,
+            lineage: "l11/decode".to_owned(),
+            prior: None,
+            record_digest: digest,
+        })
+        .unwrap();
+
+        for bytes in [v1_label_on_v2_shape, v2_label_on_v1_shape] {
+            assert!(matches!(
+                CanonicalHead::from_bytes(&lineage, &bytes),
+                Err(KernelError::StateRecordMalformed { .. })
+            ));
+        }
+    }
+
+    /// L12: concurrent first destroys may consume incarnation numbers,
+    /// but every successful CAS moves forward and a recreated head is
+    /// stamped with the final counter. No counter regression or wedge.
+    #[tokio::test]
+    async fn l12_concurrent_first_destroy_counter_converges_monotonically() {
+        let (store, _keyspace, counterpart) = keyspace_fixture("l12-counter-race").await;
+        let lineage =
+            KernelLineage::new("l12/counter-race", SuccessorPolicy::SuccessorCapable).unwrap();
+        let kernel = StateKernel::new(Arc::clone(&store), lineage.clone());
+        let genesis_record = record(&lineage, 0, None, b"l12-genesis");
+        kernel.append_genesis(&genesis_record).await.unwrap();
+
+        let mut destroys = Vec::new();
+        for actor in 0..6 {
+            destroys.push(tokio::spawn({
+                let store = Arc::clone(&store);
+                let lineage = lineage.clone();
+                async move {
+                    StateKernel::new(store, lineage)
+                        .destroy("l12-race", &format!("actor-{actor}"))
+                        .await
+                }
+            }));
+        }
+        for destroy in destroys {
+            destroy.await.expect("destroy task joins").expect("destroy");
+        }
+        assert!(matches!(
+            kernel.read_head_state().await.unwrap(),
+            LineageHeadState::Destroyed(_)
+        ));
+        let counter = kernel.current_incarnation().await.unwrap();
+        assert!((1..=6).contains(&counter));
+        let reborn = kernel.append_genesis(&genesis_record).await.unwrap();
+        assert_eq!(reborn.incarnation(), counter);
+        let _ = counterpart.shutdown().await;
+    }
+
+    /// L13: the terminal read surface remains exactly the head GET and
+    /// terminal-record GET. The incarnation counter is not consulted.
+    #[tokio::test]
+    async fn l13_terminal_read_remains_two_gets_without_counter_access() {
+        let fixture = new_named_fixture("l13/read-shape", SuccessorPolicy::SuccessorCapable).await;
+        let genesis_record = record(&fixture.lineage, 0, None, b"l13-genesis");
+        let head = fixture
+            .kernel
+            .append_genesis(&genesis_record)
+            .await
+            .expect("genesis");
+        let before = fixture
+            .counterpart
+            .snapshot()
+            .await
+            .requests
+            .last()
+            .map_or(0, |request| request.sequence);
+
+        fixture
+            .kernel
+            .read_terminal_record()
+            .await
+            .expect("terminal read");
+        let snapshot = fixture.counterpart.snapshot().await;
+        let expected_head_key = fixture.lineage.head_key();
+        let expected_record_key = fixture.lineage.object_key(head.record_digest());
+        let counter_key = fixture.lineage.incarnation_key();
+        let gets: Vec<_> = snapshot
+            .requests
+            .iter()
+            .filter(|request| request.sequence > before && request.method == Method::GET.as_str())
+            .collect();
+        assert_eq!(gets.len(), 2, "terminal read request shape moved: {gets:?}");
+        assert_eq!(
+            gets.iter()
+                .filter_map(|request| request.key.as_deref())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([expected_head_key.as_str(), expected_record_key.as_str()])
+        );
+        assert!(
+            gets.iter()
+                .all(|request| request.key.as_deref() != Some(counter_key.as_str()))
+        );
+        fixture.shutdown().await;
     }
 }
