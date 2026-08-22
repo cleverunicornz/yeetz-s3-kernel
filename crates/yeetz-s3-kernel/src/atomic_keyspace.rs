@@ -450,21 +450,61 @@ impl AtomicKeyspace {
     pub async fn create(&self, key: &str, value: Bytes) -> Result<(), KeyspaceError> {
         Self::ensure_not_tombstone_key(key)?;
         let object_key = self.object_key(key)?;
-        let incarnation = self.current_incarnation(key).await?;
-        let value = ValueEnvelope::new(incarnation, 0, value).encode();
-        match self
-            .store
-            .upload_conditional(&object_key, value, None)
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(ObjectStoreError::PreconditionFailed(_)) => {
-                Err(KeyspaceError::AlreadyExists(key.to_string()))
+        // The incarnation read and the put-if-absent are separate
+        // requests: a `destroy` can bump the counter between them and
+        // delete the value before this PUT lands, leaving the new
+        // envelope stamped with the DESTROYED era's incarnation —
+        // byte-identical to the destroyed era's value, which reopens
+        // the cross-era ABA batch 7 exists to close (teardown finding
+        // T3, 2026-08-22). After landing, re-check the counter; evict
+        // only our own stale-era bytes and retry at the fresh
+        // incarnation.
+        for _ in 0..8 {
+            let incarnation = self.current_incarnation(key).await?;
+            let encoded = ValueEnvelope::new(incarnation, 0, value.clone()).encode();
+            match self
+                .store
+                .upload_conditional(&object_key, encoded.clone(), None)
+                .await
+            {
+                Ok(_) => {
+                    let now = self.current_incarnation(key).await?;
+                    if now == incarnation {
+                        return Ok(());
+                    }
+                    match self.store.download(&object_key).await {
+                        Ok(bytes) if bytes == encoded => {
+                            // Still our stale write: evict it.
+                            let _ = self.store.delete(&object_key).await;
+                        }
+                        Ok(_) => {
+                            // A newer lifetime holds the key: this
+                            // create lost the put-if-absent race, the
+                            // same AlreadyExists a sequential racer
+                            // sees.
+                            return Err(KeyspaceError::AlreadyExists(key.to_string()));
+                        }
+                        Err(ObjectStoreError::NotFound(_)) => {}
+                        Err(_) => {
+                            return Err(KeyspaceError::Unavailable {
+                                operation: "keyspace create (stale-era eviction check)",
+                            });
+                        }
+                    }
+                }
+                Err(ObjectStoreError::PreconditionFailed(_)) => {
+                    return Err(KeyspaceError::AlreadyExists(key.to_string()));
+                }
+                Err(_) => {
+                    return Err(KeyspaceError::Unavailable {
+                        operation: "keyspace create",
+                    });
+                }
             }
-            Err(_) => Err(KeyspaceError::Unavailable {
-                operation: "keyspace create",
-            }),
         }
+        Err(KeyspaceError::Unavailable {
+            operation: "keyspace create (incarnation contention)",
+        })
     }
 
     /// Read a key's value (`None` when absent).
