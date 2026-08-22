@@ -1,3 +1,22 @@
+# TEMP-WORK LAW — read before creating ANY file outside the repo
+
+All scratch and temporary work lives under `/Volumes/code/temp/` —
+nowhere else.
+
+- **NEVER use `mktemp`, `/tmp`, `/private/tmp`, `$TMPDIR`, or any path on
+  the boot drive.** The main OS drive is small and is not ours to consume.
+  Writing scratch there is a defect, not a style choice.
+- Create whatever subfolders you need under
+  `/Volumes/code/temp/<task-or-branch>/` and work freely inside that
+  prefix — build dirs, cargo targets (`CARGO_TARGET_DIR`), fixtures,
+  spools, extracted trees, everything.
+- Git worktrees belong in the sanctioned worktree locations
+  (`/Volumes/code/paseo-worktrees/`), never in `/tmp`.
+- Tools that default to a temp location get overridden: run them with
+  `TMPDIR=/Volumes/code/temp/<task>` or pass explicit output paths.
+- **When your task completes, remove what you created.** Leaving scratch
+  behind is an incomplete delivery.
+
 # AGENTS.md — yeetz-s3-kernel
 
 S3-native storage kernel in Rust: the single atomic point through
