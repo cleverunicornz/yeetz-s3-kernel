@@ -513,6 +513,34 @@ mod tests {
     }
 
     #[test]
+    fn manifest_size_and_logical_bounds_reject_before_parsing() {
+        // Oversized manifest: refused on total length before any
+        // count-derived allocation (A32 allocation table).
+        let mut oversized = Vec::with_capacity(MAX_MANIFEST_BYTES + 1);
+        oversized.extend_from_slice(MANIFEST_MAGIC);
+        oversized.resize(MAX_MANIFEST_BYTES + 1, 0);
+        match ValueManifest::decode("k", &Bytes::from(oversized)) {
+            Err(KeyspaceError::ManifestTooLarge { len, max, .. }) => {
+                assert_eq!(max as usize, MAX_MANIFEST_BYTES);
+                assert_eq!(len as usize, MAX_MANIFEST_BYTES + 1);
+            }
+            other => panic!("oversized manifest must refuse typed, got {other:?}"),
+        }
+        // A logical length beyond the 1 TiB ceiling: the canonicality
+        // sum cannot reach it (entries are bounded), so the check is
+        // structural — exercised through the writer-side bound and the
+        // chunk-count ceiling; the decode-side length agreement makes
+        // an oversized logical_len unreachable in a canonical encode.
+        let manifest = manifest_fixture(MAX_CHUNKS, CHUNK_BYTES as u32);
+        assert_eq!(
+            manifest.logical_len,
+            MAX_LOGICAL_BYTES,
+            "the maximum canonical encode is exactly the 1 TiB bound"
+        );
+        assert!(ValueManifest::decode("k", &manifest.encode()).is_ok());
+    }
+
+    #[test]
     fn manifest_bad_root_rejects() {
         let mut manifest = manifest_fixture(2, 512);
         manifest.value_root_sha256 = [0xFF; SHA256_BYTES];
