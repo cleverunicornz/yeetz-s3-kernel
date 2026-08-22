@@ -1,11 +1,12 @@
-//! Rig: real-backend ABA probe — ruling #3 (ADR 0016/0017 addendum).
+//! Rig: real-backend kernel capability probe — ABA rulings plus the
+//! streaming-value conditional-multipart design witness.
 //! Run: EXO_S3_KEY/EXO_S3_SECRET/EXO_S3_BUCKET set, then
 //! `cargo run -p yeetz-rigs --example real_s3_aba_probe`
 //!
-//! Measures what the loopback cannot model on a real S3 backend
-//! (Exoscale SOS): etag recurrence for identical content, conditional
-//! PUT semantics (create race, CAS, the ABA case), LIST-after-write
-//! visibility. Prints the verdict table; fails loudly on surprise.
+//! Measures what the loopback cannot establish on Exoscale SOS: etag
+//! recurrence, conditional PUTs, LIST-after-write, conditional multipart
+//! completion, incomplete-upload abort/listing, and part-addressed reads.
+//! Prints every verdict row; integrity and cleanup surprises fail loudly.
 
 #[tokio::main]
 async fn main() {
