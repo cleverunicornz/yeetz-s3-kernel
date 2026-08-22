@@ -2,6 +2,7 @@
 
 use aws_sdk_s3::Client as AwsS3Client;
 use aws_sdk_s3::config::{Credentials as AwsCredentials, Region};
+use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 use bytes::Bytes;
@@ -599,6 +600,60 @@ impl ObjectStoreClient {
 
         debug!(path = %path, "Object deleted");
         Ok(())
+    }
+
+    /// Delete an object only when its current etag matches `expected_etag`
+    /// (`DELETE` + `If-Match` — the delete-side dual of
+    /// [`upload_conditional`](Self::upload_conditional)'s If-Match CAS).
+    ///
+    /// S3 conditional-delete wire semantics: `204` deletes; `412
+    /// PreconditionFailed` when the stored etag differs; `404 NoSuchKey`
+    /// when the object is absent (never-existed and already-deleted are
+    /// indistinguishable). The check is single-flight at the store, so the
+    /// operation is atomic against concurrent conditional writes and other
+    /// deletes: exactly one mutation can win any etag era.
+    ///
+    /// Requires an endpoint-configured backend (the AWS client shared with
+    /// the explicit multipart flows). In-memory test stores do not model
+    /// conditional deletes, and a read-then-delete fallback would reopen the
+    /// race this primitive exists to close — so they fail closed with
+    /// [`ObjectStoreError::DeleteFailed`] rather than degrade to an
+    /// unconditional delete.
+    pub async fn delete_conditional(
+        &self,
+        path: &str,
+        expected_etag: &str,
+    ) -> Result<(), ObjectStoreError> {
+        let client = self.multipart_client.as_ref().ok_or_else(|| {
+            ObjectStoreError::DeleteFailed(
+                "conditional delete requires an S3 endpoint backend; \
+                 in-memory test stores do not support it"
+                    .to_string(),
+            )
+        })?;
+        // If-Match carries the HTTP-standard quoted etag; inputs here are
+        // normalized (quote-free) on every read path, so quote defensively.
+        let quoted_etag = format!("\"{}\"", expected_etag.trim_matches('"'));
+        debug!(path = %path, etag = %expected_etag, "Conditional delete");
+
+        client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(path)
+            .if_match(quoted_etag)
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(|error| match error.as_service_error() {
+                Some(service) => match service.code() {
+                    Some("PreconditionFailed") => ObjectStoreError::PreconditionFailed(format!(
+                        "conditional delete failed for {path}: etag mismatch"
+                    )),
+                    Some("NoSuchKey") => ObjectStoreError::NotFound(path.to_string()),
+                    _ => ObjectStoreError::DeleteFailed(provider_error_text(service)),
+                },
+                None => ObjectStoreError::DeleteFailed(provider_error_text(&error)),
+            })
     }
 
     /// Check if an object exists.
