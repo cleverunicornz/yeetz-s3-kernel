@@ -25,8 +25,9 @@ tasks; A28/A32/A35 public-API legs live in
 The batch-10 teardown fence-ABA witness is
 `teardown_reerected_fence_rejects_a_stale_release_etag` in the
 loopback streaming contract suite. Successive fence erections have
-non-recurrent content etags, and a release token from the first gets
-`PreconditionFailed` against the second without removing it.
+non-recurrent content etags, and the release CAS returns typed
+`MaintenanceFenceConflict` instead of rebinding to or removing a
+replacement fence.
 
 The forge-facing rigs (connect transport legs, gRPC legs, write-path
 concurrency, events migration) stayed in the parent `yeetz` repo —

@@ -17,7 +17,7 @@ use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use yeetz_sdk_s3::{ObjectStoreClient, ObjectStoreError};
+use yeetz_sdk_s3::ObjectStoreClient;
 
 use crate::atomic_keyspace::{AtomicKeyspace, KEYSPACE_ROOT, KeyState, KeyspaceError};
 use crate::state_kernel::gateway_state_contract::{
@@ -1017,8 +1017,10 @@ async fn teardown_reerected_fence_rejects_a_stale_release_etag() {
         .unwrap();
     assert_ne!(first_etag, second_etag, "fence epochs must not recur");
     assert!(matches!(
-        store.delete_conditional(&fence_key, &first_etag).await,
-        Err(ObjectStoreError::PreconditionFailed(_))
+        keyspace
+            .release_observed_maintenance_fence(&first_etag)
+            .await,
+        Err(KeyspaceError::MaintenanceFenceConflict(namespace)) if namespace == "fence-aba"
     ));
     assert!(keyspace.maintenance_fence_present_for_test().await.unwrap());
 

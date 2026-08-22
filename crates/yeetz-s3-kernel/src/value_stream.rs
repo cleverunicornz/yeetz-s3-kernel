@@ -1479,42 +1479,45 @@ impl AtomicKeyspace {
     }
 
     /// Release the fence by conditional delete (the release CAS).
-    /// Idempotent; bounded contention retry.
+    /// Absence is idempotent. One invocation is bound to the epoch it
+    /// reads: contention returns a typed conflict rather than deleting
+    /// a replacement fence.
     pub async fn release_maintenance_fence(&self) -> Result<(), KeyspaceError> {
         let fence_object_key = self.fence_object_key();
-        for _ in 0..8 {
-            match self.store.download_with_etag(&fence_object_key).await {
-                Ok(meta) => {
-                    let Some(etag) = meta.etag else {
-                        return Err(KeyspaceError::Unavailable {
-                            operation: "keyspace release_maintenance_fence (no etag)",
-                        });
-                    };
-                    match self
-                        .store
-                        .delete_conditional(&fence_object_key, &etag)
-                        .await
-                    {
-                        Ok(()) | Err(ObjectStoreError::NotFound(_)) => return Ok(()),
-                        Err(ObjectStoreError::PreconditionFailed(_)) => {}
-                        Err(_) => {
-                            return Err(KeyspaceError::Unavailable {
-                                operation: "keyspace release_maintenance_fence",
-                            });
-                        }
-                    }
-                }
-                Err(ObjectStoreError::NotFound(_)) => return Ok(()),
-                Err(_) => {
+        match self.store.download_with_etag(&fence_object_key).await {
+            Ok(meta) => {
+                let Some(etag) = meta.etag else {
                     return Err(KeyspaceError::Unavailable {
-                        operation: "keyspace release_maintenance_fence read",
+                        operation: "keyspace release_maintenance_fence (no etag)",
                     });
-                }
+                };
+                self.release_observed_maintenance_fence(&etag).await
             }
+            Err(ObjectStoreError::NotFound(_)) => Ok(()),
+            Err(_) => Err(KeyspaceError::Unavailable {
+                operation: "keyspace release_maintenance_fence read",
+            }),
         }
-        Err(KeyspaceError::Unavailable {
-            operation: "keyspace release_maintenance_fence (contention)",
-        })
+    }
+
+    /// Execute one release CAS against the exact observed fence epoch.
+    pub(crate) async fn release_observed_maintenance_fence(
+        &self,
+        etag: &str,
+    ) -> Result<(), KeyspaceError> {
+        match self
+            .store
+            .delete_conditional(&self.fence_object_key(), etag)
+            .await
+        {
+            Ok(()) | Err(ObjectStoreError::NotFound(_)) => Ok(()),
+            Err(ObjectStoreError::PreconditionFailed(_)) => Err(
+                KeyspaceError::MaintenanceFenceConflict(self.namespace.clone()),
+            ),
+            Err(_) => Err(KeyspaceError::Unavailable {
+                operation: "keyspace release_maintenance_fence",
+            }),
+        }
     }
 
     /// Whether the maintenance fence currently stands (test/probe

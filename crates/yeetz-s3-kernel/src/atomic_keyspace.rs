@@ -213,6 +213,11 @@ pub enum KeyspaceError {
     /// The quiesced chunk sweep requires the maintenance fence.
     #[error("keyspace chunk sweep requires the maintenance fence: {0}")]
     MaintenanceFenceRequired(String),
+    /// A release CAS observed one maintenance-fence epoch, but a
+    /// different epoch replaced it before conditional deletion. The
+    /// stale release must not rebind to and delete the replacement.
+    #[error("keyspace maintenance fence changed during release: {0}")]
+    MaintenanceFenceConflict(String),
     /// A streamed create's manifest landed in a stale incarnation era
     /// and was conditionally evicted; the caller must re-run the
     /// write at the fresh era (the streamed bytes are not retained
