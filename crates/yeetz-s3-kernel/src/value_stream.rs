@@ -868,14 +868,18 @@ impl AtomicKeyspace {
     /// Whether a seq-shaped key is below the namespace's certified
     /// trim floor (logically retired history).
     pub(crate) async fn seq_retired(&self, key: &str) -> Result<Option<u64>, KeyspaceError> {
+        Ok(Self::seq_retired_at_floor(key, self.trim_floor("").await?))
+    }
+
+    fn seq_retired_at_floor(key: &str, first_retained: Option<u64>) -> Option<u64> {
         if let Some(seq) = key.rsplit('/').next().and_then(Self::parse_seq_component)
             && seq > 0
-            && let Some(first_retained) = self.trim_floor("").await?
+            && let Some(first_retained) = first_retained
             && seq < first_retained
         {
-            return Ok(Some(first_retained));
+            return Some(first_retained);
         }
-        Ok(None)
+        None
     }
 
     /// The control-metadata era read (ADR 0004 §2.3): incarnation and
@@ -1697,37 +1701,46 @@ impl AtomicKeyspace {
                 _ => classification.unresolved_count += 1,
             }
         }
+        // A certified root trim is the logical commit even when a
+        // pre-sweep v3 control survives below it. Resolve the floor
+        // once per bounded page; an unavailable floor read aborts the
+        // sweep rather than risking a live-chunk delete.
+        let root_trim_floor = self.trim_floor("").await?;
         for (key, chunk_keys) in by_key {
             let control_object_key = self.object_key(&key)?;
-            // Exact-read current control once per key.
+            // Non-retired keys exact-read current control once.
             let referenced: Option<HashSet<String>> =
-                match self.store.download(&control_object_key).await {
-                    Ok(bytes) => match ControlEnvelope::decode(&key, &bytes) {
-                        Ok(ControlEnvelope::Chunked(manifest)) => Some(
-                            manifest
-                                .entries
-                                .iter()
-                                .map(|entry| {
-                                    chunk_object_key(
-                                        &self.namespace,
-                                        &key,
-                                        manifest.incarnation,
-                                        manifest.version,
-                                        &entry.digest_hex(),
-                                    )
-                                })
-                                .collect(),
-                        ),
-                        // Inline v2 references no chunks.
-                        Ok(ControlEnvelope::Inline(_)) => Some(HashSet::new()),
-                        // Corrupt control: fail closed for this key.
+                if Self::seq_retired_at_floor(&key, root_trim_floor).is_some() {
+                    Some(HashSet::new())
+                } else {
+                    match self.store.download(&control_object_key).await {
+                        Ok(bytes) => match ControlEnvelope::decode(&key, &bytes) {
+                            Ok(ControlEnvelope::Chunked(manifest)) => Some(
+                                manifest
+                                    .entries
+                                    .iter()
+                                    .map(|entry| {
+                                        chunk_object_key(
+                                            &self.namespace,
+                                            &key,
+                                            manifest.incarnation,
+                                            manifest.version,
+                                            &entry.digest_hex(),
+                                        )
+                                    })
+                                    .collect(),
+                            ),
+                            // Inline v2 references no chunks.
+                            Ok(ControlEnvelope::Inline(_)) => Some(HashSet::new()),
+                            // Corrupt control: fail closed for this key.
+                            Err(_) => None,
+                        },
+                        // Absent control: every chunk is an orphan candidate
+                        // (online this includes live candidates — quiescence
+                        // is what makes them true orphans).
+                        Err(ObjectStoreError::NotFound(_)) => Some(HashSet::new()),
                         Err(_) => None,
-                    },
-                    // Absent control: every chunk is an orphan candidate
-                    // (online this includes live candidates — quiescence
-                    // is what makes them true orphans).
-                    Err(ObjectStoreError::NotFound(_)) => Some(HashSet::new()),
-                    Err(_) => None,
+                    }
                 };
             match referenced {
                 Some(referenced) => {

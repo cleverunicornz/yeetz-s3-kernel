@@ -48,6 +48,12 @@ non-recurrent content etags, and the release CAS returns typed
 `MaintenanceFenceConflict` instead of rebinding to or removing a
 replacement fence.
 
+The batch-10 teardown trim/GC witness is
+`teardown_sweep_reclaims_chunks_of_a_trimmed_zombie_control` in the
+loopback streaming contract suite. A certified `OffsetExpired` key
+retains no chunks even when its old v3 control survives until the
+later control sweep.
+
 The forge-facing rigs (connect transport legs, gRPC legs, write-path
 concurrency, events migration) stayed in the parent `yeetz` repo —
 they prove forge behavior against forge types.
