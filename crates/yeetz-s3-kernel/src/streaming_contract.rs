@@ -1120,6 +1120,51 @@ async fn a34_quiesced_sweep_inventory_and_fences() {
     counterpart.shutdown().await;
 }
 
+#[tokio::test]
+async fn teardown_reerected_fence_rejects_a_stale_release_etag() {
+    let (store, keyspace, counterpart) = keyspace_fixture("fence-aba").await;
+    let fence_key = control_key("fence-aba", "fences/gc");
+
+    keyspace.set_maintenance_fence().await.unwrap();
+    let first_etag = store
+        .download_with_etag(&fence_key)
+        .await
+        .unwrap()
+        .etag
+        .unwrap();
+    keyspace.release_maintenance_fence().await.unwrap();
+
+    keyspace.set_maintenance_fence().await.unwrap();
+    let second_etag = store
+        .download_with_etag(&fence_key)
+        .await
+        .unwrap()
+        .etag
+        .unwrap();
+    assert_ne!(first_etag, second_etag, "fence epochs must not recur");
+    assert!(matches!(
+        keyspace
+            .release_observed_maintenance_fence(&first_etag)
+            .await,
+        Err(KeyspaceError::MaintenanceFenceConflict(namespace)) if namespace == "fence-aba"
+    ));
+    assert!(keyspace.maintenance_fence_present_for_test().await.unwrap());
+
+    // Repeating set while the second fence stands is still idempotent.
+    keyspace.set_maintenance_fence().await.unwrap();
+    assert_eq!(
+        store
+            .download_with_etag(&fence_key)
+            .await
+            .unwrap()
+            .etag
+            .unwrap(),
+        second_etag
+    );
+    keyspace.release_maintenance_fence().await.unwrap();
+    counterpart.shutdown().await;
+}
+
 /// Unavailable or corrupt control fails closed for that key: the sweep
 /// refuses to delete what it cannot classify.
 #[tokio::test]

@@ -41,6 +41,13 @@ public streaming contract suite. It proves that namespace/key segment
 splits cannot compose another namespace's exact `fences/gc` object,
 while a non-control near miss remains usable.
 
+The batch-10 teardown fence-ABA witness is
+`teardown_reerected_fence_rejects_a_stale_release_etag` in the
+loopback streaming contract suite. Successive fence erections have
+non-recurrent content etags, and the release CAS returns typed
+`MaintenanceFenceConflict` instead of rebinding to or removing a
+replacement fence.
+
 The forge-facing rigs (connect transport legs, gRPC legs, write-path
 concurrency, events migration) stayed in the parent `yeetz` repo —
 they prove forge behavior against forge types.
