@@ -10,7 +10,17 @@ Exoscale probe.
 | Rig | Promise (Claim) | Verdict | Run |
 |---|---|---|---|
 | `streams_contracts` | yeetz-s3-streams (ADR 0002): (1) concurrent appends allocate one winner per seq (S1); (2) replay is dense, ordered, and LIST-qualified complete (S2); (3) a mid-log deletion surfaces Corrupt naming the seq — damage is loud, never skipped (S4); (4) idempotent re-append converges to the original receipt (S3); (5) cursor advance is monotonic and idempotent. | PASS (all five legs green; carried from yeetz run [32460116519](https://github.com/cleverunicornz/yeetz/actions/runs/32460116519)) | `cargo run -p yeetz-rigs --example streams_contracts` |
-| `real_s3_aba_probe` | Real-backend kernel capability probe (ADR 0001 ABA addendum; ADR 0004 multipart alternative): measures raw Exoscale etag recurrence/conditional requests, proves versioned `AtomicKeyspace` closure, and measures conditional multipart completion, incomplete-upload abort/list visibility, and part-addressed reads; isolated prefixes and cleanup are asserted. | **PASS; RAW ABA HAZARD + PARTIAL MULTIPART WITNESS**: current-etag conditional completion succeeded, stale completion returned `PreconditionFailed`, incomplete upload was listed then absent after abort, exact multipart bytes landed, but `GetObject partNumber` returned `UnsupportedArgument`; 25 verdict rows and empty object/MPU cleanup. ([run 32592980637](https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/32592980637). Historical ABA-only witness: [run 32459327751](https://github.com/cleverunicornz/yeetz/actions/runs/32459327751).) | `gh workflow run ci-dev.yml -f ref=<ref> -f task=real-s3` |
+| `real_s3_aba_probe` | Real-backend kernel capability probe (ADR 0001 ABA addendum; ADR 0004 multipart alternative + streaming legs): measures raw Exoscale etag recurrence/conditional requests, proves versioned `AtomicKeyspace` closure, measures conditional multipart completion, incomplete-upload abort/list visibility, and part-addressed reads; and (ADR 0004) proves the streamed v3 round trip on real S3 — chunked create/CAS with exact whole/reader/range bytes, v3 stale-token conditional delete naming the manifest era, delete-free chunk metering, the maintenance fence, and the quiesced sweep (which doubles as the run's chunk-root cleanup); isolated prefixes and cleanup are asserted. | **PASS; RAW ABA HAZARD + PARTIAL MULTIPART WITNESS**: current-etag conditional completion succeeded, stale completion returned `PreconditionFailed`, incomplete upload was listed then absent after abort, exact multipart bytes landed, but `GetObject partNumber` returned `UnsupportedArgument`; 25 verdict rows and empty object/MPU cleanup (run [32592980637](https://github.com/cleverunicornz/yeetz)). **Streaming legs: pending this batch's `real-s3` dispatch.** | `cargo run -p yeetz-rigs --example real_s3_aba_probe` |
+
+The ADR 0004 loopback wire rig (A24–A34: manifest-only visibility,
+commit oracle, conditional stale-era eviction, corruption taxonomy,
+state/deletion composition, inline request profile, lost-response
+crash matrix, fence/inventory/sweep, frozen-LIST leak, and the
+broken-quiescence demonstration cut) is the kernel's in-crate
+`streaming_contract` suite, executed by the standard `gates`/`nextest`
+tasks; A28/A32/A35 public-API legs live in
+`crates/yeetz-s3-kernel/tests/streaming_contract.rs`, and S11 in
+`crates/yeetz-s3-streams/tests/streams_envelope_bound.rs`.
 
 The forge-facing rigs (connect transport legs, gRPC legs, write-path
 concurrency, events migration) stayed in the parent `yeetz` repo —

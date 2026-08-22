@@ -9,6 +9,18 @@ pub enum StreamsError {
     /// A caller-supplied identifier or payload failed validation.
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
+    /// The canonical encoded streams envelope exceeds the structural
+    /// 16 MiB bound (ADR 0004 §3.4/S11): enforcement occurs after
+    /// canonical JSON/base64 encoding and before the first keyspace
+    /// effect, so every streams write stays a single inline v2
+    /// object regardless of the kernel's `INLINE_MAX` ruling.
+    #[error(
+        "streams envelope too large: encoded_len {encoded_len} > max_encoded_len {max_encoded_len}"
+    )]
+    EnvelopeTooLarge {
+        encoded_len: u64,
+        max_encoded_len: u64,
+    },
     /// The stream does not exist (no genesis object at seq 0).
     #[error("stream not found: {0:?}")]
     StreamNotFound(StreamId),

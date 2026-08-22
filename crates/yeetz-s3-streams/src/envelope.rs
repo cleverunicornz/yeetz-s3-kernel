@@ -14,6 +14,14 @@ pub const ENVELOPE_FORMAT_VERSION: u32 = 1;
 /// The schema id of the immutable genesis/config record at seq 0.
 pub const GENESIS_SCHEMA_ID: &str = "stream.genesis.v1";
 
+/// The structural encoded-envelope bound (ADR 0004 §3.4, S11):
+/// every envelope written by create, append, or migration — genesis
+/// and config included — is at most 16 MiB after canonical
+/// JSON/base64 encoding, independent of the kernel's `INLINE_MAX`
+/// threshold, so streams stay inline and the chunk root is never
+/// touched by a streams write.
+pub const MAX_ENCODED_ENVELOPE_BYTES: usize = 16 * 1024 * 1024;
+
 #[derive(Debug, Serialize, Deserialize)]
 struct WireEnvelope {
     format_version: u32,
@@ -65,6 +73,19 @@ impl Envelope {
             payload_sha256: sha256_hex(payload),
             payload: base64::engine::general_purpose::STANDARD.encode(payload),
         };
+        let encoded = bytes::Bytes::from(
+            serde_json::to_vec(&wire)
+                .map_err(|_| StreamsError::InvalidArgument("envelope serialization".into()))?,
+        );
+        // The structural bound (ADR 0004 §3.4/S11): enforced after
+        // canonical encoding, before the envelope exists as a value —
+        // therefore before any keyspace effect. Oversize is typed.
+        if encoded.len() > MAX_ENCODED_ENVELOPE_BYTES {
+            return Err(StreamsError::EnvelopeTooLarge {
+                encoded_len: encoded.len() as u64,
+                max_encoded_len: MAX_ENCODED_ENVELOPE_BYTES as u64,
+            });
+        }
         Ok(Self {
             format_version: wire.format_version,
             stream_id: stream.clone(),
@@ -72,10 +93,7 @@ impl Envelope {
             stable_event_id: stable_event_id.clone(),
             schema_id: schema_id.clone(),
             payload: bytes::Bytes::copy_from_slice(payload),
-            encoded: bytes::Bytes::from(
-                serde_json::to_vec(&wire)
-                    .map_err(|_| StreamsError::InvalidArgument("envelope serialization".into()))?,
-            ),
+            encoded,
         })
     }
 

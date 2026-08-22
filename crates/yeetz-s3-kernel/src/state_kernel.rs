@@ -2747,6 +2747,18 @@ fn is_valid_identifier(value: &str) -> bool {
 }
 
 fn is_valid_lineage(value: &str) -> bool {
+    // ADR 0004 §1.4: the two kernel-reserved physical roots are
+    // unoccupiable by lineages — the exact roots and every
+    // descendant. `keyspace-x` remains valid: segment equality, not
+    // substring matching. This closes the latent `keyspace` collision
+    // and protects the chunk root structurally; application
+    // convention is insufficient.
+    let first_segment = value.split('/').next().unwrap_or_default();
+    if first_segment == crate::atomic_keyspace::KEYSPACE_ROOT
+        || first_segment == crate::value_manifest::CHUNK_ROOT
+    {
+        return false;
+    }
     !value.is_empty()
         && value.len() <= MAX_IDENTIFIER_BYTES
         && value
@@ -2796,19 +2808,19 @@ pub mod gateway_state_contract {
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
-    struct LoopbackRequestObservation {
-        sequence: u64,
-        method: String,
-        key: Option<String>,
-        if_match: Option<String>,
-        if_none_match: Option<String>,
-        status: u16,
-        fault: Option<StorageFaultObservation>,
+    pub struct LoopbackRequestObservation {
+        pub sequence: u64,
+        pub method: String,
+        pub key: Option<String>,
+        pub if_match: Option<String>,
+        pub if_none_match: Option<String>,
+        pub status: u16,
+        pub fault: Option<StorageFaultObservation>,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "snake_case")]
-    enum StorageFaultCut {
+    pub enum StorageFaultCut {
         ImmutableWrite,
         ImmutableChecksum,
         ImmutableReadback,
@@ -2825,17 +2837,31 @@ pub mod gateway_state_contract {
         /// AfterEffect applies the delete and loses the response —
         /// the caller re-reads to converge (G118).
         KeyspaceConditionalDelete,
+        /// A conditional PUT against a keyspace control object
+        /// (ADR 0004): the manifest commit. BeforeEffect refuses the
+        /// publication; AfterEffect applies it and loses the response
+        /// — the three-row oracle's ambiguous-transport window (A33).
+        KeyspaceConditionalPut,
+        /// A plain PUT against a chunk object under `keyspace-chunks/`
+        /// (ADR 0004). BeforeEffect refuses the chunk upload;
+        /// AfterEffect applies it and loses the response (reconciled
+        /// by exact GET + digest).
+        ChunkPut,
+        /// A GET against a keyspace control object (ADR 0004): used to
+        /// make the exact control read unavailable (sweep/inventory
+        /// fail-closed legs, A34).
+        KeyspaceControlRead,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "snake_case")]
-    enum StorageFaultPhase {
+    pub enum StorageFaultPhase {
         BeforeEffect,
         AfterEffect,
     }
 
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    struct StorageFaultObservation {
+    pub struct StorageFaultObservation {
         cut: StorageFaultCut,
         phase: StorageFaultPhase,
         key: String,
@@ -2885,24 +2911,35 @@ pub mod gateway_state_contract {
                 StorageFaultCut::KeyspaceConditionalDelete => {
                     *method == Method::DELETE && key.starts_with("keyspace/") && if_match.is_some()
                 }
+                StorageFaultCut::KeyspaceConditionalPut => {
+                    *method == Method::PUT
+                        && key.starts_with("keyspace/")
+                        && (if_match.is_some() || if_none_match.is_some())
+                }
+                StorageFaultCut::ChunkPut => {
+                    *method == Method::PUT && key.starts_with("keyspace-chunks/")
+                }
+                StorageFaultCut::KeyspaceControlRead => {
+                    *method == Method::GET && key.starts_with("keyspace/")
+                }
             }
         }
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
-    struct ConditionalHeadBarrierObservation {
-        key: String,
-        expected_arrivals: usize,
-        arrivals: usize,
-        passes: usize,
-        request_sequences: Vec<u64>,
+    pub struct ConditionalHeadBarrierObservation {
+        pub key: String,
+        pub expected_arrivals: usize,
+        pub arrivals: usize,
+        pub passes: usize,
+        pub request_sequences: Vec<u64>,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
-    struct CounterpartSnapshot {
-        requests: Vec<LoopbackRequestObservation>,
-        barrier: Option<ConditionalHeadBarrierObservation>,
-        faults: Vec<StorageFaultObservation>,
+    pub struct CounterpartSnapshot {
+        pub requests: Vec<LoopbackRequestObservation>,
+        pub barrier: Option<ConditionalHeadBarrierObservation>,
+        pub faults: Vec<StorageFaultObservation>,
     }
 
     #[derive(Clone)]
@@ -2927,7 +2964,18 @@ pub mod gateway_state_contract {
         next_request_sequence: Arc<AtomicU64>,
         conditional_head_barrier: Arc<tokio::sync::Mutex<Option<ConditionalHeadBarrier>>>,
         storage_fault: Arc<tokio::sync::Mutex<Option<ArmedStorageFault>>>,
+        /// A frozen LIST snapshot (prefix, keys visible at arm time):
+        /// LISTs under the prefix serve the stale snapshot —
+        /// under-reporting that hides garbage (leak-only, ADR 0004
+        /// §5.4/A34), never a wrong deletion.
+        frozen_list: Arc<tokio::sync::Mutex<Option<FrozenList>>>,
         shutdown: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct FrozenList {
+        prefix: String,
+        visible: Vec<String>,
     }
 
     impl CounterpartState {
@@ -2939,6 +2987,7 @@ pub mod gateway_state_contract {
                 next_request_sequence: Arc::new(AtomicU64::new(1)),
                 conditional_head_barrier: Arc::new(tokio::sync::Mutex::new(None)),
                 storage_fault: Arc::new(tokio::sync::Mutex::new(None)),
+                frozen_list: Arc::new(tokio::sync::Mutex::new(None)),
                 shutdown: Arc::new(tokio::sync::Mutex::new(Some(shutdown))),
             }
         }
@@ -3029,7 +3078,7 @@ pub mod gateway_state_contract {
             object.bytes.push(b'!');
         }
 
-        async fn snapshot(&self) -> CounterpartSnapshot {
+        pub(crate) async fn snapshot(&self) -> CounterpartSnapshot {
             let requests = self.requests.lock().await.clone();
             let barrier = self
                 .conditional_head_barrier
@@ -3203,7 +3252,7 @@ pub mod gateway_state_contract {
             .and_then(|value| value.to_str().ok())
             .map(ToOwned::to_owned);
         let sequence = state.next_request_sequence.fetch_add(1, Ordering::SeqCst);
-        let bytes = match to_bytes(body, 8 * 1024 * 1024).await {
+        let bytes = match to_bytes(body, 128 * 1024 * 1024).await {
             Ok(bytes) => bytes.to_vec(),
             Err(_) => {
                 state
@@ -3320,10 +3369,15 @@ pub mod gateway_state_contract {
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(1000);
             let objects = state.objects.lock().await;
+            let frozen = state.frozen_list.lock().await.clone();
+            let frozen_visible = frozen.filter(|frozen| prefix.starts_with(&frozen.prefix));
             let mut matching: Vec<(String, String, usize)> = objects
                 .iter()
                 .filter(|(key, _entry)| {
                     key.starts_with(&prefix)
+                        && frozen_visible
+                            .as_ref()
+                            .is_none_or(|frozen| frozen.visible.contains(*key))
                         && resume_after
                             .as_deref()
                             .is_none_or(|after| key.as_str() > after)
@@ -3440,7 +3494,12 @@ pub mod gateway_state_contract {
                     | StorageFaultCut::HeadUpdate
                     // Delete applied; the response is lost (G117/G118).
                     | StorageFaultCut::KeyspaceDelete
-                    | StorageFaultCut::KeyspaceConditionalDelete => {
+                    | StorageFaultCut::KeyspaceConditionalDelete
+                    // Manifest/chunk applied; the response is lost
+                    // (ADR 0004 A33/G119-class cuts).
+                    | StorageFaultCut::KeyspaceConditionalPut
+                    | StorageFaultCut::ChunkPut
+                    | StorageFaultCut::KeyspaceControlRead => {
                         status = T002_FAULT_STATUS;
                         etag = None;
                         response_body.clear();
@@ -3493,6 +3552,56 @@ pub mod gateway_state_contract {
         Json(state.snapshot().await)
     }
 
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct ArmFrozenList {
+        prefix: String,
+    }
+
+    async fn arm_frozen_list(
+        State(state): State<CounterpartState>,
+        Json(command): Json<ArmFrozenList>,
+    ) -> StatusCode {
+        let visible: Vec<String> = state
+            .objects
+            .lock()
+            .await
+            .keys()
+            .filter(|key| key.starts_with(&command.prefix))
+            .cloned()
+            .collect();
+        *state.frozen_list.lock().await = Some(FrozenList {
+            prefix: command.prefix,
+            visible,
+        });
+        StatusCode::NO_CONTENT
+    }
+
+    async fn unfreeze_list(State(state): State<CounterpartState>) -> StatusCode {
+        *state.frozen_list.lock().await = None;
+        StatusCode::NO_CONTENT
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct CorruptCommand {
+        key: String,
+    }
+
+    /// Append a byte to a stored object — deterministic damage for
+    /// the chunk integrity taxonomy (A29).
+    async fn corrupt_object_control(
+        State(state): State<CounterpartState>,
+        Json(command): Json<CorruptCommand>,
+    ) -> StatusCode {
+        let mut objects = state.objects.lock().await;
+        match objects.get_mut(&command.key) {
+            Some(object) => {
+                object.bytes.push(b'!');
+                StatusCode::NO_CONTENT
+            }
+            None => StatusCode::NOT_FOUND,
+        }
+    }
+
     async fn shutdown_loopback_counterpart(State(state): State<CounterpartState>) -> StatusCode {
         if let Some(shutdown) = state.shutdown.lock().await.take() {
             let _ = shutdown.send(());
@@ -3518,6 +3627,9 @@ pub mod gateway_state_contract {
             .route("/__t001__/barrier", post(arm_loopback_head_barrier))
             .route("/__t001__/fault", post(arm_loopback_storage_fault))
             .route("/__t001__/snapshot", get(loopback_snapshot))
+            .route("/__t001__/freeze-list", post(arm_frozen_list))
+            .route("/__t001__/unfreeze-list", post(unfreeze_list))
+            .route("/__t001__/corrupt", post(corrupt_object_control))
             .route("/__t001__/shutdown", post(shutdown_loopback_counterpart))
             .fallback(any_route(loopback_s3_request))
             .with_state(state);
@@ -3721,7 +3833,7 @@ pub mod gateway_state_contract {
                 .expect("loopback head barrier response");
         }
 
-        async fn arm_storage_fault(
+        pub async fn arm_storage_fault(
             &self,
             cut: StorageFaultCut,
             phase: StorageFaultPhase,
@@ -3741,7 +3853,7 @@ pub mod gateway_state_contract {
                 .expect("loopback storage fault response");
         }
 
-        async fn snapshot(&self) -> CounterpartSnapshot {
+        pub(crate) async fn snapshot(&self) -> CounterpartSnapshot {
             self.control
                 .get(format!("{}/__t001__/snapshot", self.endpoint))
                 .send()
@@ -3752,6 +3864,47 @@ pub mod gateway_state_contract {
                 .json()
                 .await
                 .expect("decode loopback counterpart snapshot")
+        }
+
+        /// Freeze LIST responses under `prefix` to the keys visible
+        /// now (stale under-reporting; ADR 0004 A34 frozen-LIST leg).
+        pub async fn arm_frozen_list(&self, prefix: &str) {
+            self.control
+                .post(format!("{}/__t001__/freeze-list", self.endpoint))
+                .json(&ArmFrozenList {
+                    prefix: prefix.to_owned(),
+                })
+                .send()
+                .await
+                .expect("arm loopback frozen list")
+                .error_for_status()
+                .expect("loopback frozen list response");
+        }
+
+        pub async fn unfreeze_list(&self) {
+            self.control
+                .post(format!("{}/__t001__/unfreeze-list", self.endpoint))
+                .send()
+                .await
+                .expect("unfreeze loopback list")
+                .error_for_status()
+                .expect("loopback unfreeze response");
+        }
+
+        /// Deterministically damage a stored object (A29 taxonomy).
+        pub async fn corrupt_object(&self, key: &str) {
+            let response = self
+                .control
+                .post(format!("{}/__t001__/corrupt", self.endpoint))
+                .json(&CorruptCommand {
+                    key: key.to_owned(),
+                })
+                .send()
+                .await
+                .expect("corrupt loopback object request")
+                .error_for_status()
+                .expect("corrupt loopback object response");
+            let _ = response;
         }
 
         pub async fn assert_conditional_head_race(&self, key: &str, create: bool) {
@@ -4218,7 +4371,10 @@ pub mod gateway_state_contract {
             | (StorageFaultCut::HeadCreate, StorageFaultPhase::AfterEffect)
             | (StorageFaultCut::HeadUpdate, StorageFaultPhase::AfterEffect)
             | (StorageFaultCut::KeyspaceDelete, StorageFaultPhase::AfterEffect)
-            | (StorageFaultCut::KeyspaceConditionalDelete, StorageFaultPhase::AfterEffect) => {
+            | (StorageFaultCut::KeyspaceConditionalDelete, StorageFaultPhase::AfterEffect)
+            | (StorageFaultCut::KeyspaceConditionalPut, StorageFaultPhase::AfterEffect)
+            | (StorageFaultCut::ChunkPut, StorageFaultPhase::AfterEffect)
+            | (StorageFaultCut::KeyspaceControlRead, StorageFaultPhase::AfterEffect) => {
                 T002_FAULT_STATUS.as_u16()
             }
             (StorageFaultCut::ImmutableChecksum, StorageFaultPhase::AfterEffect)
@@ -4400,8 +4556,12 @@ pub mod gateway_state_contract {
             // Keyspace deletes are proven by their own loopback
             // contract (a9_delete_many_resumes_after_lost_response_cut);
             // they carry no lineage semantics.
-            StorageFaultCut::KeyspaceDelete | StorageFaultCut::KeyspaceConditionalDelete => {
-                unreachable!("keyspace delete cuts have no lineage receipt")
+            StorageFaultCut::KeyspaceDelete
+            | StorageFaultCut::KeyspaceConditionalDelete
+            | StorageFaultCut::KeyspaceConditionalPut
+            | StorageFaultCut::ChunkPut
+            | StorageFaultCut::KeyspaceControlRead => {
+                unreachable!("keyspace-domain cuts have no lineage receipt")
             }
         }
     }

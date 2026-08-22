@@ -14,6 +14,8 @@ pub mod state_kernel;
 
 pub mod atomic_keyspace;
 pub mod tombstone;
+mod value_manifest;
+mod value_stream;
 
 pub use atomic_keyspace::{
     AtomicKeyspace, DeleteBelowReport, DeleteOutcome, KEYSPACE_ROOT, KeyState, KeyspaceError,
@@ -22,6 +24,14 @@ pub use atomic_keyspace::{
 pub use state_kernel::{KernelHandle, KernelInitError};
 pub use terminal_read::{LineageHeadState, TerminalRecordRead};
 pub use tombstone::Tombstone;
+pub use value_manifest::{
+    CHUNK_BYTES, CHUNK_ROOT, INLINE_MAX, MAX_CHUNKS, MAX_IN_FLIGHT_CHUNKS, MAX_LOGICAL_BYTES,
+    MAX_MANIFEST_BYTES, MIN_CHUNKS,
+};
+pub use value_stream::{
+    ChunkInventory, ChunkSweepReport, CommitReceipt, PendingValue, StreamKeyState, ValueMetadata,
+    ValueReader, ValueRepresentation, ValueWriter,
+};
 pub use yeetz_sdk_s3::S3Config;
 
 #[cfg(feature = "test-support")]
@@ -30,6 +40,9 @@ mod real_s3_aba_probe;
 pub use real_s3_aba_probe::run_real_s3_aba_probe;
 
 mod terminal_read;
+
+#[cfg(test)]
+mod streaming_contract;
 
 #[cfg(test)]
 mod public_boundary_contract {

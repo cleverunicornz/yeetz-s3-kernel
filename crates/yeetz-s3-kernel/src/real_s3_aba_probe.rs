@@ -33,6 +33,7 @@ use crate::state_kernel::{
     CanonicalRecord, KernelError, KernelLineage, StateKernel, SuccessorPolicy,
 };
 use crate::{AtomicKeyspace, KEYSPACE_ROOT, KeyspaceError};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Parallel racers for the If-None-Match create probe.
 const CREATE_RACERS: usize = 8;
@@ -48,6 +49,9 @@ pub async fn run_real_s3_aba_probe(config: &S3Config) -> Result<Vec<String>, Str
     let prefix = format!("aba-probe/{run_id}/");
     let module_namespace = format!("aba-probe/{run_id}");
     let module_prefix = format!("{KEYSPACE_ROOT}/{module_namespace}/");
+    let streaming_namespace = format!("aba-probe/{run_id}-streaming");
+    let streaming_prefix = format!("{KEYSPACE_ROOT}/{streaming_namespace}/");
+    let streaming_chunk_prefix = format!("keyspace-chunks/v1/{streaming_namespace}/");
     let lineage_name = format!("aba-probe/{run_id}-lineage");
     let lineage_prefix = format!("{lineage_name}/");
     let mut created: Vec<String> = Vec::new();
@@ -71,6 +75,7 @@ pub async fn run_real_s3_aba_probe(config: &S3Config) -> Result<Vec<String>, Str
             &mut verdicts,
         )
         .await?;
+        streaming_battery(Arc::clone(&client), &streaming_namespace, &mut verdicts).await?;
         lineage_battery(
             Arc::clone(&client),
             &lineage_name,
@@ -109,7 +114,13 @@ pub async fn run_real_s3_aba_probe(config: &S3Config) -> Result<Vec<String>, Str
             ),
         ),
     }
-    for cleanup_prefix in [&prefix, &module_prefix, &lineage_prefix] {
+    for cleanup_prefix in [
+        &prefix,
+        &module_prefix,
+        &streaming_prefix,
+        &streaming_chunk_prefix,
+        &lineage_prefix,
+    ] {
         let leftover = client
             .list_prefix(cleanup_prefix)
             .await
@@ -683,6 +694,244 @@ async fn multipart_battery(
         }
     }
 
+    Ok(())
+}
+
+/// The ADR 0004 streaming legs on the real backend: a chunked v3
+/// round trip (create, whole collect, verified reader, boundary
+/// range), v3 CAS with stale-token rejection naming the manifest era,
+/// conditional control-only delete, the maintenance fence, the
+/// delete-free meter, and the quiesced sweep doubling as chunk-root
+/// cleanup. The lost-response oracle's fault cuts are loopback-only
+/// (real backends cannot drop responses deterministically); the
+/// oracle's prerequisites — conditional manifest PUT exclusivity and
+/// exact rereads — are what this battery witnesses.
+async fn streaming_battery(
+    client: Arc<ObjectStoreClient>,
+    namespace: &str,
+    verdicts: &mut Vec<String>,
+) -> Result<(), String> {
+    let keyspace = AtomicKeyspace::new(client, namespace)
+        .map_err(|error| format!("streaming bind: {error}"))?;
+    let key = "streamed";
+    let chunk_bytes = 16 * 1024 * 1024;
+    let len = 2 * chunk_bytes + 4096;
+    let payload: Bytes = {
+        let mut bytes = Vec::with_capacity(len);
+        let mut state = 0x5EED_0001u32;
+        while bytes.len() < len {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            bytes.push((state >> 24) as u8);
+        }
+        Bytes::from(bytes)
+    };
+
+    // 1. Streamed chunked create: the manifest PUT is the commit.
+    let mut writer = keyspace
+        .begin_stream_create(key)
+        .await
+        .map_err(|error| format!("streamed begin: {error}"))?;
+    writer
+        .write_all(&payload)
+        .await
+        .map_err(|error| format!("streamed write: {error}"))?;
+    let pending = writer
+        .seal()
+        .await
+        .map_err(|error| format!("streamed seal: {error}"))?;
+    let receipt = pending
+        .commit()
+        .await
+        .map_err(|error| format!("streamed commit: {error}"))?;
+    note(
+        verdicts,
+        format!(
+            "streamed v3 create: committed {} chunks ({} bytes), representation chunked",
+            receipt.chunk_count, receipt.logical_len
+        ),
+    );
+
+    // Whole collect and the verified reader agree, byte exact.
+    let whole = keyspace
+        .get(key)
+        .await
+        .map_err(|error| format!("streamed whole get: {error}"))?
+        .ok_or_else(|| "streamed whole get: absent".to_string())?;
+    if whole != payload {
+        return Err("streamed v3 whole-collect bytes mismatch".to_string());
+    }
+    let mut reader = keyspace
+        .open_stream(key)
+        .await
+        .map_err(|error| format!("streamed open: {error}"))?
+        .ok_or_else(|| "streamed open: absent".to_string())?;
+    let mut streamed = Vec::new();
+    reader
+        .read_to_end(&mut streamed)
+        .await
+        .map_err(|error| format!("streamed read: {error}"))?;
+    if streamed != payload {
+        return Err("streamed v3 verified-reader bytes mismatch".to_string());
+    }
+    note(
+        verdicts,
+        "streamed v3 read: whole collect and verified reader byte-exact".to_string(),
+    );
+
+    // 2. Boundary range: exact slice across the 16 MiB boundary.
+    let start = chunk_bytes as u64 - 1;
+    let end = chunk_bytes as u64 + 1;
+    let mut range_reader = keyspace
+        .open_stream_range(key, start..end)
+        .await
+        .map_err(|error| format!("streamed range open: {error}"))?
+        .ok_or_else(|| "streamed range: absent".to_string())?;
+    let mut range_bytes = Vec::new();
+    range_reader
+        .read_to_end(&mut range_bytes)
+        .await
+        .map_err(|error| format!("streamed range read: {error}"))?;
+    if range_bytes.as_slice() != &payload[start as usize..end as usize] {
+        return Err("streamed v3 boundary range mismatch".to_string());
+    }
+    note(
+        verdicts,
+        "streamed v3 range: boundary slice exact (16 MiB−1 .. 16 MiB+1)".to_string(),
+    );
+
+    // 3. v3→v3 streamed CAS; the stale token rejects naming the
+    //    manifest era (the §2.3 v3-aware enrichment on real S3).
+    let successor: Bytes = {
+        let mut bytes = Vec::with_capacity(len);
+        let mut state = 0x0DD_BA11u32;
+        while bytes.len() < len {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            bytes.push((state >> 24) as u8);
+        }
+        Bytes::from(bytes)
+    };
+    let mut cas_writer = keyspace
+        .begin_stream_compare_exchange(key, &receipt.etag)
+        .await
+        .map_err(|error| format!("streamed CAS begin: {error}"))?;
+    cas_writer
+        .write_all(&successor)
+        .await
+        .map_err(|error| format!("streamed CAS write: {error}"))?;
+    let cas_receipt = cas_writer
+        .seal()
+        .await
+        .map_err(|error| format!("streamed CAS seal: {error}"))?
+        .commit()
+        .await
+        .map_err(|error| format!("streamed CAS commit: {error}"))?;
+    match keyspace.delete_if_match(key, &receipt.etag).await {
+        Err(KeyspaceError::PreconditionFailed {
+            observed_incarnation: Some(0),
+            observed_version: Some(1),
+            ..
+        }) => note(
+            verdicts,
+            "v3 stale-token conditional delete: PreconditionFailed naming manifest era (0,1)"
+                .to_string(),
+        ),
+        Err(error) => {
+            return Err(format!("v3 stale-token delete: unexpected error {error}"));
+        }
+        Ok(()) => return Err("v3 stale-token delete was ACCEPTED".to_string()),
+    }
+    note(
+        verdicts,
+        "streamed v3 CAS: successor committed; manifest If-Match consumable exactly once"
+            .to_string(),
+    );
+
+    // 4. Meter: the superseded generation is candidate garbage; the
+    //    current generation is referenced. Delete-free.
+    let inventory = keyspace
+        .chunk_inventory()
+        .await
+        .map_err(|error| format!("chunk inventory: {error}"))?;
+    if inventory.listed_chunks != 6
+        || inventory.referenced_chunks != 3
+        || inventory.candidate_orphan_chunks != 3
+        || inventory.unresolved_chunks != 0
+    {
+        return Err(format!("chunk inventory mismatch: {inventory:?}"));
+    }
+    note(
+        verdicts,
+        format!(
+            "chunk meter: {} listed, {} referenced, {} candidates, 0 unresolved, delete-free",
+            inventory.listed_chunks, inventory.referenced_chunks, inventory.candidate_orphan_chunks
+        ),
+    );
+
+    // 5. Conditional control-only delete of the v3 manifest.
+    keyspace
+        .delete_if_match(key, &cas_receipt.etag)
+        .await
+        .map_err(|error| format!("v3 conditional delete: {error}"))?;
+    if keyspace
+        .get(key)
+        .await
+        .map_err(|error| format!("post-delete get: {error}"))?
+        .is_some()
+    {
+        return Err("v3 conditional delete left the control present".to_string());
+    }
+    note(
+        verdicts,
+        "v3 conditional delete: control removed; chunks remain garbage until sweep".to_string(),
+    );
+
+    // 6. The fence: begins refuse while fenced; the quiesced sweep
+    //    reclaims every orphan (this doubles as the probe's chunk-root
+    //    cleanup); the release restores begins.
+    keyspace
+        .set_maintenance_fence()
+        .await
+        .map_err(|error| format!("set fence: {error}"))?;
+    match keyspace.begin_stream_create(key).await {
+        Err(KeyspaceError::MaintenanceFenced(_)) => note(
+            verdicts,
+            "maintenance fence: streamed begin refused while fenced".to_string(),
+        ),
+        other => return Err(format!("fenced begin did not refuse: {other:?}")),
+    }
+    let report = keyspace
+        .sweep_chunks()
+        .await
+        .map_err(|error| format!("quiesced sweep: {error}"))?;
+    if report.deleted != 6 || report.remaining != 0 || report.retained != 0 {
+        return Err(format!("quiesced sweep mismatch: {report:?}"));
+    }
+    let re_run = keyspace
+        .sweep_chunks()
+        .await
+        .map_err(|error| format!("idempotent re-sweep: {error}"))?;
+    if re_run.examined != 0 || re_run.deleted != 0 {
+        return Err(format!("idempotent re-sweep mismatch: {re_run:?}"));
+    }
+    note(
+        verdicts,
+        format!(
+            "quiesced sweep: {} chunks reclaimed, idempotent re-run clean",
+            report.deleted
+        ),
+    );
+    keyspace
+        .release_maintenance_fence()
+        .await
+        .map_err(|error| format!("release fence: {error}"))?;
+    keyspace
+        .begin_stream_create(key)
+        .await
+        .map_err(|error| format!("unfenced begin: {error}"))?;
+    note(
+        verdicts,
+        "maintenance fence: release (conditional-delete CAS) restores streamed begins".to_string(),
+    );
     Ok(())
 }
 

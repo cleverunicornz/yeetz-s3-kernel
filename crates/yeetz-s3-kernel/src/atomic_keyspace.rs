@@ -49,14 +49,14 @@ const VALUE_INCARNATION_BYTES: usize = size_of::<u64>();
 const VALUE_VERSION_BYTES: usize = size_of::<u64>();
 
 #[derive(Debug)]
-struct ValueEnvelope {
-    incarnation: u64,
-    version: u64,
-    payload: Bytes,
+pub(crate) struct ValueEnvelope {
+    pub(crate) incarnation: u64,
+    pub(crate) version: u64,
+    pub(crate) payload: Bytes,
 }
 
 impl ValueEnvelope {
-    fn new(incarnation: u64, version: u64, payload: Bytes) -> Self {
+    pub(crate) fn new(incarnation: u64, version: u64, payload: Bytes) -> Self {
         Self {
             incarnation,
             version,
@@ -64,7 +64,7 @@ impl ValueEnvelope {
         }
     }
 
-    fn encode(self) -> Bytes {
+    pub(crate) fn encode(self) -> Bytes {
         let mut encoded = Vec::with_capacity(
             VALUE_ENVELOPE_PREFIX.len()
                 + VALUE_INCARNATION_BYTES
@@ -78,7 +78,7 @@ impl ValueEnvelope {
         Bytes::from(encoded)
     }
 
-    fn decode(key: &str, encoded: &Bytes) -> Result<Self, KeyspaceError> {
+    pub(crate) fn decode(key: &str, encoded: &Bytes) -> Result<Self, KeyspaceError> {
         let incarnation_start = VALUE_ENVELOPE_PREFIX.len();
         let version_start = incarnation_start + VALUE_INCARNATION_BYTES;
         let payload_start = version_start + VALUE_VERSION_BYTES;
@@ -105,7 +105,7 @@ impl ValueEnvelope {
 
 /// Errors from the keyspace surface. Its own type (additive — no
 /// `KernelError` variants moved or added).
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum KeyspaceError {
     /// The namespace or key failed validation.
     #[error("invalid keyspace identifier: {0}")]
@@ -173,6 +173,68 @@ pub enum KeyspaceError {
     /// close (teardown finding T1, 2026-08-22).
     #[error("trim certificate namespace is immutable: {0}")]
     TrimCertificateImmutable(String),
+    /// A stored v3 manifest is not canonical: bad magic, unsupported
+    /// kind, wrong chunk size, length disagreement between the count
+    /// and the bytes, or non-canonical entry lengths. Integrity
+    /// failure is distinct from absence.
+    #[error("keyspace value manifest malformed: {0}")]
+    ManifestMalformed(String),
+    /// A decoded manifest's `value_root_sha256` disagrees with the
+    /// recomputed root of its own table (ADR 0004 §1.2).
+    #[error("keyspace value manifest root mismatch: {0}")]
+    ManifestRootMismatch(String),
+    /// A manifest-referenced chunk object is absent. The value is
+    /// Present but damaged — never absence, never hidden by GC
+    /// (ADR 0004 §4: the forbidden `ManifestIncomplete` state).
+    #[error("keyspace chunk missing: {key} chunk {chunk}")]
+    ChunkMissing { key: String, chunk: u32 },
+    /// A manifest-referenced chunk exists but its bytes disagree with
+    /// the manifest entry (wrong length or digest — truncation and
+    /// swap are both this).
+    #[error("keyspace chunk integrity failure: {key} chunk {chunk}")]
+    ChunkIntegrity { key: String, chunk: u32 },
+    /// A new encoded value exceeds the 1 TiB logical bound.
+    #[error("keyspace value too large: {key} is {len} bytes, max {max}")]
+    ValueTooLarge { key: String, len: u64, max: u64 },
+    /// A sealed streamed value would be a non-canonical v3
+    /// (`chunk_count < 2` — inline is canonical) or exceeds the
+    /// 65,536-chunk ceiling.
+    #[error("keyspace chunk count invalid: {key} has {count} chunks")]
+    ChunkCountInvalid { key: String, count: u32 },
+    /// An encoded manifest exceeds the 4 MiB bound.
+    #[error("keyspace manifest too large: {key} is {len} bytes, max {max}")]
+    ManifestTooLarge { key: String, len: u64, max: u64 },
+    /// The namespace is fenced for chunk-GC maintenance: new streamed
+    /// writes refuse until the fence is released
+    /// (ADR 0004 §5.1 — the fence is a cheap barrier, NOT proof of
+    /// quiescence; the operational assertion remains load-bearing).
+    #[error("keyspace maintenance fence active: {0}")]
+    MaintenanceFenced(String),
+    /// The quiesced chunk sweep requires the maintenance fence.
+    #[error("keyspace chunk sweep requires the maintenance fence: {0}")]
+    MaintenanceFenceRequired(String),
+    /// A streamed create's manifest landed in a stale incarnation era
+    /// and was conditionally evicted; the caller must re-run the
+    /// write at the fresh era (the streamed bytes are not retained
+    /// for an in-kernel retry).
+    #[error("keyspace create stale incarnation: {0}")]
+    StaleIncarnation(String),
+    /// A requested logical range lies outside the value's length.
+    #[error(
+        "keyspace range invalid for {key}: [{start}, {end}) against logical length {logical_len}"
+    )]
+    InvalidRange {
+        key: String,
+        start: u64,
+        end: u64,
+        logical_len: u64,
+    },
+    /// The maintenance-fence namespace (`fences/`) is reserved: the
+    /// fence is written only by `set_maintenance_fence`, released
+    /// only by `release_maintenance_fence` (ADR 0004 §5.1/N2 — a
+    /// caller-writable location is not a fence).
+    #[error("maintenance fence namespace is reserved: {0}")]
+    MaintenanceFenceImmutable(String),
     /// The backing store failed in a way the caller should retry.
     #[error("keyspace store unavailable: {operation}")]
     Unavailable { operation: &'static str },
@@ -287,8 +349,8 @@ fn validate_identifier(kind: &str, value: &str) -> Result<(), KeyspaceError> {
 /// ```
 #[derive(Debug)]
 pub struct AtomicKeyspace {
-    store: Arc<ObjectStoreClient>,
-    namespace: String,
+    pub(crate) store: Arc<ObjectStoreClient>,
+    pub(crate) namespace: String,
 }
 
 impl AtomicKeyspace {
@@ -307,7 +369,7 @@ impl AtomicKeyspace {
 
     /// Full object-store key for a keyspace key:
     /// `keyspace/{namespace}/{key}`.
-    fn object_key(&self, key: &str) -> Result<String, KeyspaceError> {
+    pub(crate) fn object_key(&self, key: &str) -> Result<String, KeyspaceError> {
         validate_identifier("key", key)?;
         Ok(format!("{KEYSPACE_ROOT}/{}/{}", self.namespace, key))
     }
@@ -317,7 +379,7 @@ impl AtomicKeyspace {
     const TOMBSTONE_ROOT: &str = "tombstones";
 
     /// The tombstone key mirroring a data key.
-    fn tombstone_key(key: &str) -> String {
+    pub(crate) fn tombstone_key(key: &str) -> String {
         format!("{}/{key}", Self::TOMBSTONE_ROOT)
     }
 
@@ -336,12 +398,15 @@ impl AtomicKeyspace {
     /// and the maximum certificate is the certified floor — a
     /// deletable certificate is a regressable floor (teardown
     /// finding T1).
-    fn ensure_not_reserved_key(key: &str) -> Result<(), KeyspaceError> {
+    pub(crate) fn ensure_not_reserved_key(key: &str) -> Result<(), KeyspaceError> {
         if key.starts_with(Self::TOMBSTONE_ROOT) && key.len() > Self::TOMBSTONE_ROOT.len() {
             return Err(KeyspaceError::TombstoneImmutable(key.to_string()));
         }
         if key.starts_with(Self::INCARNATION_ROOT) && key.len() > Self::INCARNATION_ROOT.len() {
             return Err(KeyspaceError::IncarnationCounterImmutable(key.to_string()));
+        }
+        if key.starts_with(Self::FENCE_ROOT) && key.len() > Self::FENCE_ROOT.len() {
+            return Err(KeyspaceError::MaintenanceFenceImmutable(key.to_string()));
         }
         let segments: Vec<&str> = key.split('/').collect();
         if segments[..segments.len() - 1].contains(&Self::TRIMS_SEGMENT) {
@@ -349,6 +414,15 @@ impl AtomicKeyspace {
         }
         Ok(())
     }
+
+    /// The reserved maintenance-fence sub-root (ADR 0004 §5.1,
+    /// acceptance footnote N2): `fences/gc` inside the namespace —
+    /// physical object `keyspace/{namespace}/fences/gc`.
+    /// Caller-writable locations are not fences: the segment is
+    /// reserved exactly like `tombstones`/`incarnations`, written
+    /// only by `set_maintenance_fence` and released only by
+    /// `release_maintenance_fence` (both in [`crate::value_stream`]).
+    pub(crate) const FENCE_ROOT: &str = "fences";
 
     /// The reserved certificate path segment (ADR 0002 batch 5):
     /// `{scope}/trims/{first_retained:020}` at any scope depth.
@@ -365,7 +439,7 @@ impl AtomicKeyspace {
     }
 
     /// The key's current incarnation (0 when no counter exists).
-    async fn current_incarnation(&self, key: &str) -> Result<u64, KeyspaceError> {
+    pub(crate) async fn current_incarnation(&self, key: &str) -> Result<u64, KeyspaceError> {
         let object_key = format!(
             "{KEYSPACE_ROOT}/{}/{}",
             self.namespace,
@@ -475,8 +549,23 @@ impl AtomicKeyspace {
     /// destroy starts at version 0 of the key's CURRENT incarnation
     /// (batch 7) — a fresh lifetime, never a versioned continuation
     /// of the destroyed era.
+    ///
+    /// Representation (ADR 0004): encoded payloads above
+    /// [`INLINE_MAX`] take the chunked v3 path (immutable 16 MiB
+    /// content-addressed chunks plus a conditional manifest PUT —
+    /// the commit point); at or below it, one inline v2 object.
     pub async fn create(&self, key: &str, value: Bytes) -> Result<(), KeyspaceError> {
         Self::ensure_not_reserved_key(key)?;
+        if value.len() as u64 > crate::value_manifest::MAX_LOGICAL_BYTES {
+            return Err(KeyspaceError::ValueTooLarge {
+                key: key.to_string(),
+                len: value.len() as u64,
+                max: crate::value_manifest::MAX_LOGICAL_BYTES,
+            });
+        }
+        if value.len() > crate::value_manifest::INLINE_MAX {
+            return self.create_chunked(key, &value).await;
+        }
         let object_key = self.object_key(key)?;
         // The incarnation read and the put-if-absent are separate
         // requests: a `destroy` can bump the counter between them and
@@ -485,8 +574,11 @@ impl AtomicKeyspace {
         // byte-identical to the destroyed era's value, which reopens
         // the cross-era ABA batch 7 exists to close (teardown finding
         // T3, 2026-08-22). After landing, re-check the counter; evict
-        // only our own stale-era bytes and retry at the fresh
-        // incarnation.
+        // only our own stale-era bytes — CONDITIONALLY (ADR 0004
+        // §2.4): a read-check-unconditional-delete here lets a fresh
+        // replacement land between the check and the delete and then
+        // silently destroys it. The batch-8 conditional delete with
+        // the observed etag rejects at that point instead.
         for _ in 0..8 {
             let incarnation = self.current_incarnation(key).await?;
             let encoded = ValueEnvelope::new(incarnation, 0, value.clone()).encode();
@@ -500,17 +592,41 @@ impl AtomicKeyspace {
                     if now == incarnation {
                         return Ok(());
                     }
-                    match self.store.download(&object_key).await {
-                        Ok(bytes) if bytes == encoded => {
-                            // Still our stale write: evict it.
-                            let _ = self.store.delete(&object_key).await;
-                        }
-                        Ok(_) => {
-                            // A newer lifetime holds the key: this
-                            // create lost the put-if-absent race, the
-                            // same AlreadyExists a sequential racer
-                            // sees.
-                            return Err(KeyspaceError::AlreadyExists(key.to_string()));
+                    match self.store.download_with_etag(&object_key).await {
+                        Ok(meta) => {
+                            let Some(observed_etag) = meta.etag else {
+                                return Err(KeyspaceError::Unavailable {
+                                    operation: "keyspace create (stale-era eviction: no etag)",
+                                });
+                            };
+                            if meta.data == encoded {
+                                // Still exactly our stale write: evict
+                                // it with the observed etag. A lost
+                                // race means a newer lifetime holds
+                                // the key — AlreadyExists, never a
+                                // destroyed replacement.
+                                match self
+                                    .store
+                                    .delete_conditional(&object_key, &observed_etag)
+                                    .await
+                                {
+                                    Ok(()) | Err(ObjectStoreError::NotFound(_)) => {}
+                                    Err(ObjectStoreError::PreconditionFailed(_)) => {
+                                        return Err(KeyspaceError::AlreadyExists(key.to_string()));
+                                    }
+                                    Err(_) => {
+                                        return Err(KeyspaceError::Unavailable {
+                                            operation: "keyspace create (stale-era eviction)",
+                                        });
+                                    }
+                                }
+                            } else {
+                                // A newer lifetime holds the key: this
+                                // create lost the put-if-absent race,
+                                // the same AlreadyExists a sequential
+                                // racer sees.
+                                return Err(KeyspaceError::AlreadyExists(key.to_string()));
+                            }
                         }
                         Err(ObjectStoreError::NotFound(_)) => {}
                         Err(_) => {
@@ -535,11 +651,15 @@ impl AtomicKeyspace {
         })
     }
 
-    /// Read a key's value (`None` when absent).
+    /// Read a key's value (`None` when absent). A chunked v3 value is
+    /// collected: every referenced chunk is fetched in order,
+    /// verified against the manifest, and concatenated — whole reads
+    /// are explicit collection and may allocate to logical length
+    /// (ADR 0004 §3.1).
     pub async fn get(&self, key: &str) -> Result<Option<Bytes>, KeyspaceError> {
         let object_key = self.object_key(key)?;
         match self.store.download(&object_key).await {
-            Ok(bytes) => Ok(Some(ValueEnvelope::decode(key, &bytes)?.payload)),
+            Ok(bytes) => Ok(Some(self.collect_value(key, &bytes).await?)),
             Err(ObjectStoreError::NotFound(_)) => Ok(None),
             Err(_) => Err(KeyspaceError::Unavailable {
                 operation: "keyspace get",
@@ -550,15 +670,13 @@ impl AtomicKeyspace {
     /// Read a key's value together with its etag — the token a
     /// subsequent `compare_exchange` must present. The pair is
     /// atomically consistent: the etag names exactly the returned
-    /// bytes (single-object read).
+    /// logical value (the control read is single-object; chunked
+    /// bytes are verified against that exact manifest).
     pub async fn get_with_etag(&self, key: &str) -> Result<Option<(Bytes, String)>, KeyspaceError> {
         let object_key = self.object_key(key)?;
         match self.store.download_with_etag(&object_key).await {
             Ok(meta) => match meta.etag {
-                Some(etag) => Ok(Some((
-                    ValueEnvelope::decode(key, &meta.data)?.payload,
-                    etag,
-                ))),
+                Some(etag) => Ok(Some((self.collect_value(key, &meta.data).await?, etag))),
                 // An object whose store reports no etag cannot be CAS'd
                 // against; surface it rather than hand back a token
                 // that would silently never match.
@@ -575,6 +693,8 @@ impl AtomicKeyspace {
 
     /// Read a payload with its internal version and store etag inside
     /// the kernel closure. Production callers remain payload-shaped.
+    /// A chunked v3 control contributes its manifest era and the
+    /// collected logical value (v2/v3-aware; ADR 0004 §2.3).
     pub(crate) async fn get_with_version(
         &self,
         key: &str,
@@ -587,11 +707,11 @@ impl AtomicKeyspace {
                         operation: "keyspace get_with_version (no etag reported)",
                     });
                 };
-                let envelope = ValueEnvelope::decode(key, &meta.data)?;
+                let control = crate::value_manifest::ControlEnvelope::decode(key, &meta.data)?;
                 Ok(Some((
-                    envelope.payload,
-                    envelope.incarnation,
-                    envelope.version,
+                    self.collect_value(key, &meta.data).await?,
+                    control.incarnation(),
+                    control.version(),
                     etag,
                 )))
             }
@@ -618,6 +738,11 @@ impl AtomicKeyspace {
     pub async fn incarnation_for_test(&self, key: &str) -> Result<u64, KeyspaceError> {
         self.current_incarnation(key).await
     }
+    /// If-Match CAS. The expected etag names the control object —
+    /// inline envelope or v3 manifest — exactly as `get_with_etag`
+    /// returned it; the whole-value API routes encoded payloads above
+    /// [`INLINE_MAX`] through the chunked writer while small
+    /// successors stay one inline object (ADR 0004 §3.1).
     pub async fn compare_exchange(
         &self,
         key: &str,
@@ -625,6 +750,13 @@ impl AtomicKeyspace {
         value: Bytes,
     ) -> Result<String, KeyspaceError> {
         Self::ensure_not_reserved_key(key)?;
+        if value.len() as u64 > crate::value_manifest::MAX_LOGICAL_BYTES {
+            return Err(KeyspaceError::ValueTooLarge {
+                key: key.to_string(),
+                len: value.len() as u64,
+                max: crate::value_manifest::MAX_LOGICAL_BYTES,
+            });
+        }
         let object_key = self.object_key(key)?;
         let current = match self.store.download_with_etag(&object_key).await {
             Ok(meta) => meta,
@@ -649,32 +781,29 @@ impl AtomicKeyspace {
             });
         };
         if observed_etag != expected_etag {
-            // Batch 7: name the era the caller lost to. Identical
-            // payload bytes across a deletion boundary still produce
-            // distinct envelope bytes (distinct incarnations), so an
-            // era-1 etag cannot match an era-2 value — and the error
-            // says so.
-            let (observed_incarnation, observed_version) =
-                match ValueEnvelope::decode(key, &current.data) {
-                    Ok(envelope) => (Some(envelope.incarnation), Some(envelope.version)),
-                    Err(_) => (None, None),
-                };
-            return Err(KeyspaceError::PreconditionFailed {
-                key: key.to_string(),
-                expected_etag: expected_etag.to_string(),
-                observed: Some(observed_etag),
-                observed_incarnation,
-                observed_version,
-            });
+            return Err(self.cas_conflict(key, expected_etag).await);
         }
-        let current = ValueEnvelope::decode(key, &current.data)?;
+        // One v2/v3-aware control decode: a v3 manifest contributes
+        // its era without any chunk fetch (ADR 0004 §2.3).
+        let control = crate::value_manifest::ControlEnvelope::decode(key, &current.data)?;
         // CAS advances the version WITHIN the current incarnation;
         // only destroy moves the incarnation.
-        let next_version = current
-            .version
+        let next_version = control
+            .version()
             .checked_add(1)
             .ok_or_else(|| KeyspaceError::VersionExhausted(key.to_string()))?;
-        let next = ValueEnvelope::new(current.incarnation, next_version, value).encode();
+        if value.len() > crate::value_manifest::INLINE_MAX {
+            return self
+                .compare_exchange_chunked(
+                    key,
+                    expected_etag,
+                    control.incarnation(),
+                    next_version,
+                    &value,
+                )
+                .await;
+        }
+        let next = ValueEnvelope::new(control.incarnation(), next_version, value).encode();
         match self
             .store
             .upload_conditional(&object_key, next, Some(expected_etag))
@@ -684,29 +813,40 @@ impl AtomicKeyspace {
                 operation: "keyspace compare_exchange (no etag)",
             }),
             Err(ObjectStoreError::PreconditionFailed(_)) => {
-                let observed = match self.store.download_with_etag(&object_key).await {
-                    Ok(meta) => meta.etag,
-                    Err(_) => None,
-                };
-                let (observed_incarnation, observed_version) =
-                    match self.store.download(&object_key).await {
-                        Ok(bytes) => match ValueEnvelope::decode(key, &bytes) {
-                            Ok(envelope) => (Some(envelope.incarnation), Some(envelope.version)),
-                            Err(_) => (None, None),
-                        },
-                        Err(_) => (None, None),
-                    };
-                Err(KeyspaceError::PreconditionFailed {
-                    key: key.to_string(),
-                    expected_etag: expected_etag.to_string(),
-                    observed,
-                    observed_incarnation,
-                    observed_version,
-                })
+                Err(self.cas_conflict(key, expected_etag).await)
             }
             Err(_) => Err(KeyspaceError::Unavailable {
                 operation: "keyspace compare_exchange",
             }),
+        }
+    }
+
+    /// Conflict enrichment shared by both CAS failure sites: name the
+    /// era the caller lost to, decoding v2 OR v3 controls — a v3
+    /// unaware decoder would silently degrade the observed era to
+    /// `None` (ADR 0004 §2.3).
+    pub(crate) async fn cas_conflict(&self, key: &str, expected_etag: &str) -> KeyspaceError {
+        let Ok(object_key) = self.object_key(key) else {
+            return KeyspaceError::InvalidIdentifier(key.to_string());
+        };
+        let observed = match self.store.download_with_etag(&object_key).await {
+            Ok(meta) => meta.etag,
+            Err(_) => None,
+        };
+        let (observed_incarnation, observed_version) = match self.store.download(&object_key).await
+        {
+            Ok(bytes) => match crate::value_manifest::ControlEnvelope::decode(key, &bytes) {
+                Ok(control) => (Some(control.incarnation()), Some(control.version())),
+                Err(_) => (None, None),
+            },
+            Err(_) => (None, None),
+        };
+        KeyspaceError::PreconditionFailed {
+            key: key.to_string(),
+            expected_etag: expected_etag.to_string(),
+            observed,
+            observed_incarnation,
+            observed_version,
         }
     }
 
@@ -819,10 +959,14 @@ impl AtomicKeyspace {
                 };
                 let (observed_incarnation, observed_version) =
                     match self.store.download(&object_key).await {
-                        Ok(bytes) => match ValueEnvelope::decode(key, &bytes) {
-                            Ok(envelope) => (Some(envelope.incarnation), Some(envelope.version)),
-                            Err(_) => (None, None),
-                        },
+                        Ok(bytes) => {
+                            match crate::value_manifest::ControlEnvelope::decode(key, &bytes) {
+                                Ok(control) => {
+                                    (Some(control.incarnation()), Some(control.version()))
+                                }
+                                Err(_) => (None, None),
+                            }
+                        }
                         Err(_) => (None, None),
                     };
                 Err(KeyspaceError::PreconditionFailed {
@@ -894,7 +1038,10 @@ impl AtomicKeyspace {
     /// sweep retires it.
     pub async fn destroy(&self, key: &str, cause: &str, actor: &str) -> Result<(), KeyspaceError> {
         let object_key = self.object_key(key)?;
-        let Some((_, incarnation, version, _)) = self.get_with_version(key).await? else {
+        // Control-metadata read (ADR 0004 §2.3): the tombstone's era
+        // comes from a v2 OR v3 control decode — never a chunk
+        // fetch, never a payload collection.
+        let Some((incarnation, version)) = self.read_control_era(key).await? else {
             return Ok(()); // nothing to witness — absence is already the truth
         };
         let tombstone = Tombstone::new(incarnation, version, cause, actor);
@@ -940,11 +1087,7 @@ impl AtomicKeyspace {
     /// APIs. Seq 0 — the genesis position — is exempt (immortal).
     pub async fn read_state(&self, key: &str) -> Result<KeyState, KeyspaceError> {
         self.object_key(key)?;
-        if let Some(seq) = key.rsplit('/').next().and_then(Self::parse_seq_component)
-            && seq > 0
-            && let Some(first_retained) = self.trim_floor("").await?
-            && seq < first_retained
-        {
+        if let Some(first_retained) = self.seq_retired(key).await? {
             return Ok(KeyState::OffsetExpired { first_retained });
         }
         if let Some((value, etag)) = self.get_with_etag(key).await? {
@@ -980,7 +1123,7 @@ impl AtomicKeyspace {
     }
 
     /// Parse a 20-digit zero-padded seq key component.
-    fn parse_seq_component(component: &str) -> Option<u64> {
+    pub(crate) fn parse_seq_component(component: &str) -> Option<u64> {
         (component.len() == 20 && component.bytes().all(|byte| byte.is_ascii_digit()))
             .then(|| component.parse().ok())
             .flatten()
