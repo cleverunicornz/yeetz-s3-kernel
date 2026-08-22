@@ -17,7 +17,7 @@ use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use yeetz_sdk_s3::ObjectStoreClient;
+use yeetz_sdk_s3::{ObjectStoreClient, ObjectStoreError};
 
 use crate::atomic_keyspace::{AtomicKeyspace, KEYSPACE_ROOT, KeyState, KeyspaceError};
 use crate::state_kernel::gateway_state_contract::{
@@ -991,6 +991,49 @@ async fn a34_quiesced_sweep_inventory_and_fences() {
     keyspace.release_maintenance_fence().await.unwrap(); // idempotent
     // Released: begins work again (fence GET absent).
     keyspace.begin_stream_create("unblocked").await.unwrap();
+    counterpart.shutdown().await;
+}
+
+#[tokio::test]
+async fn teardown_reerected_fence_rejects_a_stale_release_etag() {
+    let (store, keyspace, counterpart) = keyspace_fixture("fence-aba").await;
+    let fence_key = control_key("fence-aba", "fences/gc");
+
+    keyspace.set_maintenance_fence().await.unwrap();
+    let first_etag = store
+        .download_with_etag(&fence_key)
+        .await
+        .unwrap()
+        .etag
+        .unwrap();
+    keyspace.release_maintenance_fence().await.unwrap();
+
+    keyspace.set_maintenance_fence().await.unwrap();
+    let second_etag = store
+        .download_with_etag(&fence_key)
+        .await
+        .unwrap()
+        .etag
+        .unwrap();
+    assert_ne!(first_etag, second_etag, "fence epochs must not recur");
+    assert!(matches!(
+        store.delete_conditional(&fence_key, &first_etag).await,
+        Err(ObjectStoreError::PreconditionFailed(_))
+    ));
+    assert!(keyspace.maintenance_fence_present_for_test().await.unwrap());
+
+    // Repeating set while the second fence stands is still idempotent.
+    keyspace.set_maintenance_fence().await.unwrap();
+    assert_eq!(
+        store
+            .download_with_etag(&fence_key)
+            .await
+            .unwrap()
+            .etag
+            .unwrap(),
+        second_etag
+    );
+    keyspace.release_maintenance_fence().await.unwrap();
     counterpart.shutdown().await;
 }
 

@@ -22,6 +22,12 @@ tasks; A28/A32/A35 public-API legs live in
 `crates/yeetz-s3-kernel/tests/streaming_contract.rs`, and S11 in
 `crates/yeetz-s3-streams/tests/streams_envelope_bound.rs`.
 
+The batch-10 teardown fence-ABA witness is
+`teardown_reerected_fence_rejects_a_stale_release_etag` in the
+loopback streaming contract suite. Successive fence erections have
+non-recurrent content etags, and a release token from the first gets
+`PreconditionFailed` against the second without removing it.
+
 The forge-facing rigs (connect transport legs, gRPC legs, write-path
 concurrency, events migration) stayed in the parent `yeetz` repo —
 they prove forge behavior against forge types.

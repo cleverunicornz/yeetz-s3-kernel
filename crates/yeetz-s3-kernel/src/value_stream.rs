@@ -1457,7 +1457,15 @@ impl AtomicKeyspace {
     /// does NOT prove quiescence; the operational assertion remains
     /// load-bearing.
     pub async fn set_maintenance_fence(&self) -> Result<(), KeyspaceError> {
-        let fence = ValueEnvelope::new(0, 0, Bytes::from_static(b"fenced")).encode();
+        // Each distinct erection needs distinct bytes: S3 etags may
+        // be content-derived, so a recurrent fence body would let a
+        // delayed release from an older erection delete the new one.
+        let fence = ValueEnvelope::new(
+            0,
+            0,
+            Bytes::copy_from_slice(&crate::value_manifest::mint_commit_id()),
+        )
+        .encode();
         match self
             .store
             .upload_conditional(&self.fence_object_key(), fence, None)
