@@ -66,6 +66,12 @@ Both an in-bounds reversed window and a reversed window starting past
 EOF return typed `InvalidRange`; `len..len` remains the valid empty
 EOF window.
 
+The batch-10 teardown commit-identity witness is
+`writer_commit_ids_are_unique_in_large_sample` in `value_manifest`.
+The construction now draws 128 bits from the process RNG instead of
+clock/PID/process-local state; the witness checks that a 4,096-ID
+sample is collision-free.
+
 The forge-facing rigs (connect transport legs, gRPC legs, write-path
 concurrency, events migration) stayed in the parent `yeetz` repo —
 they prove forge behavior against forge types.
