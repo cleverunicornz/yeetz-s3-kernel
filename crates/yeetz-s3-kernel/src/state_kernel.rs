@@ -6340,18 +6340,45 @@ pub mod gateway_state_contract {
             .await
             .expect("era-2 token deletes");
 
-        // ...and the layering holds: a raw conditional delete writes
-        // no tombstone (Absent, not Destroyed) and bumps no
-        // incarnation (the counter still names era 2's lifetime).
-        assert_eq!(
+        // ...and the earlier destroy's witness remains as history
+        // (batch 6: tombstones persist across supersession until a
+        // certified trim) — the conditional delete neither wrote it
+        // nor removed it, and bumped no incarnation.
+        assert!(matches!(
             keyspace.read_state("cell").await.unwrap(),
-            crate::KeyState::Absent,
-            "no witness — delete_if_match is not destroy"
-        );
+            crate::KeyState::Destroyed { .. },
+        ));
         assert_eq!(
             keyspace.incarnation_for_test("cell").await.unwrap(),
             1,
             "no incarnation bump — the counter still names the destroyed era"
+        );
+
+        // The layering pin on a clean key (never destroyed here): a
+        // raw conditional delete writes NO tombstone (Absent, not
+        // Destroyed) and bumps no incarnation.
+        keyspace
+            .create("raw", Bytes::from_static(b"v0"))
+            .await
+            .unwrap();
+        let (_, raw_etag) = keyspace
+            .get_with_etag("raw")
+            .await
+            .unwrap()
+            .expect("raw value present");
+        keyspace
+            .delete_if_match("raw", &raw_etag)
+            .await
+            .expect("raw token deletes");
+        assert_eq!(
+            keyspace.read_state("raw").await.unwrap(),
+            crate::KeyState::Absent,
+            "no witness — delete_if_match is not destroy"
+        );
+        assert_eq!(
+            keyspace.incarnation_for_test("raw").await.unwrap(),
+            0,
+            "no incarnation bump on a never-destroyed key"
         );
         let _ = counterpart.shutdown().await;
     }
