@@ -5912,13 +5912,14 @@ pub mod gateway_state_contract {
     /// counterpart's conditional-PUT barrier parks the racing
     /// create's PUT server-side (its incarnation read completes
     /// first), the destroy then runs to completion through the gate,
-    /// and a second create releases the gate. Exactly one of the two
-    /// parked-and-released PUTs lands; if the era-1 writer wins, its
-    /// envelope is byte-identical to the destroyed era's — and on
-    /// this content-etag counterpart an era-1 token then CASes the
-    /// "new" lifetime, the exact ABA batch 7 exists to prevent.
-    /// Fail-on-detect canary over bounded attempts; green means the
-    /// sampled interleavings never crossed eras.
+    /// and a doomed If-Match PUT releases the gate without writing —
+    /// so the parked writer is the only writer and lands
+    /// deterministically with the DESTROYED era's incarnation. Its
+    /// envelope is then byte-identical to the destroyed era's value,
+    /// and on this content-etag counterpart an era-1 token CASes the
+    /// "new" lifetime — the exact ABA batch 7 exists to prevent. The
+    /// canary fails the moment one attempt reproduces it; green means
+    /// create() never mints a stale-era envelope.
     #[tokio::test]
     async fn a15_create_destroy_race_cannot_cross_eras() {
         let (store, keyspace, counterpart) = keyspace_fixture("a15").await;
@@ -5988,22 +5989,25 @@ pub mod gateway_state_contract {
                 "the destroy bumped the incarnation while the writer was parked"
             );
 
-            // Release the gate: a fresh create whose incarnation read
-            // observes the post-bump counter becomes arrival #2; both
-            // parked PUTs proceed and exactly one lands.
-            let releaser = tokio::spawn({
-                let store = Arc::clone(&store);
-                let key = key.clone();
-                let payload = payload.clone();
-                async move {
-                    AtomicKeyspace::new(store, "a15")
-                        .expect("releaser keyspace")
-                        .create(&key, payload)
-                        .await
-                }
-            });
+            // Release the gate with a DOOMED conditional PUT: an
+            // If-Match against an etag that cannot match (the value is
+            // deleted). It is the barrier's second arrival — the gate
+            // opens — but its condition check fails against the absent
+            // object, so it never writes. The parked writer resumes as
+            // the ONLY writer and its If-None-Match always lands:
+            // deterministic, no post-gate race to lose.
+            let gate_opener = store
+                .upload_conditional(
+                    &physical,
+                    Bytes::from_static(b"gate-opener"),
+                    Some("stale-etag-that-never-matches"),
+                )
+                .await;
+            assert!(
+                gate_opener.is_err(),
+                "the gate opener's If-Match must fail against the absent value"
+            );
             let _writer_outcome = writer.await.expect("writer task joins");
-            let _releaser_outcome = releaser.await.expect("releaser task joins");
 
             // The batch-7 promise: an era-1 token is never accepted
             // across the destruction boundary, no matter which writer
