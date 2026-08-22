@@ -537,3 +537,137 @@ CAS.
 With batch 7, the kernel's deferred-items plan is complete: one
 storage truth, certified retention, witnessed existence, and
 era-fenced CAS across every boundary the object model has.
+
+---
+
+## Ruled addendum: Batch 8 — conditional delete (`delete_if_match`)
+
+Status: accepted (human-authorized kernel extension, direct directive
+2026-08-22: "conditional delete … action that immediately").
+
+### What was decided
+
+`AtomicKeyspace` gains `delete_if_match(key, expected_etag)`: the
+value is deleted only when the stored object's etag equals
+`expected_etag` — the same token class `compare_exchange` accepts
+(the store etag of the envelope-v2 object, from `get_with_etag`). It
+is the delete-side dual of CAS: one operation where consumers
+(object GC, ref-tombstone simplification) otherwise run
+read-check-delete dances whose check and delete race.
+
+Semantics:
+
+- match → deleted;
+- mismatch → `PreconditionFailed` carrying the observed etag,
+  incarnation, and version — the era the caller lost to (batch 7's
+  conflict enrichment, mirrored); the value is untouched;
+- absent key → `PreconditionFailed` with all-`None` observed fields,
+  exactly `compare_exchange`'s absent shape. Never-created and
+  destroyed are indistinguishable at the value object (the
+  tombstone is not consulted): absence is never converted into
+  idempotent success — that is `delete`'s contract, not this one's.
+
+### Layering ruling (the design question this addendum owns)
+
+Conditional delete is **option (b): a raw keyspace-level primitive
+below the trim/tombstone/incarnation machinery** — the sibling of
+`delete`/`delete_many` — not a variant of `destroy` and not a
+two-layer split. Grounds, from how the machinery works today:
+
+1. **`destroy` composes raw primitives; it does not embody them.**
+   `destroy` is tombstone-create + `bump_incarnation` + a raw
+   `store.delete`. The reserved-state guard
+   (`ensure_not_reserved_key`) lives at the raw delete/write paths;
+   the machinery itself bypasses it through raw object calls
+   (discipline, not permission). A conditional delete that is itself
+   a raw primitive slots into exactly that structure.
+2. **The token class is `compare_exchange`'s**, so "conditional X"
+   belongs at the layer that owns conditional write.
+3. **The layering is observable and pinned by contract (A22)**: a
+   successful `delete_if_match` writes no tombstone (`read_state` is
+   `Absent`, not `Destroyed`) and bumps no incarnation — identical
+   side-effect profile to `delete`. Deliberate deletion that needs
+   the witness and the era fence is `destroy`'s contract; data-key
+   retirement where the caller holds the era token is this one's.
+   GC-style consumers use it directly on data keys; a future
+   hardening may compose it into `destroy`'s final unlink (making
+   the witness name exactly the era it deleted) — a separately
+   orchestrated change, not this batch: `destroy`'s unconditional
+   tail is pre-existing behavior and this batch does not move it.
+4. **Cross-era safety comes from the machinery it sits under, not
+   from itself**: after `destroy` + recreate, an era-1 token can
+   never delete the era-2 incarnation (envelope v2 disagreement),
+   and the error names the incarnation (A22). Within a lifetime,
+   exactly one mutation wins any etag era against concurrent CAS,
+   create, or deletes (A23).
+
+### Wire shape and backend support
+
+The primitive is a single store-level `DELETE` + `If-Match` (S3
+conditional deletes): `204` on match, `412 PreconditionFailed` on
+mismatch, `404 NoSuchKey` when absent. `yeetz-sdk-s3` gains
+`ObjectStoreClient::delete_conditional`, carried on the
+endpoint-configured AWS client (the same client the explicit
+multipart flows use), discriminating the S3 error codes by their
+rest-xml `<Code>`. The kernel's loopback counterpart implements the
+wire shape, including real S3 error XML bodies so the AWS SDK's
+parser can discriminate them.
+
+In-memory test stores do not model conditional deletes
+(`object_store`'s `InMemory` has no If-Match delete, and a
+read-then-delete fallback would reintroduce the TOCTOU race the
+primitive exists to close). `delete_if_match` fails closed on them
+(typed `Unavailable`, value intact — A18); a silent unconditional
+fallback is a defect this design refuses. Wire contracts therefore
+run on the loopback rig, where keyspace wire contracts live
+(A9/A10/A14/A15/A16/G117 precedent).
+
+### Reserved-state refusal
+
+`delete_if_match` calls the same `ensure_not_reserved_key` guard as
+`delete`/`delete_many`/`create`/`compare_exchange`: `tombstones/`,
+`incarnations/`, and the `trims` certificate segment refuse with
+their existing typed errors (`TombstoneImmutable`,
+`IncarnationCounterImmutable`, `TrimCertificateImmutable`) — no new
+error variant, no divergent rule (A17). The conditional path can
+never be aimed at the machinery's own state.
+
+### Contract suite
+
+- **A17** (`a17_conditional_delete_refuses_reserved_state_typed`,
+  in-memory): typed reserved-state refusal, family uniformity with
+  `delete`/`delete_many`, side-effect-free batch refusal,
+  segment-not-substring rule.
+- **A18** (`a18_conditional_delete_fails_closed_without_wire_support`,
+  in-memory): `Unavailable` + value intact on backends without the
+  wire primitive — never a silent unconditional delete.
+- **A19** (`a19_conditional_delete_match_deletes_on_the_wire`): a
+  matching etag deletes; the loopback request log witnesses the
+  single `DELETE` carrying `If-Match` with the caller's token.
+- **A20** (`a20_conditional_delete_mismatch_names_the_era`): a
+  stale etag refuses typed naming the observed etag, incarnation,
+  and version; the value survives; the current token then deletes.
+- **A21** (`a21_conditional_delete_absent_key_taxonomy`):
+  never-created (`Absent`) and destroyed (`Destroyed`, witness
+  standing) both refuse all-`None`; a token that once matched does
+  not become an idempotent success; the witness is undisturbed.
+- **A22** (`a22_conditional_delete_incarnation_composition`): the
+  batch-7 closure protects the primitive across destroy/recreate
+  (era-1 token refused, naming incarnation 1, on byte-identical
+  era-2 payloads), and the primitive stays below the machinery (no
+  tombstone, no incarnation bump).
+- **A23** (`a23_concurrent_delete_vs_cas_exactly_one_winner`):
+  concurrent delete-vs-CAS on the same etag — exactly one mutation
+  wins the era; the loser is typed; the final state names the
+  winner.
+- **G118** (`g118_conditional_delete_fault_cut_leaves_value_intact`):
+  the `KeyspaceConditionalDelete` fault cut — BeforeEffect is a
+  failed conditional delete leaving the value intact (the retry
+  with the still-current token converges); AfterEffect applies the
+  delete and loses the response (the caller re-reads to converge;
+  the stale retry refuses typed).
+
+K1–K7 do not move. The change is additive: one method, one SDK
+primitive, one fault cut, one loopback wire arm. No existing
+signature or semantic changes — `destroy`'s unconditional tail is
+documented as a future adoption site, deliberately untouched.
