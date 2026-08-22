@@ -994,6 +994,38 @@ async fn a34_quiesced_sweep_inventory_and_fences() {
     counterpart.shutdown().await;
 }
 
+#[tokio::test]
+async fn teardown_sweep_reclaims_chunks_of_a_trimmed_zombie_control() {
+    let (_store, keyspace, counterpart) = keyspace_fixture("trimmed-chunks").await;
+    let key = "log/00000000000000000003";
+    let data = pattern(STREAMED_LEN, 0xEC);
+    stream_create(&keyspace, key, &data).await.unwrap();
+
+    // The certificate is the logical commit. Deliberately leave the
+    // old v3 control in place to model the window before delete_below.
+    keyspace.propose_trim("", 5).await.unwrap();
+    assert!(matches!(
+        keyspace.read_state_stream(key).await.unwrap(),
+        StreamKeyState::OffsetExpired { first_retained: 5 }
+    ));
+    let inventory = keyspace.chunk_inventory().await.unwrap();
+    assert_eq!(inventory.referenced_chunks, 0);
+    assert_eq!(inventory.candidate_orphan_chunks, 3);
+
+    keyspace.set_maintenance_fence().await.unwrap();
+    let report = keyspace.sweep_chunks().await.unwrap();
+    assert_eq!(report.examined, 3);
+    assert_eq!(report.deleted, 3);
+    assert_eq!(report.retained, 0);
+    assert_eq!(report.remaining, 0);
+    assert!(matches!(
+        keyspace.read_state_stream(key).await.unwrap(),
+        StreamKeyState::OffsetExpired { first_retained: 5 }
+    ));
+    keyspace.release_maintenance_fence().await.unwrap();
+    counterpart.shutdown().await;
+}
+
 /// Unavailable or corrupt control fails closed for that key: the sweep
 /// refuses to delete what it cannot classify.
 #[tokio::test]
