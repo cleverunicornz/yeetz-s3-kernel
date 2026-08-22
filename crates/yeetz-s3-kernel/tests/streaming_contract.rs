@@ -109,7 +109,8 @@ async fn a28_range_boundary_table() {
         Err(KeyspaceError::InvalidRange { .. }) => {}
         other => panic!("start beyond length must be typed, got {other:?}"),
     }
-    match keyspace.open_stream_range("cell", 5..4).await {
+    let reversed = std::ops::Range { start: 5, end: 4 };
+    match keyspace.open_stream_range("cell", reversed).await {
         Err(KeyspaceError::InvalidRange {
             start: 5, end: 4, ..
         }) => {}
