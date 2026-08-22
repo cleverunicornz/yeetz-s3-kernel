@@ -29,6 +29,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use yeetz_sdk_s3::{ObjectStoreClient, ObjectStoreError, S3Config};
 
+use crate::LineageHeadState;
+use crate::Tombstone;
 use crate::state_kernel::{
     CanonicalRecord, KernelError, KernelLineage, StateKernel, SuccessorPolicy,
 };
@@ -74,6 +76,13 @@ pub async fn run_real_s3_aba_probe(config: &S3Config) -> Result<Vec<String>, Str
         lineage_battery(
             Arc::clone(&client),
             &lineage_name,
+            &mut created,
+            &mut verdicts,
+        )
+        .await?;
+        lineage_post_bump_window_battery(
+            Arc::clone(&client),
+            &format!("aba-probe/{run_id}-lineage-window"),
             &mut created,
             &mut verdicts,
         )
@@ -1021,6 +1030,131 @@ async fn lineage_battery(
             .to_string(),
     );
 
+    Ok(())
+}
+
+/// Lifecycle-closure leg (teardown L14, live backend): the
+/// incarnation bump is destroy's linearization point; between it and
+/// the head delete the old head is still visible. Seed the exact
+/// post-bump pre-delete crash state with put-if-absent writes only
+/// (tombstone standing, counter at 1, era-0 head still live), then
+/// prove the era-0 `HeadRead` is refused, the taxonomy stays honest
+/// (`Present`), and a re-run destroy converges — its conditional
+/// tail deleting the still-live observed head, which is also the
+/// live-backend proof that the `DELETE` + `If-Match` wire works.
+async fn lineage_post_bump_window_battery(
+    client: Arc<ObjectStoreClient>,
+    lineage_name: &str,
+    created: &mut Vec<String>,
+    verdicts: &mut Vec<String>,
+) -> Result<(), String> {
+    let lineage = KernelLineage::new(lineage_name, SuccessorPolicy::SuccessorCapable)
+        .map_err(|error| format!("window lineage bind: {error:?}"))?;
+    let kernel = StateKernel::new(Arc::clone(&client), lineage.clone());
+
+    let genesis = CanonicalRecord::new(
+        &lineage,
+        0,
+        None,
+        "probe.window-genesis",
+        "probe.v1",
+        vec![0x77; 64],
+        "probe-window-operation",
+        "real-s3-probe",
+        "probe-cause",
+    )
+    .map_err(|error| format!("window genesis record: {error:?}"))?;
+    let era1 = kernel
+        .append_genesis(&genesis)
+        .await
+        .map_err(|error| format!("window era-1 genesis: {error:?}"))?;
+    created.push(format!(
+        "{lineage_name}/objects/{}",
+        era1.record_digest().as_str()
+    ));
+    created.push(format!("{lineage_name}/head"));
+
+    // The crash state: bump landed, tombstone standing, head delete
+    // never fired. Put-if-absent only.
+    let tombstone = Tombstone::new(0, 0, "probe-window", "real-s3-probe");
+    let tombstone_bytes = tombstone
+        .encode()
+        .map_err(|error| format!("window tombstone encode: {error:?}"))?;
+    client
+        .upload_conditional(&lineage.tombstone_key(), tombstone_bytes.into(), None)
+        .await
+        .map_err(|error| format!("window tombstone seed: {error:?}"))?;
+    client
+        .upload_conditional(
+            &lineage.incarnation_key(),
+            1u64.to_be_bytes().to_vec().into(),
+            None,
+        )
+        .await
+        .map_err(|error| format!("window counter seed: {error:?}"))?;
+    created.push(format!("{lineage_name}/tombstone"));
+    created.push(format!("{lineage_name}/incarnation"));
+
+    // Taxonomy is head-driven: the window reads Present, honestly.
+    match kernel.read_head_state().await {
+        Ok(LineageHeadState::Present(read)) if read.incarnation() == 0 => {}
+        other => {
+            return Err(format!(
+                "window taxonomy must stay Present at era 0, got {other:?}"
+            ));
+        }
+    }
+
+    // The closed window: the era-0 token must not advance the head.
+    let successor = CanonicalRecord::new(
+        &lineage,
+        1,
+        Some(era1.record_position()),
+        "probe.window-stale",
+        "probe.v1",
+        vec![0x88; 64],
+        "probe-window-stale-operation",
+        "real-s3-probe",
+        "probe-cause",
+    )
+    .map_err(|error| format!("window successor record: {error:?}"))?;
+    match kernel.append_successor(&successor, &era1).await {
+        Err(KernelError::LineageHeadConflict { .. }) => {}
+        Err(error) => {
+            return Err(format!(
+                "window era-0 token returned unexpected error: {error:?}"
+            ));
+        }
+        Ok(advanced) => {
+            return Err(format!(
+                "post-bump window ACCEPTED an era-0 successor (L14 open on the live \
+                 backend): generation {} incarnation {}",
+                advanced.generation(),
+                advanced.incarnation()
+            ));
+        }
+    }
+
+    // Convergence: a re-run destroy closes the window — its
+    // conditional tail deletes exactly the still-live observed head.
+    kernel
+        .destroy("probe-window-converge", "real-s3-probe")
+        .await
+        .map_err(|error| format!("window destroy re-run: {error:?}"))?;
+    match kernel.read_head_state().await {
+        Ok(LineageHeadState::Destroyed(_)) => {}
+        other => {
+            return Err(format!(
+                "window destroy must converge to Destroyed, got {other:?}"
+            ));
+        }
+    }
+    note(
+        verdicts,
+        "lineage post-bump pre-delete window: era-0 successor refused; destroy re-run \
+         converged (conditional tail deleted the live observed head)"
+            .to_string(),
+    );
     Ok(())
 }
 

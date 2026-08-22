@@ -1099,12 +1099,25 @@ impl StateKernel {
     /// after the bump but before the delete leaves a Present head
     /// the taxonomy still reports truthfully — re-running `destroy`
     /// converges in both cases.
+    ///
+    /// Lifecycle closure (teardown L10): the tail deletes only the
+    /// head this destroy observed (store-level `DELETE` + `If-Match`
+    /// — batch 8's primitive). A stale destroy whose observed head
+    /// was replaced after its era closed cannot erase the
+    /// replacement: the mismatch is contention, surfaced as
+    /// [`KernelError::LineageHeadConflict`] for the caller to
+    /// re-read and re-run. Requires the conditional-delete wire
+    /// primitive; backends without it fail closed (the A18
+    /// posture), never a silent unconditional delete.
     pub async fn destroy(&self, cause: &str, actor: &str) -> Result<(), KernelError> {
         let loaded = match self.load_head().await {
             Ok(loaded) => loaded,
             Err(KernelError::StateHistoryIncomplete { .. }) => return Ok(()),
             Err(err) => return Err(err),
         };
+        let etag = loaded.etag.ok_or(KernelError::StateUnavailable {
+            operation: "destroy head load did not return an ETag",
+        })?;
         let tombstone = Tombstone::new(
             loaded.head.incarnation,
             loaded.head.generation,
@@ -1131,12 +1144,22 @@ impl StateKernel {
             }
         }
         self.bump_incarnation().await?;
-        self.object_store
-            .delete(&self.lineage.head_key())
+        match self
+            .object_store
+            .delete_conditional(&self.lineage.head_key(), &etag)
             .await
-            .map_err(|_| KernelError::StateUnavailable {
+        {
+            // Match, or already deleted (a racing destroy or a
+            // converged crash window — the L4b idempotence).
+            Ok(()) | Err(ObjectStoreError::NotFound(_)) => Ok(()),
+            // The observed head was replaced after this era closed:
+            // the replacement is another lifetime's head, not this
+            // destroy's to erase. Contention — re-run converges.
+            Err(ObjectStoreError::PreconditionFailed(_)) => Err(self.head_conflict().await),
+            Err(_) => Err(KernelError::StateUnavailable {
                 operation: "head deletion",
-            })
+            }),
+        }
     }
 
     /// Remove every object in this lineage for a rebuild/corruption test.
@@ -1264,6 +1287,8 @@ impl StateKernel {
             });
         }
         self.ensure_record_lineage(record)?;
+        self.ensure_open_era(&expected.head).await?;
+
         if !self.lineage.same_identity(&expected.head.lineage) {
             return Err(self.head_conflict().await);
         }
@@ -1297,14 +1322,16 @@ impl StateKernel {
         let head = CanonicalHead {
             lineage: self.lineage.clone(),
             generation: next_generation,
-            // The CAS is within one lifetime: the successor inherits
-            // the observed head's era (the same_identity check above
-            // already proved the stored head carries this incarnation).
+            // The CAS is within one lifetime: the era gate and the
+            // same_identity check above proved the stored head and
+            // the counter agree on this incarnation.
             incarnation: expected.head.incarnation,
             record_digest,
             prior: Some(expected_prior),
         };
-        self.replace_head(head, &expected.etag).await
+        let advanced = self.replace_head(head, &expected.etag).await?;
+        self.retire_closed_era_publication(&advanced).await?;
+        Ok(advanced)
     }
 
     /// Publish a contiguous immutable successor batch, then advance the head
@@ -1323,6 +1350,7 @@ impl StateKernel {
         if !self.lineage.same_identity(&expected.head.lineage) {
             return Err(self.head_conflict().await);
         }
+        self.ensure_open_era(&expected.head).await?;
 
         let current = self.load_head().await?;
         let current_etag = current
@@ -1351,12 +1379,15 @@ impl StateKernel {
             lineage: self.lineage.clone(),
             generation: terminal.generation,
             // Within-lifetime CAS: the batch inherits the observed
-            // head's era, exactly like the single-record successor.
+            // head's era, exactly like the single-record successor;
+            // the era gate proved the counter agrees.
             incarnation: expected.head.incarnation,
             record_digest: terminal.digest,
             prior: records.last().and_then(|record| record.prior.clone()),
         };
-        self.replace_head(head, &expected.etag).await
+        let advanced = self.replace_head(head, &expected.etag).await?;
+        self.retire_closed_era_publication(&advanced).await?;
+        Ok(advanced)
     }
 
     fn validate_record_batch(
@@ -1745,6 +1776,54 @@ impl StateKernel {
         Err(KernelError::StateUnavailable {
             operation: "lineage incarnation counter bump budget exhausted",
         })
+    }
+
+    /// The era gate every head-advancing append passes (lifecycle
+    /// closure, teardown L9/L14): the incarnation counter is the era
+    /// authority — the destroy's linearization point — so a
+    /// `HeadRead` whose self-declared incarnation disagrees with the
+    /// counter describes a head of a destroyed era (republished by a
+    /// crashed post-landing re-check, or still visible in the
+    /// post-bump pre-delete crash window). Refused before the
+    /// store's If-Match, exactly where the other token refusals
+    /// live. Reads never pay this cost: terminal reads stay two GETs
+    /// and never touch the counter (the read-surface contract, L13).
+    async fn ensure_open_era(&self, head: &CanonicalHead) -> Result<(), KernelError> {
+        if self.current_incarnation().await? == head.incarnation {
+            return Ok(());
+        }
+        Err(self.head_conflict().await)
+    }
+
+    /// Post-CAS era recheck — the append twin of `create_head`'s
+    /// post-landing re-read (L8's pattern). A destroy can bump the
+    /// counter between the era gate and this CAS; if it did, the CAS
+    /// just published a head of a now-closed era. Evict exactly the
+    /// bytes this call published (If-Match on the etag it earned)
+    /// and surface the contention: the lineage converges to its
+    /// destroyed truth instead of carrying an unadvanceable head.
+    async fn retire_closed_era_publication(&self, published: &HeadRead) -> Result<(), KernelError> {
+        if self.current_incarnation().await? == published.head.incarnation {
+            return Ok(());
+        }
+        match self
+            .object_store
+            .delete_conditional(&self.lineage.head_key(), &published.etag)
+            .await
+        {
+            // Our publication is gone, or already replaced by
+            // another writer's bytes: either way nothing this call
+            // published survives as a head.
+            Ok(())
+            | Err(ObjectStoreError::NotFound(_))
+            | Err(ObjectStoreError::PreconditionFailed(_)) => {}
+            Err(_) => {
+                return Err(KernelError::StateUnavailable {
+                    operation: "head update (closed-era conditional eviction)",
+                });
+            }
+        }
+        Err(self.head_conflict().await)
     }
 
     async fn replace_head(
@@ -2821,6 +2900,13 @@ pub mod gateway_state_contract {
         /// AfterEffect applies the delete and loses the response —
         /// the caller re-reads to converge (G118).
         KeyspaceConditionalDelete,
+        /// A GET of the lineage incarnation counter
+        /// (`{lineage}/incarnation`). A BeforeEffect cut models the
+        /// writer losing the post-landing counter re-read after its
+        /// stale-era head PUT has landed (lifecycle closure L9);
+        /// AfterEffect is a lost response on a read (no effect to
+        /// apply) — both surface as a failed read.
+        LineageIncarnationRead,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2880,6 +2966,9 @@ pub mod gateway_state_contract {
                 }
                 StorageFaultCut::KeyspaceConditionalDelete => {
                     *method == Method::DELETE && key.starts_with("keyspace/") && if_match.is_some()
+                }
+                StorageFaultCut::LineageIncarnationRead => {
+                    *method == Method::GET && key.ends_with("/incarnation")
                 }
             }
         }
@@ -3436,7 +3525,10 @@ pub mod gateway_state_contract {
                     | StorageFaultCut::HeadUpdate
                     // Delete applied; the response is lost (G117/G118).
                     | StorageFaultCut::KeyspaceDelete
-                    | StorageFaultCut::KeyspaceConditionalDelete => {
+                    | StorageFaultCut::KeyspaceConditionalDelete
+                    // Read applied; the response is lost — the
+                    // caller surfaces a failed read (L9's cut).
+                    | StorageFaultCut::LineageIncarnationRead => {
                         status = T002_FAULT_STATUS;
                         etag = None;
                         response_body.clear();
@@ -4214,7 +4306,8 @@ pub mod gateway_state_contract {
             | (StorageFaultCut::HeadCreate, StorageFaultPhase::AfterEffect)
             | (StorageFaultCut::HeadUpdate, StorageFaultPhase::AfterEffect)
             | (StorageFaultCut::KeyspaceDelete, StorageFaultPhase::AfterEffect)
-            | (StorageFaultCut::KeyspaceConditionalDelete, StorageFaultPhase::AfterEffect) => {
+            | (StorageFaultCut::KeyspaceConditionalDelete, StorageFaultPhase::AfterEffect)
+            | (StorageFaultCut::LineageIncarnationRead, StorageFaultPhase::AfterEffect) => {
                 T002_FAULT_STATUS.as_u16()
             }
             (StorageFaultCut::ImmutableChecksum, StorageFaultPhase::AfterEffect)
@@ -4396,8 +4489,10 @@ pub mod gateway_state_contract {
             // Keyspace deletes are proven by their own loopback
             // contract (a9_delete_many_resumes_after_lost_response_cut);
             // they carry no lineage semantics.
-            StorageFaultCut::KeyspaceDelete | StorageFaultCut::KeyspaceConditionalDelete => {
-                unreachable!("keyspace delete cuts have no lineage receipt")
+            StorageFaultCut::KeyspaceDelete
+            | StorageFaultCut::KeyspaceConditionalDelete
+            | StorageFaultCut::LineageIncarnationRead => {
+                unreachable!("specialized cuts have no lineage receipt")
             }
         }
     }
@@ -7150,23 +7245,7 @@ pub mod gateway_state_contract {
                     .await
             }
         });
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            loop {
-                let snapshot = counterpart.snapshot().await;
-                if snapshot
-                    .barrier
-                    .as_ref()
-                    .expect("head barrier stays armed")
-                    .arrivals
-                    >= 1
-                {
-                    return;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("parked head PUT reaches the barrier");
+        wait_for_first_head_barrier_arrival(&counterpart).await;
 
         kernel
             .destroy("l8-race", "batch9-teardown")
@@ -7194,6 +7273,376 @@ pub mod gateway_state_contract {
         assert_eq!(repaired.incarnation(), 1);
 
         let snapshot = counterpart.snapshot().await;
+        let head_deletes: Vec<_> = snapshot
+            .requests
+            .iter()
+            .filter(|request| {
+                request.method == Method::DELETE.as_str()
+                    && request.key.as_deref() == Some(head_key.as_str())
+            })
+            .collect();
+        // Both head mutations that delete are If-Match fenced: the
+        // destroy tail (L10) and the stale-era eviction (L8). No
+        // unconditional head DELETE exists on the wire.
+        assert!(
+            !head_deletes.is_empty()
+                && head_deletes
+                    .iter()
+                    .all(|request| request.if_match.is_some()),
+            "every head DELETE must carry If-Match: {:?}",
+            snapshot.requests
+        );
+        let _ = counterpart.shutdown().await;
+    }
+
+    async fn wait_for_first_head_barrier_arrival(counterpart: &LoopbackCounterpart) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let snapshot = counterpart.snapshot().await;
+                if snapshot
+                    .barrier
+                    .as_ref()
+                    .expect("head barrier stays armed")
+                    .arrivals
+                    >= 1
+                {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("parked head PUT reaches the barrier");
+    }
+
+    /// L9 (lifecycle closure): the post-landing re-check is not a
+    /// publication fence. If its counter GET fails (or the writer
+    /// crashes) after the stale PUT lands, the destroyed era's exact
+    /// head bytes remain visible and the pre-destroy `HeadRead`
+    /// matches them byte-for-byte. The append era gate refuses that
+    /// token: its self-declared incarnation is behind the counter.
+    /// Red witness: ci-dev run 32595300408 (batch9-teardown tip
+    /// `b01b49c`), where this canary's namesake failed against the
+    /// unfixed kernel.
+    #[tokio::test]
+    async fn l9_post_landing_recheck_failure_cannot_publish_a_destroyed_era() {
+        let (store, _keyspace, counterpart) = keyspace_fixture("l9-post-landing-cut").await;
+        let lineage =
+            KernelLineage::new("l9/post-landing-cut", SuccessorPolicy::SuccessorCapable).unwrap();
+        let kernel = StateKernel::new(Arc::clone(&store), lineage.clone());
+        let head_key = lineage.head_key();
+        let genesis_record = record(&lineage, 0, None, b"l9-identical-genesis");
+        let era1 = kernel
+            .append_genesis(&genesis_record)
+            .await
+            .expect("era-1 genesis");
+
+        counterpart.arm_conditional_head_barrier(&head_key).await;
+        let writer = tokio::spawn({
+            let store = Arc::clone(&store);
+            let lineage = lineage.clone();
+            let record = genesis_record.clone();
+            async move {
+                StateKernel::new(store, lineage)
+                    .append_genesis(&record)
+                    .await
+            }
+        });
+        wait_for_first_head_barrier_arrival(&counterpart).await;
+        kernel
+            .destroy("l9-race", "lifecycle-closure")
+            .await
+            .expect("destroy while stale writer is parked");
+
+        counterpart
+            .arm_storage_fault(
+                StorageFaultCut::LineageIncarnationRead,
+                StorageFaultPhase::BeforeEffect,
+                &lineage.incarnation_key(),
+            )
+            .await;
+        assert!(
+            store
+                .upload_conditional(
+                    &head_key,
+                    b"doomed-gate-opener".to_vec().into(),
+                    Some("etag-that-cannot-match"),
+                )
+                .await
+                .is_err(),
+            "the gate opener must not create a head"
+        );
+        assert!(
+            matches!(
+                writer.await.expect("parked writer joins"),
+                Err(KernelError::StateUnavailable {
+                    operation: "lineage incarnation counter read"
+                })
+            ),
+            "the post-landing counter read must hit the armed cut"
+        );
+
+        // The destroyed era's exact bytes sit published: the crash
+        // window this canary owns. Reads report them truthfully; the
+        // era gate must keep them unadvanceable.
+        let published_stale = kernel
+            .read_head()
+            .await
+            .expect("stale head remains after the re-check cut");
+        assert_eq!(published_stale.incarnation(), 0);
+        assert_eq!(published_stale.head, era1.head);
+        assert_eq!(published_stale.etag, era1.etag);
+
+        let stale_successor = record(
+            &lineage,
+            1,
+            Some(era1.record_position()),
+            b"l9-stale-successor",
+        );
+        match kernel.append_successor(&stale_successor, &era1).await {
+            Err(KernelError::LineageHeadConflict { .. }) => {}
+            Ok(advanced) => panic!(
+                "L9 DEFECT: the era-1 HeadRead CASed a head published after its destroy; \
+                 generation {} still carries destroyed incarnation {}",
+                advanced.generation(),
+                advanced.incarnation()
+            ),
+            Err(other) => panic!("L9: unexpected stale-token result: {other:?}"),
+        }
+        let _ = counterpart.shutdown().await;
+    }
+
+    /// L10 (lifecycle closure): destroy observed one exact head and
+    /// bumped the counter for that lifetime. Its tail may delete
+    /// only that observed etag; an unconditional DELETE can remove a
+    /// head recreated by a concurrent destroy/writer after the bump.
+    /// Red witness: ci-dev run 32595300408.
+    #[tokio::test]
+    async fn l10_destroy_deletes_only_the_observed_head_etag() {
+        let fixture =
+            new_named_fixture("l10/destroy-wire", SuccessorPolicy::SuccessorCapable).await;
+        let genesis_record = record(&fixture.lineage, 0, None, b"l10-genesis");
+        let observed = fixture
+            .kernel
+            .append_genesis(&genesis_record)
+            .await
+            .expect("genesis");
+        fixture
+            .kernel
+            .destroy("l10", "lifecycle-closure")
+            .await
+            .expect("destroy");
+
+        let snapshot = fixture.counterpart.snapshot().await;
+        let deletion = snapshot.requests.iter().find(|request| {
+            request.method == Method::DELETE.as_str()
+                && request.key.as_deref() == Some(fixture.lineage.head_key().as_str())
+        });
+        let Some(deletion) = deletion else {
+            panic!(
+                "L10 DEFECT: destroy emitted no head DELETE at all. \
+                 Wire requests: {:?}",
+                snapshot.requests
+            );
+        };
+        assert_eq!(
+            deletion.if_match.as_deref().map(unquoted_etag),
+            Some(observed.etag.as_str()),
+            "L10 DEFECT: destroy's head DELETE is not fenced to the head it loaded; \
+             a late stale destroy can erase a fresh incarnation without bumping its era"
+        );
+        fixture.shutdown().await;
+    }
+
+    /// L13 (lifecycle closure): the read surface is untouched by the
+    /// era gates — terminal reads remain exactly the head GET and
+    /// the terminal-record GET; the incarnation counter is never
+    /// consulted on a read.
+    #[tokio::test]
+    async fn l13_terminal_read_remains_two_gets_without_counter_access() {
+        let fixture = new_named_fixture("l13/read-shape", SuccessorPolicy::SuccessorCapable).await;
+        let genesis_record = record(&fixture.lineage, 0, None, b"l13-genesis");
+        let head = fixture
+            .kernel
+            .append_genesis(&genesis_record)
+            .await
+            .expect("genesis");
+        let before = fixture
+            .counterpart
+            .snapshot()
+            .await
+            .requests
+            .last()
+            .map_or(0, |request| request.sequence);
+
+        fixture
+            .kernel
+            .read_terminal_record()
+            .await
+            .expect("terminal read");
+        let snapshot = fixture.counterpart.snapshot().await;
+        let expected_head_key = fixture.lineage.head_key();
+        let expected_record_key = fixture.lineage.object_key(head.record_digest());
+        let counter_key = fixture.lineage.incarnation_key();
+        let gets: Vec<_> = snapshot
+            .requests
+            .iter()
+            .filter(|request| request.sequence > before && request.method == Method::GET.as_str())
+            .collect();
+        assert_eq!(gets.len(), 2, "terminal read request shape moved: {gets:?}");
+        assert_eq!(
+            gets.iter()
+                .filter_map(|request| request.key.as_deref())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([expected_head_key.as_str(), expected_record_key.as_str()])
+        );
+        assert!(
+            gets.iter()
+                .all(|request| request.key.as_deref() != Some(counter_key.as_str())),
+            "the incarnation counter is not a read dependency"
+        );
+        fixture.shutdown().await;
+    }
+
+    /// L14 (lifecycle closure): the incarnation bump is the destroy
+    /// linearization point. Once it lands, an era-0 `HeadRead` must
+    /// not advance the still-visible era-0 head during the
+    /// crash-before-delete window. Red witness: ci-dev run
+    /// 32595300408.
+    #[tokio::test]
+    async fn l14_post_bump_pre_delete_rejects_closed_era_successor() {
+        let fixture =
+            new_named_fixture("l14/post-bump-append", SuccessorPolicy::SuccessorCapable).await;
+        let genesis_record = record(&fixture.lineage, 0, None, b"l14-genesis");
+        let era1 = fixture
+            .kernel
+            .append_genesis(&genesis_record)
+            .await
+            .expect("genesis");
+
+        let tombstone = Tombstone::new(era1.incarnation(), era1.generation(), "crash", "l14");
+        raw_create(
+            &fixture.store,
+            &fixture.lineage.tombstone_key(),
+            tombstone.encode().expect("tombstone bytes"),
+        )
+        .await;
+        raw_create(
+            &fixture.store,
+            &fixture.lineage.incarnation_key(),
+            1u64.to_be_bytes().to_vec(),
+        )
+        .await;
+
+        assert!(matches!(
+            fixture.kernel.read_head_state().await.unwrap(),
+            LineageHeadState::Present(_)
+        ));
+        let successor = record(
+            &fixture.lineage,
+            1,
+            Some(era1.record_position()),
+            b"l14-closed-era-successor",
+        );
+        match fixture.kernel.append_successor(&successor, &era1).await {
+            Err(KernelError::LineageHeadConflict { .. }) => {}
+            Ok(advanced) => panic!(
+                "L14 DEFECT: a HeadRead advanced after destroy's incarnation bump; \
+                 generation {} still carries closed incarnation {}",
+                advanced.generation(),
+                advanced.incarnation()
+            ),
+            Err(other) => panic!("L14: unexpected closed-era result: {other:?}"),
+        }
+        fixture.shutdown().await;
+    }
+
+    /// L14's concurrent window (the recheck-tail half of the
+    /// mechanism): the era gate can pass, and a destroy's bump can
+    /// land, while the successor's CAS is still parked at the wire.
+    /// The CAS then publishes a closed-era head — the post-CAS era
+    /// recheck must evict exactly those bytes and surface the
+    /// contention, leaving the lineage at its destroyed truth. The
+    /// gate alone cannot close this ordering; only the tail can.
+    #[tokio::test]
+    async fn l14_race_successor_cas_lands_after_the_bump_evicts_itself() {
+        let fixture =
+            new_named_fixture("l14/post-bump-race", SuccessorPolicy::SuccessorCapable).await;
+        let head_key = fixture.lineage.head_key();
+        let genesis_record = record(&fixture.lineage, 0, None, b"l14-race-genesis");
+        let era1 = fixture
+            .kernel
+            .append_genesis(&genesis_record)
+            .await
+            .expect("genesis");
+
+        fixture
+            .counterpart
+            .arm_conditional_head_barrier(&head_key)
+            .await;
+        let writer = tokio::spawn({
+            let store = Arc::clone(&fixture.store);
+            let lineage = fixture.lineage.clone();
+            let successor = record(
+                &lineage,
+                1,
+                Some(era1.record_position()),
+                b"l14-race-successor",
+            );
+            let expected = era1.clone();
+            async move {
+                StateKernel::new(store, lineage)
+                    .append_successor(&successor, &expected)
+                    .await
+            }
+        });
+        wait_for_first_head_barrier_arrival(&fixture.counterpart).await;
+
+        // The destroy linearizes (tombstone + bump) while the CAS is
+        // parked; its own tail delete cannot fire yet — the parked
+        // PUT owns the head's etag era. Model the crash-before-delete
+        // window directly: counter moved, tombstone standing.
+        let tombstone = Tombstone::new(era1.incarnation(), era1.generation(), "race", "l14");
+        raw_create(
+            &fixture.store,
+            &fixture.lineage.tombstone_key(),
+            tombstone.encode().expect("tombstone bytes"),
+        )
+        .await;
+        raw_create(
+            &fixture.store,
+            &fixture.lineage.incarnation_key(),
+            1u64.to_be_bytes().to_vec(),
+        )
+        .await;
+
+        // A doomed If-Match is arrival two: it opens the barrier but
+        // cannot write, so the parked successor CAS lands
+        // deterministically into the closed era.
+        assert!(
+            fixture
+                .store
+                .upload_conditional(
+                    &head_key,
+                    b"doomed-gate-opener".to_vec().into(),
+                    Some("etag-that-cannot-match"),
+                )
+                .await
+                .is_err(),
+            "the gate opener must not move the head"
+        );
+        match writer.await.expect("parked writer joins") {
+            Err(KernelError::LineageHeadConflict { .. }) => {}
+            other => panic!("L14-race: closed-era CAS must conflict, got {other:?}"),
+        }
+
+        // The self-eviction ran: no closed-era head survives, and
+        // the wire shows the eviction was If-Match fenced.
+        assert!(matches!(
+            fixture.kernel.read_head_state().await.unwrap(),
+            LineageHeadState::Destroyed(_)
+        ));
+        let snapshot = fixture.counterpart.snapshot().await;
         let conditional_head_deletes: Vec<_> = snapshot
             .requests
             .iter()
@@ -7206,9 +7655,265 @@ pub mod gateway_state_contract {
         assert_eq!(
             conditional_head_deletes.len(),
             1,
-            "stale-era eviction must be one If-Match DELETE: {:?}",
+            "the closed-era publication must evict itself with one If-Match DELETE: {:?}",
             snapshot.requests
         );
-        let _ = counterpart.shutdown().await;
+        fixture.shutdown().await;
+    }
+
+    // ----- migrated public-surface lifecycle tests -----
+    //
+    // L1/L3/L5 and the W-suite's lineage member (W5) lived in
+    // `tests/` on the in-memory handle. `destroy`'s tail now requires
+    // the conditional-delete wire primitive (L10) — in-memory handles
+    // fail closed, the A18 posture — so these moved onto the loopback
+    // beside the other wire-gated lifecycle canaries. Their public
+    // assertions are unchanged.
+
+    /// L1: the headline hazard — destroy, recreate with a
+    /// byte-identical genesis, then append a successor with the
+    /// era-1 `HeadRead`: the token is refused
+    /// (`LineageHeadConflict`), the reborn head is untouched, and
+    /// the same append with the fresh era-2 token succeeds.
+    #[tokio::test]
+    async fn l1_stale_head_token_across_destroy_recreate_is_rejected() {
+        let fixture = new_named_fixture("l1/stale-token", SuccessorPolicy::SuccessorCapable).await;
+        let payload = b"identical genesis bytes in both eras";
+        let era1 = fixture
+            .kernel
+            .append_genesis(&record(&fixture.lineage, 0, None, payload))
+            .await
+            .expect("era-1 genesis");
+        assert_eq!(era1.incarnation(), 0);
+
+        fixture
+            .kernel
+            .destroy("rebuild", "l1")
+            .await
+            .expect("destroy");
+
+        let era2 = fixture
+            .kernel
+            .append_genesis(&record(&fixture.lineage, 0, None, payload))
+            .await
+            .expect("era-2 genesis — byte-identical payload");
+        assert_eq!(
+            era2.incarnation(),
+            1,
+            "the reborn head must carry a fresh era stamp"
+        );
+        assert_eq!(era2.generation(), 0);
+
+        // Era-1 token: refused, head untouched.
+        let stale = record(
+            &fixture.lineage,
+            1,
+            Some(era1.record_position()),
+            b"l1-stale-era-successor",
+        );
+        match fixture.kernel.append_successor(&stale, &era1).await {
+            Err(KernelError::LineageHeadConflict { .. }) => {}
+            other => panic!("era-1 token across destroy must conflict, got {other:?}"),
+        }
+        let after = fixture
+            .kernel
+            .read_head()
+            .await
+            .expect("head after refusal");
+        assert_eq!(after.incarnation(), 1);
+        assert_eq!(after.generation(), 0, "the refused append changed nothing");
+        assert_eq!(
+            after.record_digest(),
+            era2.record_digest(),
+            "the reborn head still names the era-2 genesis"
+        );
+
+        // Era-2 token: accepted within the new lifetime.
+        let fresh = record(
+            &fixture.lineage,
+            1,
+            Some(era2.record_position()),
+            b"l1-fresh-era-successor",
+        );
+        let advanced = fixture
+            .kernel
+            .append_successor(&fresh, &era2)
+            .await
+            .expect("era-2 append");
+        assert_eq!(advanced.generation(), 1);
+        assert_eq!(advanced.incarnation(), 1);
+        fixture.shutdown().await;
+    }
+
+    /// L3: the tombstone keeps batch-6 semantics and records the
+    /// closed era: witness written before the head delete, the
+    /// FIRST witness stands across later lifetimes, and the counter
+    /// keeps counting (gaps sanctioned, decreases impossible).
+    #[tokio::test]
+    async fn l3_tombstone_records_the_closed_era_and_first_witness_stands() {
+        let fixture =
+            new_named_fixture("l3/tombstone-era", SuccessorPolicy::SuccessorCapable).await;
+        // Absent before anything exists — no fabricated witness.
+        assert!(fixture.kernel.read_head_state().await.unwrap().is_absent());
+
+        let era1 = fixture
+            .kernel
+            .append_genesis(&record(&fixture.lineage, 0, None, b"era-one"))
+            .await
+            .unwrap();
+        fixture.kernel.destroy("first", "l3").await.unwrap();
+
+        let LineageHeadState::Destroyed(tombstone) =
+            fixture.kernel.read_head_state().await.unwrap()
+        else {
+            panic!("destroyed lineage must read Destroyed");
+        };
+        assert_eq!(tombstone.incarnation, 0, "witness names era 0");
+        assert_eq!(tombstone.deleted_at_gen, era1.generation());
+
+        // Second lifetime: fresh genesis, advance, destroy again —
+        // the first witness stands (immutable history), but the
+        // counter moved twice: the third lifetime is stamped 2.
+        fixture
+            .kernel
+            .append_genesis(&record(&fixture.lineage, 0, None, b"era-two"))
+            .await
+            .unwrap();
+        fixture.kernel.destroy("second", "l3").await.unwrap();
+        let LineageHeadState::Destroyed(second) = fixture.kernel.read_head_state().await.unwrap()
+        else {
+            panic!("second destroy must also read Destroyed");
+        };
+        assert_eq!(
+            second.incarnation, 0,
+            "the first tombstone stands across lifetimes"
+        );
+
+        let era3 = fixture
+            .kernel
+            .append_genesis(&record(&fixture.lineage, 0, None, b"era-three"))
+            .await
+            .unwrap();
+        assert_eq!(
+            era3.incarnation(),
+            2,
+            "two completed destroys — the third lifetime is era 2"
+        );
+        fixture.shutdown().await;
+    }
+
+    /// L5: terminal reads and the existence taxonomy are invariant
+    /// across the destroy boundary — the same O(1) read shape, and
+    /// a reborn lineage with byte-identical history presents the
+    /// identical terminal payload/digest a reader saw before the
+    /// destroy.
+    #[tokio::test]
+    async fn l5_terminal_reads_and_taxonomy_invariant_across_eras() {
+        let fixture =
+            new_named_fixture("l5/read-invariant", SuccessorPolicy::SuccessorCapable).await;
+        let payload = b"same terminal in both eras";
+
+        // Absent → Present.
+        assert!(fixture.kernel.read_head_state().await.unwrap().is_absent());
+        let era1 = fixture
+            .kernel
+            .append_genesis(&record(&fixture.lineage, 0, None, payload))
+            .await
+            .unwrap();
+        let terminal1 = fixture.kernel.read_terminal_record().await.unwrap();
+        assert_eq!(terminal1.payload(), payload);
+        assert_eq!(terminal1.digest(), era1.record_digest());
+
+        // Present → Destroyed → Present.
+        fixture.kernel.destroy("rebuild", "l5").await.unwrap();
+        assert!(matches!(
+            fixture.kernel.read_head_state().await.unwrap(),
+            LineageHeadState::Destroyed(_)
+        ));
+        // Terminal read on a destroyed lineage is still an integrity
+        // error, never absence (law 7).
+        match fixture.kernel.read_terminal_record().await {
+            Err(KernelError::StateHistoryIncomplete { .. }) => {}
+            other => panic!("terminal read on destroyed lineage, got {other:?}"),
+        }
+
+        fixture
+            .kernel
+            .append_genesis(&record(&fixture.lineage, 0, None, payload))
+            .await
+            .unwrap();
+        let LineageHeadState::Present(reborn) = fixture.kernel.read_head_state().await.unwrap()
+        else {
+            panic!("reborn lineage must read Present");
+        };
+        assert_eq!(reborn.incarnation(), 1);
+        let terminal2 = fixture.kernel.read_terminal_record().await.unwrap();
+        assert_eq!(
+            terminal2.payload(),
+            terminal1.payload(),
+            "byte-identical genesis — identical terminal payload"
+        );
+        assert_eq!(
+            terminal2.digest(),
+            terminal1.digest(),
+            "identical history digests across eras"
+        );
+        assert_eq!(terminal2.generation(), terminal1.generation());
+        fixture.shutdown().await;
+    }
+
+    /// W5 (batch 6, relocated): the lineage tombstone — `destroy`
+    /// writes `{lineage}/tombstone` before deleting the head;
+    /// `read_head_state` distinguishes `Destroyed` (with the head's
+    /// generation) from `Absent`; destroying a never-created lineage
+    /// fabricates nothing; a reborn lineage supersedes the witness.
+    #[tokio::test]
+    async fn w5_lineage_tombstone_equivalent() {
+        // Never created: Absent — and destroying it fabricates
+        // nothing (the early return never touches the wire).
+        let ghost = new_named_fixture("w5/ghost", SuccessorPolicy::SuccessorCapable).await;
+        assert!(ghost.kernel.read_head_state().await.unwrap().is_absent());
+        ghost.kernel.destroy("noop", "nobody").await.unwrap();
+        assert!(
+            ghost.kernel.read_head_state().await.unwrap().is_absent(),
+            "destroying a never-created lineage fabricates nothing"
+        );
+        ghost.shutdown().await;
+
+        // Created: destroy witnesses the head's generation.
+        let fixture = new_named_fixture("w5/live", SuccessorPolicy::SuccessorCapable).await;
+        let head = fixture
+            .kernel
+            .append_genesis(&record(&fixture.lineage, 0, None, b"w5-genesis"))
+            .await
+            .unwrap();
+        fixture
+            .kernel
+            .destroy("decommissioned", "human-directive")
+            .await
+            .unwrap();
+        match fixture.kernel.read_head_state().await.unwrap() {
+            LineageHeadState::Destroyed(tombstone) => {
+                assert_eq!(tombstone.deleted_at_gen, head.generation());
+                assert_eq!(tombstone.cause, "decommissioned");
+                assert_eq!(tombstone.actor, "human-directive");
+            }
+            other => panic!("expected Destroyed, got {other:?}"),
+        }
+        // The legacy read stays incomplete-shaped (additive contract).
+        assert!(fixture.kernel.read_head().await.is_err());
+
+        // Rebirth: a fresh genesis supersedes the witness.
+        fixture
+            .kernel
+            .append_genesis(&record(&fixture.lineage, 0, None, b"w5-genesis-reborn"))
+            .await
+            .unwrap();
+        let LineageHeadState::Present(reborn) = fixture.kernel.read_head_state().await.unwrap()
+        else {
+            panic!("reborn lineage must read Present");
+        };
+        assert_eq!(reborn.incarnation(), 1);
+        fixture.shutdown().await;
     }
 }

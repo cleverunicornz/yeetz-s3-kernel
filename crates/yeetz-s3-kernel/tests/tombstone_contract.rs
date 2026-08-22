@@ -4,8 +4,7 @@
 //! convention this mechanizes is the parent data model's
 //! existence-and-deletion discipline.
 
-use yeetz_s3_kernel::state_kernel::{CanonicalRecord, KernelLineage, SuccessorPolicy};
-use yeetz_s3_kernel::{AtomicKeyspace, KernelHandle, KeyState, KeyspaceError, LineageHeadState};
+use yeetz_s3_kernel::{AtomicKeyspace, KernelHandle, KeyState, KeyspaceError};
 
 fn keyspace(name: &str) -> AtomicKeyspace {
     KernelHandle::with_in_memory_store(name)
@@ -209,73 +208,9 @@ async fn w4_trim_retires_tombstones_below_the_floor() {
     ));
 }
 
-/// W5: the lineage equivalent — `destroy` writes `{lineage}/tombstone`
-/// before deleting the head; `read_head_state` distinguishes
-/// `Destroyed` (with the head's generation) from `Absent`; a reborn
-/// lineage (fresh genesis) supersedes the witness; records survive
-/// for replay repair.
-#[tokio::test]
-async fn w5_lineage_tombstone_equivalent() {
-    let handle = KernelHandle::with_in_memory_store("w5");
-
-    // Never created: Absent — and destroying it fabricates nothing.
-    let ghost_lineage = KernelLineage::new("w5/ghost", SuccessorPolicy::SuccessorCapable).unwrap();
-    let ghost = handle.state_kernel(ghost_lineage);
-    assert!(ghost.read_head_state().await.unwrap().is_absent());
-    ghost.destroy("noop", "nobody").await.unwrap();
-    assert!(
-        ghost.read_head_state().await.unwrap().is_absent(),
-        "destroying a never-created lineage fabricates nothing"
-    );
-
-    // Created and advanced: destroy witnesses the head's generation.
-    let lineage = KernelLineage::new("w5/live", SuccessorPolicy::SuccessorCapable).unwrap();
-    let kernel = handle.state_kernel(lineage.clone());
-    let genesis = CanonicalRecord::new(
-        &lineage,
-        0,
-        None,
-        "w5.genesis",
-        "w5.v1",
-        vec![1],
-        String::from("op"),
-        String::from("actor"),
-        "w5",
-    )
-    .unwrap();
-    let head = kernel.append_genesis(&genesis).await.unwrap();
-    kernel
-        .destroy("decommissioned", "human-directive")
-        .await
-        .unwrap();
-    match kernel.read_head_state().await.unwrap() {
-        LineageHeadState::Destroyed(tombstone) => {
-            assert_eq!(tombstone.deleted_at_gen, head.generation());
-            assert_eq!(tombstone.cause, "decommissioned");
-            assert_eq!(tombstone.actor, "human-directive");
-        }
-        other => panic!("expected Destroyed, got {other:?}"),
-    }
-    // The legacy read stays incomplete-shaped (additive contract).
-    assert!(kernel.read_head().await.is_err());
-
-    // Rebirth: a fresh genesis supersedes the witness.
-    let kernel = handle.state_kernel(lineage.clone());
-    let reborn = CanonicalRecord::new(
-        &lineage,
-        0,
-        None,
-        "w5.genesis",
-        "w5.v2",
-        vec![2],
-        String::from("op"),
-        String::from("actor"),
-        "w5",
-    )
-    .unwrap();
-    kernel.append_genesis(&reborn).await.unwrap();
-    assert!(matches!(
-        kernel.read_head_state().await.unwrap(),
-        LineageHeadState::Present(_)
-    ));
-}
+// W5 (the lineage tombstone member) moved in-src to
+// `state_kernel::gateway_state_contract` beside the lifecycle
+// canaries: `destroy`'s tail now requires the conditional-delete
+// wire primitive (lifecycle closure L10), and in-memory handles
+// fail closed — the A18 posture. Its public assertions are
+// unchanged.
