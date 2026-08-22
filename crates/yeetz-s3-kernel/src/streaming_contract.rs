@@ -96,6 +96,24 @@ async fn read_reader(reader: &mut ValueReader) -> Bytes {
     Bytes::from(out)
 }
 
+async fn wait_for_first_barrier_arrival(counterpart: &LoopbackCounterpart) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if counterpart
+                .snapshot()
+                .await
+                .barrier
+                .is_some_and(|barrier| barrier.arrivals >= 1)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("conditional control PUT reaches the barrier");
+}
+
 fn control_key(namespace: &str, key: &str) -> String {
     format!("{KEYSPACE_ROOT}/{namespace}/{key}")
 }
@@ -444,6 +462,112 @@ async fn a27_chunked_incarnation_race_and_conditional_eviction() {
         keyspace.get(b_key).await.unwrap(),
         None,
         "raw delete destroys B — the defect signature"
+    );
+    counterpart.shutdown().await;
+}
+
+/// Batch-10 teardown: the VALUE control needs the same deletion-era
+/// closure as the lineage HEAD. A matching etag on a control from a
+/// closed incarnation is refused before CAS; a destroy bump between
+/// that gate and the manifest PUT makes the landed publication
+/// self-evict; and destroy's tail is bound to the exact control etag it
+/// loaded.
+#[tokio::test]
+async fn teardown_value_control_has_era_gates_and_conditional_destroy_tail() {
+    let (store, keyspace, counterpart) = keyspace_fixture("k10-value-life").await;
+    let data = pattern(STREAMED_LEN, 0xC1);
+
+    // Pre-CAS gate: model destroy's post-bump/pre-delete crash window.
+    stream_create(&keyspace, "pre-gate", &data).await.unwrap();
+    let (_, stale_etag) = keyspace.get_with_etag("pre-gate").await.unwrap().unwrap();
+    store
+        .upload_conditional(
+            &format!("{KEYSPACE_ROOT}/k10-value-life/incarnations/pre-gate"),
+            Bytes::from(1_u64.to_be_bytes().to_vec()),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        keyspace
+            .begin_stream_compare_exchange("pre-gate", &stale_etag)
+            .await,
+        Err(KeyspaceError::StaleIncarnation(key)) if key == "pre-gate"
+    ));
+    assert!(matches!(
+        keyspace
+            .compare_exchange("pre-gate", &stale_etag, Bytes::from_static(b"stale"))
+            .await,
+        Err(KeyspaceError::StaleIncarnation(key)) if key == "pre-gate"
+    ));
+
+    // Post-CAS gate: park the manifest PUT after its era check, advance
+    // the counter, then release it with an always-failing second CAS.
+    stream_create(&keyspace, "post-gate", &data).await.unwrap();
+    let (_, etag) = keyspace.get_with_etag("post-gate").await.unwrap().unwrap();
+    let mut writer = keyspace
+        .begin_stream_compare_exchange("post-gate", &etag)
+        .await
+        .unwrap();
+    writer
+        .write_all(&pattern(STREAMED_LEN, 0xC2))
+        .await
+        .unwrap();
+    let pending = writer.seal().await.unwrap();
+    let control_key = control_key("k10-value-life", "post-gate");
+    counterpart.arm_conditional_head_barrier(&control_key).await;
+    let commit = tokio::spawn(async move { pending.commit().await });
+    wait_for_first_barrier_arrival(&counterpart).await;
+    store
+        .upload_conditional(
+            &format!("{KEYSPACE_ROOT}/k10-value-life/incarnations/post-gate"),
+            Bytes::from(1_u64.to_be_bytes().to_vec()),
+            None,
+        )
+        .await
+        .unwrap();
+    let opener = store
+        .upload_conditional(
+            &control_key,
+            Bytes::from_static(b"barrier-opener"),
+            Some("never-matches"),
+        )
+        .await;
+    assert!(matches!(
+        opener,
+        Err(yeetz_sdk_s3::ObjectStoreError::PreconditionFailed(_))
+    ));
+    assert!(matches!(
+        commit.await.unwrap(),
+        Err(KeyspaceError::StaleIncarnation(key)) if key == "post-gate"
+    ));
+    assert_eq!(
+        keyspace.get("post-gate").await.unwrap(),
+        None,
+        "the closed-era publication self-evicts"
+    );
+    counterpart
+        .assert_conditional_head_race(&control_key, false)
+        .await;
+
+    // Destroy's tail owns only the control etag it observed.
+    stream_create(&keyspace, "destroy-tail", &data)
+        .await
+        .unwrap();
+    keyspace
+        .destroy("destroy-tail", "teardown", "validator")
+        .await
+        .unwrap();
+    let destroy_key = control_key("k10-value-life", "destroy-tail");
+    let snapshot = counterpart.snapshot().await;
+    let deletes: Vec<_> = requests_for(&snapshot, &destroy_key)
+        .into_iter()
+        .filter(|request| request.method == "DELETE")
+        .collect();
+    assert_eq!(deletes.len(), 1, "destroy emits one control delete");
+    assert!(
+        deletes[0].if_match.is_some(),
+        "destroy's control delete must carry If-Match"
     );
     counterpart.shutdown().await;
 }
