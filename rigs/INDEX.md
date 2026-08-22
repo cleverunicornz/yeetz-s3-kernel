@@ -29,6 +29,12 @@ requires the stale publication to self-evict, rejects an already-closed
 control before CAS, and asserts that VALUE destroy emits `DELETE +
 If-Match` against the exact control it observed.
 
+The batch-10 teardown writer-window witness is
+`teardown_writer_stops_at_the_four_upload_window` in the public
+streaming contract suite. A single oversized `poll_write` must stop
+after four complete chunks, so queued upload futures and retained
+chunk buffers cannot exceed ADR 0004's declared concurrency window.
+
 The forge-facing rigs (connect transport legs, gRPC legs, write-path
 concurrency, events migration) stayed in the parent `yeetz` repo —
 they prove forge behavior against forge types.

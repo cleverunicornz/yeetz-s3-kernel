@@ -480,6 +480,9 @@ impl AsyncWrite for ValueWriter {
             this.total_len += take as u64;
             if this.buffer.len() == CHUNK_BYTES {
                 this.start_chunk_upload();
+                if this.in_flight.len() >= MAX_IN_FLIGHT_CHUNKS {
+                    break;
+                }
             }
         }
         Poll::Ready(Ok(consumed))
