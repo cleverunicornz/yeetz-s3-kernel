@@ -5903,6 +5903,58 @@ pub mod gateway_state_contract {
         keyspace.delete("cell").await.unwrap();
         let _ = counterpart.shutdown().await;
     }
+
+    /// Full-board canary: lineage heads must not accept a stale era-one
+    /// `HeadRead` after destroy followed by byte-identical genesis
+    /// recreation. The loopback models Exoscale's content-derived etags,
+    /// so identical head bytes reproduce the old token unless lineage
+    /// identity carries an incarnation fence.
+    #[tokio::test]
+    async fn stale_lineage_head_is_rejected_across_destroy_recreate() {
+        let (store, _keyspace, counterpart) = keyspace_fixture("lineage-aba").await;
+        let lineage =
+            KernelLineage::new("lineage-aba/demo", SuccessorPolicy::SuccessorCapable).unwrap();
+        let kernel = StateKernel::new(store, lineage.clone());
+        let genesis = CanonicalRecord::new(
+            &lineage,
+            0,
+            None,
+            "demo.create",
+            "demo.v1",
+            b"identical genesis".to_vec(),
+            "same-operation",
+            "same-actor",
+            "same-cause",
+        )
+        .unwrap();
+        let stale = kernel.append_genesis(&genesis).await.unwrap();
+        kernel.destroy("recreate", "canary").await.unwrap();
+        let recreated = kernel.append_genesis(&genesis).await.unwrap();
+        assert!(
+            recreated.head.same_identity(&stale.head),
+            "the recreated head intentionally has identical logical bytes"
+        );
+        let successor = CanonicalRecord::new(
+            &lineage,
+            1,
+            Some(stale.record_position()),
+            "demo.update",
+            "demo.v1",
+            b"stale writer".to_vec(),
+            "stale-operation",
+            "same-actor",
+            "same-cause",
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                kernel.append_successor(&successor, &stale).await,
+                Err(KernelError::LineageHeadConflict { .. })
+            ),
+            "a stale HeadRead from the destroyed lifetime must not CAS the recreated lineage"
+        );
+        let _ = counterpart.shutdown().await;
+    }
     /// A15 (teardown pass 2026-08-22, batch 7): a `create` racing a
     /// `destroy` must never mint a value envelope from the destroyed
     /// era's incarnation. The window is `create`'s incarnation read
