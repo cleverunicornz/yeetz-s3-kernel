@@ -30,46 +30,68 @@ use crate::tombstone::Tombstone;
 /// and `head`).
 pub const KEYSPACE_ROOT: &str = "keyspace";
 
-/// Canonical binary value envelope. The prefix makes unversioned or
-/// differently encoded objects fail closed; the big-endian version
-/// gives every successful CAS era distinct bytes without constraining
-/// the caller's opaque payload.
-const VALUE_ENVELOPE_PREFIX: &[u8] = b"yeetz-keyspace-value/v1\0";
+/// Canonical binary value envelope (v2, batch 7). The prefix makes
+/// unversioned or differently encoded objects fail closed — v1
+/// envelopes included: a deliberate, documented format break at 0.x
+/// (pre-release stores only). The big-endian **incarnation** gives
+/// byte-identical payloads in different deletion lifetimes distinct
+/// object bytes (closing batch 4's delete/recreate gap: an era-1
+/// etag can never match an era-2 value, because the eras disagree
+/// in the envelope even when the payload agrees); the **version**
+/// gives every CAS era within one lifetime distinct bytes.
+const VALUE_ENVELOPE_PREFIX: &[u8] = b"yeetz-keyspace-value/v2\0";
+const VALUE_INCARNATION_BYTES: usize = size_of::<u64>();
 const VALUE_VERSION_BYTES: usize = size_of::<u64>();
 
 #[derive(Debug)]
 struct ValueEnvelope {
+    incarnation: u64,
     version: u64,
     payload: Bytes,
 }
 
 impl ValueEnvelope {
-    fn new(version: u64, payload: Bytes) -> Self {
-        Self { version, payload }
+    fn new(incarnation: u64, version: u64, payload: Bytes) -> Self {
+        Self {
+            incarnation,
+            version,
+            payload,
+        }
     }
 
     fn encode(self) -> Bytes {
         let mut encoded = Vec::with_capacity(
-            VALUE_ENVELOPE_PREFIX.len() + VALUE_VERSION_BYTES + self.payload.len(),
+            VALUE_ENVELOPE_PREFIX.len()
+                + VALUE_INCARNATION_BYTES
+                + VALUE_VERSION_BYTES
+                + self.payload.len(),
         );
         encoded.extend_from_slice(VALUE_ENVELOPE_PREFIX);
+        encoded.extend_from_slice(&self.incarnation.to_be_bytes());
         encoded.extend_from_slice(&self.version.to_be_bytes());
         encoded.extend_from_slice(&self.payload);
         Bytes::from(encoded)
     }
 
     fn decode(key: &str, encoded: &Bytes) -> Result<Self, KeyspaceError> {
-        let version_start = VALUE_ENVELOPE_PREFIX.len();
+        let incarnation_start = VALUE_ENVELOPE_PREFIX.len();
+        let version_start = incarnation_start + VALUE_INCARNATION_BYTES;
         let payload_start = version_start + VALUE_VERSION_BYTES;
         if encoded.len() < payload_start || !encoded.starts_with(VALUE_ENVELOPE_PREFIX) {
             return Err(KeyspaceError::ValueEnvelopeMalformed(key.to_string()));
         }
+        let incarnation = u64::from_be_bytes(
+            encoded[incarnation_start..version_start]
+                .try_into()
+                .expect("incarnation slice has fixed width"),
+        );
         let version = u64::from_be_bytes(
             encoded[version_start..payload_start]
                 .try_into()
                 .expect("version slice has fixed width"),
         );
         Ok(Self {
+            incarnation,
             version,
             payload: encoded.slice(payload_start..),
         })
@@ -88,14 +110,20 @@ pub enum KeyspaceError {
     AlreadyExists(String),
     /// `compare_exchange` failed: the observed etag differs from
     /// `expected_etag`. Carries the etag observed at conflict time
-    /// when the store reported one.
+    /// when the store reported one, and — since batch 7 — the
+    /// incarnation and version the current value carries, so a
+    /// stale-era CAS names the era it lost to (an era-1 etag against
+    /// an era-2 value of identical payload bytes reports the
+    /// incarnation mismatch).
     #[error(
-        "compare_exchange precondition failed for {key}: expected {expected_etag}, observed {observed:?}"
+        "compare_exchange precondition failed for {key}: expected {expected_etag}, observed {observed:?} (incarnation {observed_incarnation:?}, version {observed_version:?})"
     )]
     PreconditionFailed {
         key: String,
         expected_etag: String,
         observed: Option<String>,
+        observed_incarnation: Option<u64>,
+        observed_version: Option<u64>,
     },
     /// A stored keyspace value is not the canonical versioned
     /// envelope. Integrity failure is distinct from absence.
@@ -125,6 +153,12 @@ pub enum KeyspaceError {
     /// sweep.
     #[error("tombstone namespace is immutable: {0}")]
     TombstoneImmutable(String),
+    /// The incarnation-counter namespace (`incarnations/`) is
+    /// reserved: counters are advanced only by the kernel's
+    /// `destroy`, never written or deleted by callers, and removed
+    /// only by a certified trim sweep.
+    #[error("incarnation counter namespace is reserved: {0}")]
+    IncarnationCounterImmutable(String),
     /// The backing store failed in a way the caller should retry.
     #[error("keyspace store unavailable: {operation}")]
     Unavailable { operation: &'static str },
@@ -273,23 +307,151 @@ impl AtomicKeyspace {
         format!("{}/{key}", Self::TOMBSTONE_ROOT)
     }
 
-    /// Tombstones are written only by `destroy` and removed only by
-    /// a certified trim sweep; every direct write/delete path
-    /// refuses the reserved prefix.
+    /// Reserved incarnation-counter sub-root: `incarnations/{key}`
+    /// mirrors the key whose deletion lifetimes it counts.
+    /// Kernel-owned, like `tombstones/`.
+    const INCARNATION_ROOT: &str = "incarnations";
+
+    /// Reserved prefixes refuse every direct write/delete path:
+    /// tombstones are written only by `destroy`, incarnation
+    /// counters only by `destroy`'s bump; both are removed only by
+    /// a certified trim sweep.
     fn ensure_not_tombstone_key(key: &str) -> Result<(), KeyspaceError> {
         if key.starts_with(Self::TOMBSTONE_ROOT) && key.len() > Self::TOMBSTONE_ROOT.len() {
             return Err(KeyspaceError::TombstoneImmutable(key.to_string()));
         }
+        if key.starts_with(Self::INCARNATION_ROOT) && key.len() > Self::INCARNATION_ROOT.len() {
+            return Err(KeyspaceError::IncarnationCounterImmutable(key.to_string()));
+        }
         Ok(())
+    }
+
+    /// The incarnation-counter object mirroring a data key:
+    /// `incarnations/{key}`. Raw big-endian u64: created once
+    /// (put-if-absent at 1 on the first destroy), advanced only by
+    /// CAS, never decreased, removed only by a certified trim sweep.
+    /// An absent counter means incarnation 0 — the key's first
+    /// lifetime.
+    fn incarnation_key(key: &str) -> String {
+        format!("{}/{key}", Self::INCARNATION_ROOT)
+    }
+
+    /// The key's current incarnation (0 when no counter exists).
+    async fn current_incarnation(&self, key: &str) -> Result<u64, KeyspaceError> {
+        let object_key = format!(
+            "{KEYSPACE_ROOT}/{}/{}",
+            self.namespace,
+            Self::incarnation_key(key)
+        );
+        match self.store.download(&object_key).await {
+            Ok(bytes) => {
+                let raw = bytes.as_ref();
+                if raw.len() != size_of::<u64>() {
+                    return Err(KeyspaceError::ValueEnvelopeMalformed(
+                        Self::incarnation_key(key),
+                    ));
+                }
+                Ok(u64::from_be_bytes(raw.try_into().expect("fixed width")))
+            }
+            Err(ObjectStoreError::NotFound(_)) => Ok(0),
+            Err(_) => Err(KeyspaceError::Unavailable {
+                operation: "incarnation counter read",
+            }),
+        }
+    }
+
+    /// Advance the counter to at least `current + 1` and return the
+    /// new incarnation. Monotone: a lost create/CAS race re-reads and
+    /// re-derives (gaps are fine; decreases are impossible — the CAS
+    /// target always exceeds the observed counter).
+    async fn bump_incarnation(&self, key: &str) -> Result<u64, KeyspaceError> {
+        let object_key = format!(
+            "{KEYSPACE_ROOT}/{}/{}",
+            self.namespace,
+            Self::incarnation_key(key)
+        );
+        for _ in 0..8 {
+            match self.store.download_with_etag(&object_key).await {
+                Ok(meta) => {
+                    let Some(etag) = meta.etag else {
+                        return Err(KeyspaceError::Unavailable {
+                            operation: "incarnation counter read (no etag)",
+                        });
+                    };
+                    let raw = meta.data.as_ref();
+                    if raw.len() != size_of::<u64>() {
+                        return Err(KeyspaceError::ValueEnvelopeMalformed(
+                            Self::incarnation_key(key),
+                        ));
+                    }
+                    let current = u64::from_be_bytes(raw.try_into().expect("fixed width"));
+                    let next = current
+                        .checked_add(1)
+                        .ok_or_else(|| KeyspaceError::VersionExhausted(key.to_string()))?;
+                    match self
+                        .store
+                        .upload_conditional(
+                            &object_key,
+                            Bytes::from(next.to_be_bytes().to_vec()),
+                            Some(&etag),
+                        )
+                        .await
+                    {
+                        Ok(_) => return Ok(next),
+                        // Contention or a concurrent first-create: the loop
+                        // iteration ends and re-reads.
+                        Err(ObjectStoreError::PreconditionFailed(_)) => {}
+                        Err(_) => {
+                            return Err(KeyspaceError::Unavailable {
+                                operation: "incarnation counter bump",
+                            });
+                        }
+                    }
+                }
+                Err(ObjectStoreError::NotFound(_)) => {
+                    // First bump: create-once at 1. A lost race means
+                    // someone else created it — re-read.
+                    match self
+                        .store
+                        .upload_conditional(
+                            &object_key,
+                            Bytes::from(1u64.to_be_bytes().to_vec()),
+                            None,
+                        )
+                        .await
+                    {
+                        Ok(_) => return Ok(1),
+                        Err(ObjectStoreError::PreconditionFailed(_)) => {}
+                        Err(_) => {
+                            return Err(KeyspaceError::Unavailable {
+                                operation: "incarnation counter create",
+                            });
+                        }
+                    }
+                }
+                Err(_) => {
+                    return Err(KeyspaceError::Unavailable {
+                        operation: "incarnation counter read",
+                    });
+                }
+            }
+        }
+        Err(KeyspaceError::Unavailable {
+            operation: "incarnation counter bump budget exhausted",
+        })
     }
 
     /// Put-if-absent. A lost race returns
     /// [`KeyspaceError::AlreadyExists`]; the winner's bytes are
-    /// untouched (the loser never overwrites).
+    /// untouched (the loser never overwrites). A re-create after
+    /// destroy starts at version 0 of the key's CURRENT incarnation
+    /// (batch 7) — a fresh lifetime, never a versioned continuation
+    /// of the destroyed era.
     pub async fn create(&self, key: &str, value: Bytes) -> Result<(), KeyspaceError> {
         Self::ensure_not_tombstone_key(key)?;
         let object_key = self.object_key(key)?;
-        let value = ValueEnvelope::new(0, value).encode();
+        let incarnation = self.current_incarnation(key).await?;
+        let value = ValueEnvelope::new(incarnation, 0, value).encode();
         match self
             .store
             .upload_conditional(&object_key, value, None)
@@ -348,7 +510,7 @@ impl AtomicKeyspace {
     pub(crate) async fn get_with_version(
         &self,
         key: &str,
-    ) -> Result<Option<(Bytes, u64, String)>, KeyspaceError> {
+    ) -> Result<Option<(Bytes, u64, u64, String)>, KeyspaceError> {
         let object_key = self.object_key(key)?;
         match self.store.download_with_etag(&object_key).await {
             Ok(meta) => {
@@ -358,7 +520,12 @@ impl AtomicKeyspace {
                     });
                 };
                 let envelope = ValueEnvelope::decode(key, &meta.data)?;
-                Ok(Some((envelope.payload, envelope.version, etag)))
+                Ok(Some((
+                    envelope.payload,
+                    envelope.incarnation,
+                    envelope.version,
+                    etag,
+                )))
             }
             Err(ObjectStoreError::NotFound(_)) => Ok(None),
             Err(_) => Err(KeyspaceError::Unavailable {
@@ -367,21 +534,22 @@ impl AtomicKeyspace {
         }
     }
 
-    /// Test/probe view of the internal version. The production surface
-    /// exposes only caller payloads and opaque etags.
-    #[cfg(feature = "test-support")]
-    #[doc(hidden)]
     pub async fn get_with_version_for_test(
         &self,
         key: &str,
     ) -> Result<Option<(Bytes, u64, String)>, KeyspaceError> {
-        self.get_with_version(key).await
+        Ok(self
+            .get_with_version(key)
+            .await?
+            .map(|(payload, _, version, etag)| (payload, version, etag)))
     }
 
-    /// If-Match compare-and-swap: replaces the value only when the
-    /// stored object's etag equals `expected_etag`. Returns the new
-    /// etag. A mismatch returns [`KeyspaceError::PreconditionFailed`]
-    /// carrying the currently observed etag when available — the
+    /// Test/probe view of the key's current incarnation (batch 7).
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub async fn incarnation_for_test(&self, key: &str) -> Result<u64, KeyspaceError> {
+        self.current_incarnation(key).await
+    }
     pub async fn compare_exchange(
         &self,
         key: &str,
@@ -397,6 +565,8 @@ impl AtomicKeyspace {
                     key: key.to_string(),
                     expected_etag: expected_etag.to_string(),
                     observed: None,
+                    observed_incarnation: None,
+                    observed_version: None,
                 });
             }
             Err(_) => {
@@ -411,18 +581,32 @@ impl AtomicKeyspace {
             });
         };
         if observed_etag != expected_etag {
+            // Batch 7: name the era the caller lost to. Identical
+            // payload bytes across a deletion boundary still produce
+            // distinct envelope bytes (distinct incarnations), so an
+            // era-1 etag cannot match an era-2 value — and the error
+            // says so.
+            let (observed_incarnation, observed_version) =
+                match ValueEnvelope::decode(key, &current.data) {
+                    Ok(envelope) => (Some(envelope.incarnation), Some(envelope.version)),
+                    Err(_) => (None, None),
+                };
             return Err(KeyspaceError::PreconditionFailed {
                 key: key.to_string(),
                 expected_etag: expected_etag.to_string(),
                 observed: Some(observed_etag),
+                observed_incarnation,
+                observed_version,
             });
         }
         let current = ValueEnvelope::decode(key, &current.data)?;
+        // CAS advances the version WITHIN the current incarnation;
+        // only destroy moves the incarnation.
         let next_version = current
             .version
             .checked_add(1)
             .ok_or_else(|| KeyspaceError::VersionExhausted(key.to_string()))?;
-        let next = ValueEnvelope::new(next_version, value).encode();
+        let next = ValueEnvelope::new(current.incarnation, next_version, value).encode();
         match self
             .store
             .upload_conditional(&object_key, next, Some(expected_etag))
@@ -436,10 +620,20 @@ impl AtomicKeyspace {
                     Ok(meta) => meta.etag,
                     Err(_) => None,
                 };
+                let (observed_incarnation, observed_version) =
+                    match self.store.download(&object_key).await {
+                        Ok(bytes) => match ValueEnvelope::decode(key, &bytes) {
+                            Ok(envelope) => (Some(envelope.incarnation), Some(envelope.version)),
+                            Err(_) => (None, None),
+                        },
+                        Err(_) => (None, None),
+                    };
                 Err(KeyspaceError::PreconditionFailed {
                     key: key.to_string(),
                     expected_etag: expected_etag.to_string(),
                     observed,
+                    observed_incarnation,
+                    observed_version,
                 })
             }
             Err(_) => Err(KeyspaceError::Unavailable {
@@ -548,10 +742,10 @@ impl AtomicKeyspace {
     /// sweep retires it.
     pub async fn destroy(&self, key: &str, cause: &str, actor: &str) -> Result<(), KeyspaceError> {
         let object_key = self.object_key(key)?;
-        let Some((_, version, _)) = self.get_with_version(key).await? else {
+        let Some((_, incarnation, version, _)) = self.get_with_version(key).await? else {
             return Ok(()); // nothing to witness — absence is already the truth
         };
-        let tombstone = Tombstone::new(version, cause, actor);
+        let tombstone = Tombstone::new(incarnation, version, cause, actor);
         let tombstone_object_key = format!(
             "{KEYSPACE_ROOT}/{}/{}",
             self.namespace,
@@ -572,7 +766,10 @@ impl AtomicKeyspace {
                 });
             }
         }
-        // Witness in place — now the deletion itself.
+        // Witness in place — advance the incarnation (the next
+        // lifetime is a NEW era: version 0 of a higher incarnation,
+        // so an era-1 etag can never match era-2 bytes), then delete.
+        self.bump_incarnation(key).await?;
         self.store
             .delete(&object_key)
             .await
@@ -823,10 +1020,38 @@ impl AtomicKeyspace {
             }
         }
 
-        // Bounded batches. Tombstone keys bypass the guarded bulk
-        // primitive (immutability applies to callers, not to the
-        // certified sweep), so the sweep deletes through the raw
-        // object path with the same per-key outcome accounting.
+        // And the same walk over the mirrored incarnation counters
+        // below the floor: a trimmed-and-recreated key starts at
+        // incarnation 0 again, sanctioned because the trim
+        // certificate witnesses the erased lifetimes and
+        // `OffsetExpired` protects readers of that history.
+        let incarnation_prefix = Self::incarnation_key(data_prefix);
+        let incarnation_start = format!("{incarnation_prefix}{}", Self::seq_component(0));
+        let mut after = Some(incarnation_start);
+        'incarnations: loop {
+            let keys = self.list_after(after.as_deref(), 1000).await?;
+            if keys.is_empty() {
+                break;
+            }
+            for key in &keys {
+                let Some(seq) = key
+                    .strip_prefix(&incarnation_prefix)
+                    .and_then(Self::parse_seq_component)
+                else {
+                    break 'incarnations;
+                };
+                if seq == 0 || seq >= first_retained {
+                    break 'incarnations;
+                }
+                pending.push(key.clone());
+                after = Some(key.clone());
+            }
+        }
+
+        // Bounded batches. Tombstone and incarnation keys bypass the
+        // guarded bulk primitive (immutability applies to callers,
+        // not to the certified sweep), so the sweep deletes through
+        // the raw object path with the same per-key accounting.
         for key in &pending {
             report.examined += 1;
             let object_key = self.object_key(key)?;

@@ -12,16 +12,24 @@
 
 use crate::KeyspaceError;
 
-pub const TOMBSTONE_FORMAT_VERSION: u32 = 1;
+pub const TOMBSTONE_FORMAT_VERSION: u32 = 2;
 
 /// The existence witness: proof that a key existed and was
-/// deliberately deleted, by whom, why, and at which generation.
+/// deliberately deleted, by whom, why, and at which generation and
+/// incarnation (batch 7: the incarnation names the deletion
+/// lifetime the witness closed; a re-created key's fresh era is a
+/// higher incarnation, so the witness can never be mistaken for
+/// the current one).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Tombstone {
     pub format_version: u32,
     /// The destroyed value's generation: the keyspace version (or
     /// lineage head generation) at destroy time.
     pub deleted_at_gen: u64,
+    /// The destroyed value's incarnation: which deletion lifetime
+    /// the witness closed (lineages record 0 — heads have no
+    /// incarnation model; their rebirth is a fresh genesis).
+    pub incarnation: u64,
     /// Why the deletion happened (caller-supplied, auditable).
     pub cause: String,
     /// Who performed the deletion (caller-supplied, auditable).
@@ -33,7 +41,7 @@ pub struct Tombstone {
 impl Tombstone {
     /// Mint a witness for a deliberate deletion now.
     #[must_use]
-    pub fn new(deleted_at_gen: u64, cause: &str, actor: &str) -> Self {
+    pub fn new(incarnation: u64, deleted_at_gen: u64, cause: &str, actor: &str) -> Self {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|since| since.as_millis() as u64)
@@ -41,6 +49,7 @@ impl Tombstone {
         Self {
             format_version: TOMBSTONE_FORMAT_VERSION,
             deleted_at_gen,
+            incarnation,
             cause: cause.to_string(),
             actor: actor.to_string(),
             ts,

@@ -472,3 +472,68 @@ witness convention, mechanized.
 - Stream-log tombstones: streams keep their `OffsetExpired` contract
   (batch 5); per-event tombstones would double storage for no new
   distinction.
+
+---
+
+## Ruled addendum: Batch 7 — incarnation counters (cross-deletion CAS protection)
+
+Status: accepted (human-authorized kernel batch 7, deferred-items
+ruling session 2026-08-21; the final kernel batch). Builds on batch
+4 (versioned values) and batch 6 (tombstones).
+
+### The gap batch 4 could not close
+
+Versioned values make versions strictly increase within a key's
+lifetime — but delete the key and recreate it, and the version
+resets to 0: an era-1 etag could match an era-2 value of identical
+bytes on a content-derived etag backend (the exact ABA shape the
+batch-4 lifetime boundary documented as the caller's problem). Batch
+6 proved destruction; batch 7 makes the recreation unable to fool a
+CAS.
+
+### The mechanism
+
+1. **Incarnation counter per key**: `incarnations/{key}` — a raw
+   big-endian u64, created once (put-if-absent at 1 on the key's
+   first destroy), advanced only by monotone CAS (re-read/re-derive
+   on contention; gaps possible, decreases impossible), never
+   directly writable or deletable by callers
+   (`IncarnationCounterImmutable`), removed only by a certified trim
+   sweep. Absent counter = incarnation 0 (the first lifetime).
+2. **Envelope v2**: every value envelope is now
+   `{incarnation, version, payload}` (`yeetz-keyspace-value/v2`).
+   Identical payloads in different lifetimes therefore have
+   different object bytes — and different content etags on any
+   backend. v1 envelopes fail closed (a deliberate format break:
+   the kernel is 0.x, pre-release stores only).
+3. **CAS**: `compare_exchange` advances the version WITHIN the
+   current incarnation (only `destroy` moves the incarnation). On
+   mismatch, `PreconditionFailed` now carries the observed
+   incarnation and version — a stale-era CAS names the era it lost
+   to. The rejection itself is structural: era-1 bytes ≠ era-2
+   bytes, so no etag crosses the boundary.
+4. **destroy**: writes the tombstone (which now records the closed
+   lifetime's incarnation — format v2), then bumps the counter, then
+   deletes the value. A re-create starts at version 0 of the NEW
+   incarnation (batch 6's supersession, now era-fenced). Lineages
+   record incarnation 0 in their tombstones (heads have no
+   incarnation model; their rebirth is a fresh genesis).
+5. **Trim**: `delete_below` also sweeps mirrored incarnation counters
+   below the floor. A trimmed-and-recreated key starts at
+   incarnation 0 again — sanctioned: the trim certificate witnesses
+   the erased lifetimes, and `OffsetExpired` protects readers of
+   that history.
+
+### Contract suite (I1–I6)
+
+`crates/yeetz-s3-kernel/tests/incarnation_contract.rs`:
+`i1_stale_era_cas_across_recreate_is_rejected`,
+`i2_versions_reset_across_incarnations_not_within`,
+`i3_incarnation_never_decreases_across_cycles`,
+`i4_tombstone_records_the_destroyed_incarnation`,
+`i5_trim_retires_counters_with_the_history`,
+`i6_same_incarnation_cas_semantics_preserved`.
+
+With batch 7, the kernel's deferred-items plan is complete: one
+storage truth, certified retention, witnessed existence, and
+era-fenced CAS across every boundary the object model has.

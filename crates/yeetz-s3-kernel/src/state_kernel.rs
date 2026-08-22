@@ -1031,7 +1031,7 @@ impl StateKernel {
             Err(KernelError::StateHistoryIncomplete { .. }) => return Ok(()),
             Err(err) => return Err(err),
         };
-        let tombstone = Tombstone::new(loaded.head.generation, cause, actor);
+        let tombstone = Tombstone::new(0, loaded.head.generation, cause, actor);
         let bytes = tombstone
             .encode()
             .map_err(|_| KernelError::StateUnavailable {
@@ -5872,7 +5872,8 @@ pub mod gateway_state_contract {
             .expect("raw stale token is accepted after etag recurrence");
 
         keyspace.create("cell", payload_a.clone()).await.unwrap();
-        let (_, version_a1, wrapped_a1) = keyspace.get_with_version("cell").await.unwrap().unwrap();
+        let (_, _incarnation_a1, version_a1, wrapped_a1) =
+            keyspace.get_with_version("cell").await.unwrap().unwrap();
         let wrapped_b = keyspace
             .compare_exchange("cell", &wrapped_a1, payload_b)
             .await
@@ -5881,7 +5882,7 @@ pub mod gateway_state_contract {
             .compare_exchange("cell", &wrapped_b, payload_a.clone())
             .await
             .unwrap();
-        let (observed_a2, version_a2, observed_etag) =
+        let (observed_a2, _incarnation_a2, version_a2, observed_etag) =
             keyspace.get_with_version("cell").await.unwrap().unwrap();
         assert_eq!(version_a1, 0);
         assert_eq!(version_a2, 2);
