@@ -213,11 +213,11 @@ pub enum KeyspaceError {
     /// The quiesced chunk sweep requires the maintenance fence.
     #[error("keyspace chunk sweep requires the maintenance fence: {0}")]
     MaintenanceFenceRequired(String),
-    /// A streamed create's manifest landed in a stale incarnation era
-    /// and was conditionally evicted; the caller must re-run the
-    /// write at the fresh era (the streamed bytes are not retained
-    /// for an in-kernel retry).
-    #[error("keyspace create stale incarnation: {0}")]
+    /// A write was bound to an incarnation that `destroy` closed. A
+    /// streamed create or CAS publication that already landed was
+    /// conditionally evicted; the caller must re-run in the fresh era.
+    /// Streamed bytes are not retained for an in-kernel retry.
+    #[error("keyspace write stale incarnation: {0}")]
     StaleIncarnation(String),
     /// A requested logical range lies outside the value's length.
     #[error(
@@ -786,6 +786,12 @@ impl AtomicKeyspace {
         // One v2/v3-aware control decode: a v3 manifest contributes
         // its era without any chunk fetch (ADR 0004 §2.3).
         let control = crate::value_manifest::ControlEnvelope::decode(key, &current.data)?;
+        let incarnation = control.incarnation();
+        // The incarnation counter is the deletion-era authority. A
+        // control left visible in destroy's post-bump/pre-delete window
+        // must not remain CAS-capable (the VALUE-path twin of the head
+        // lifecycle gate).
+        self.ensure_open_value_era(key, incarnation).await?;
         // CAS advances the version WITHIN the current incarnation;
         // only destroy moves the incarnation.
         let next_version = control
@@ -794,22 +800,20 @@ impl AtomicKeyspace {
             .ok_or_else(|| KeyspaceError::VersionExhausted(key.to_string()))?;
         if value.len() > crate::value_manifest::INLINE_MAX {
             return self
-                .compare_exchange_chunked(
-                    key,
-                    expected_etag,
-                    control.incarnation(),
-                    next_version,
-                    &value,
-                )
+                .compare_exchange_chunked(key, expected_etag, incarnation, next_version, &value)
                 .await;
         }
-        let next = ValueEnvelope::new(control.incarnation(), next_version, value).encode();
+        let next = ValueEnvelope::new(incarnation, next_version, value).encode();
         match self
             .store
             .upload_conditional(&object_key, next, Some(expected_etag))
             .await
         {
-            Ok(etag) => etag.ok_or(KeyspaceError::Unavailable {
+            Ok(Some(etag)) => {
+                self.finish_value_cas_after_publish(key, incarnation, etag)
+                    .await
+            }
+            Ok(None) => Err(KeyspaceError::Unavailable {
                 operation: "keyspace compare_exchange (no etag)",
             }),
             Err(ObjectStoreError::PreconditionFailed(_)) => {
@@ -1037,12 +1041,64 @@ impl AtomicKeyspace {
     /// truth, the witness remains as history until a certified trim
     /// sweep retires it.
     pub async fn destroy(&self, key: &str, cause: &str, actor: &str) -> Result<(), KeyspaceError> {
+        let Some((object_key, observed_etag)) = self.prepare_destroy(key, cause, actor).await?
+        else {
+            return Ok(());
+        };
+        // Delete only the control this destroy observed. A concurrent
+        // CAS or a fresh lifetime may replace it after the bump; an
+        // unconditional tail would erase that replacement.
+        match self
+            .store
+            .delete_conditional(&object_key, &observed_etag)
+            .await
+        {
+            Ok(()) | Err(ObjectStoreError::NotFound(_)) => Ok(()),
+            Err(ObjectStoreError::PreconditionFailed(_)) => {
+                Err(self.cas_conflict(key, &observed_etag).await)
+            }
+            Err(_) => Err(KeyspaceError::Unavailable {
+                operation: "keyspace destroy: conditional delete",
+            }),
+        }
+    }
+
+    /// Sequential lifecycle-algebra helper for the in-memory test
+    /// backend, which deliberately cannot model conditional DELETE.
+    /// Race and wire semantics must use the loopback/real-S3 rigs.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub async fn destroy_in_memory_for_test(
+        &self,
+        key: &str,
+        cause: &str,
+        actor: &str,
+    ) -> Result<(), KeyspaceError> {
+        let Some((object_key, _)) = self.prepare_destroy(key, cause, actor).await? else {
+            return Ok(());
+        };
+        self.store
+            .delete(&object_key)
+            .await
+            .map_err(|_| KeyspaceError::Unavailable {
+                operation: "keyspace test destroy: delete",
+            })
+    }
+
+    async fn prepare_destroy(
+        &self,
+        key: &str,
+        cause: &str,
+        actor: &str,
+    ) -> Result<Option<(String, String)>, KeyspaceError> {
         let object_key = self.object_key(key)?;
         // Control-metadata read (ADR 0004 §2.3): the tombstone's era
         // comes from a v2 OR v3 control decode — never a chunk
         // fetch, never a payload collection.
-        let Some((incarnation, version)) = self.read_control_era(key).await? else {
-            return Ok(()); // nothing to witness — absence is already the truth
+        let Some((incarnation, version, observed_etag)) =
+            self.read_control_era_with_etag(key).await?
+        else {
+            return Ok(None); // nothing to witness — absence is already the truth
         };
         let tombstone = Tombstone::new(incarnation, version, cause, actor);
         let tombstone_object_key = format!(
@@ -1069,12 +1125,7 @@ impl AtomicKeyspace {
         // lifetime is a NEW era: version 0 of a higher incarnation,
         // so an era-1 etag can never match era-2 bytes), then delete.
         self.bump_incarnation(key).await?;
-        self.store
-            .delete(&object_key)
-            .await
-            .map_err(|_| KeyspaceError::Unavailable {
-                operation: "keyspace destroy: delete",
-            })
+        Ok(Some((object_key, observed_etag)))
     }
 
     /// The existence read (batch 6): `Present` / `Destroyed` /

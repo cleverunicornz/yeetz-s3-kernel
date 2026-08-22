@@ -40,7 +40,7 @@ async fn w1_present_destroyed_absent_lifecycle() {
     }
 
     // Intentional deletion → Destroyed, carrying the witness.
-    ks.destroy(&data_key(3), "retention-policy", "reconciler-x")
+    ks.destroy_in_memory_for_test(&data_key(3), "retention-policy", "reconciler-x")
         .await
         .unwrap();
     match ks.read_state(&data_key(3)).await.unwrap() {
@@ -61,7 +61,7 @@ async fn w1_present_destroyed_absent_lifecycle() {
     ks.compare_exchange(&data_key(4), &etag, bytes::Bytes::from_static(b"v1"))
         .await
         .unwrap();
-    ks.destroy(&data_key(4), "manual", "operator")
+    ks.destroy_in_memory_for_test(&data_key(4), "manual", "operator")
         .await
         .unwrap();
     match ks.read_state(&data_key(4)).await.unwrap() {
@@ -71,7 +71,9 @@ async fn w1_present_destroyed_absent_lifecycle() {
 
     // Destroying an absent key is a no-op — absence stays absence,
     // and no witness is fabricated.
-    ks.destroy(&data_key(9), "noop", "nobody").await.unwrap();
+    ks.destroy_in_memory_for_test(&data_key(9), "noop", "nobody")
+        .await
+        .unwrap();
     assert_eq!(ks.read_state(&data_key(9)).await.unwrap(), KeyState::Absent);
 }
 
@@ -85,7 +87,9 @@ async fn w2_create_after_destroy_supersedes() {
     ks.create(&data_key(5), bytes::Bytes::from_static(b"first"))
         .await
         .unwrap();
-    ks.destroy(&data_key(5), "rebuild", "agent").await.unwrap();
+    ks.destroy_in_memory_for_test(&data_key(5), "rebuild", "agent")
+        .await
+        .unwrap();
 
     // The re-create: fresh lifetime, version 0.
     ks.create(&data_key(5), bytes::Bytes::from_static(b"second"))
@@ -124,7 +128,9 @@ async fn w3_tombstones_are_immutable() {
     ks.create(&data_key(2), bytes::Bytes::from_static(b"v"))
         .await
         .unwrap();
-    ks.destroy(&data_key(2), "test", "w3").await.unwrap();
+    ks.destroy_in_memory_for_test(&data_key(2), "test", "w3")
+        .await
+        .unwrap();
     let tombstone_key = "tombstones/data/00000000000000000002";
 
     assert!(matches!(
@@ -169,7 +175,7 @@ async fn w4_trim_retires_tombstones_below_the_floor() {
     }
     // Witness seq 3's deletion BEFORE trimming (the tombstone must
     // predate the certificate it will be retired by).
-    ks.destroy(&data_key(3), "policy", "reconciler")
+    ks.destroy_in_memory_for_test(&data_key(3), "policy", "reconciler")
         .await
         .unwrap();
     ks.propose_trim("", 6).await.unwrap();
@@ -194,7 +200,7 @@ async fn w4_trim_retires_tombstones_below_the_floor() {
     );
 
     // Above the floor, destruction stays legible.
-    ks.destroy(&data_key(8), "manual", "operator")
+    ks.destroy_in_memory_for_test(&data_key(8), "manual", "operator")
         .await
         .unwrap();
     assert!(matches!(
