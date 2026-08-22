@@ -415,7 +415,7 @@ async fn module_battery(
         .create(key, payload_a.clone())
         .await
         .map_err(|error| format!("module create: {error}"))?;
-    let (observed_a1, version_a1, etag_a1) = keyspace
+    let (observed_a1, incarnation_a1, version_a1, etag_a1) = keyspace
         .get_with_version(key)
         .await
         .map_err(|error| format!("module get A(v0): {error}"))?
@@ -435,7 +435,7 @@ async fn module_battery(
         .compare_exchange(key, &etag_b, payload_a.clone())
         .await
         .map_err(|error| format!("module CAS B(v1)→A(v2): {error}"))?;
-    let (observed_a2, version_a2, observed_etag_a2) = keyspace
+    let (observed_a2, incarnation_a2, version_a2, observed_etag_a2) = keyspace
         .get_with_version(key)
         .await
         .map_err(|error| format!("module get A(v2): {error}"))?
@@ -479,21 +479,29 @@ async fn module_battery(
         .compare_exchange(key, &etag_a2, payload_a.clone())
         .await
         .map_err(|error| format!("module identical-payload CAS A(v2)→A(v3): {error}"))?;
-    let (observed_a3, version_a3, observed_etag_a3) = keyspace
+    let (observed_a3, incarnation_a3, version_a3, observed_etag_a3) = keyspace
         .get_with_version(key)
         .await
         .map_err(|error| format!("module get A(v3): {error}"))?
         .ok_or_else(|| "module get A(v3): key absent".to_string())?;
-    if observed_a3 != payload_a || version_a3 != 3 || observed_etag_a3 != etag_a3 {
+    if observed_a3 != payload_a
+        || version_a3 != 3
+        || observed_etag_a3 != etag_a3
+        || incarnation_a1 != 0
+        || incarnation_a2 != 0
+        || incarnation_a3 != 0
+    {
         return Err(format!(
-            "module identical-payload transition mismatch: payload_matches={}, version={version_a3}, etag_matches={}",
+            "module identical-payload transition mismatch: payload_matches={}, version={version_a3}, etag_matches={}, incarnations={incarnation_a1}/{incarnation_a2}/{incarnation_a3}",
             observed_a3 == payload_a,
             observed_etag_a3 == etag_a3
         ));
     }
     note(
         verdicts,
-        "AtomicKeyspace current-token identical-payload CAS: accepted at version 3".to_string(),
+        "AtomicKeyspace current-token identical-payload CAS: accepted at version 3 \
+         of one incarnation (batch 7: the incarnation is constant within a lifetime)"
+            .to_string(),
     );
 
     Ok(())

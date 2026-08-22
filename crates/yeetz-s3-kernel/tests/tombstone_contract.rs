@@ -185,8 +185,9 @@ async fn w4_trim_retires_tombstones_below_the_floor() {
     // The sweep retires values AND tombstones below the floor.
     let report = ks.delete_below("", "data/", 6).await.unwrap();
     // Values 1, 2, 4, 5 (seq 3's value was already destroyed) plus
-    // the seq-3 tombstone; the genesis (seq 0) is immortal.
-    assert_eq!(report.deleted, 5);
+    // the seq-3 tombstone and its incarnation counter (batch 7);
+    // the genesis (seq 0) is immortal.
+    assert_eq!(report.deleted, 6);
     let remaining = ks.list_after(Some("tombstones"), 1000).await.unwrap();
     assert!(
         !remaining.contains(&"tombstones/data/00000000000000000003".to_string()),

@@ -75,6 +75,7 @@ async fn a2_cas_match_mismatch_and_concurrent_exchange() {
             key,
             expected_etag,
             observed,
+            ..
         } => {
             assert_eq!(key, "head");
             assert_eq!(expected_etag, etag);
