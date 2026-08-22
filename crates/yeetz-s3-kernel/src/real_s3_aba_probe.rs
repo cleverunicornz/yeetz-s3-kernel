@@ -13,7 +13,9 @@
 //! - LIST-after-write visibility (the strong-LIST qualification,
 //!   sampled),
 //! - the same A→B→A cycle through AtomicKeyspace, including versions,
-//!   stale-token rejection, and an identical-payload transition.
+//!   stale-token rejection, and an identical-payload transition, plus
+//!   the batch-7 cross-deletion leg: destroy → re-create identical
+//!   bytes → era-1 token rejection and the era-2 incarnation/version.
 //!
 //! Writes only under `aba-probe/<run-id>/…` and
 //! `keyspace/aba-probe/<run-id>/…`, then deletes everything it created
@@ -501,6 +503,76 @@ async fn module_battery(
         verdicts,
         "AtomicKeyspace current-token identical-payload CAS: accepted at version 3 \
          of one incarnation (batch 7: the incarnation is constant within a lifetime)"
+            .to_string(),
+    );
+
+    // Batch-7 leg (teardown finding T4, 2026-08-22): the CROSS-DELETION
+    // closure — the headline claim the earlier battery never measured
+    // on a real backend. Destroy the lifetime, re-create with IDENTICAL
+    // payload bytes (on a content-etag backend the raw era-1 bytes would
+    // recur an identical etag), then prove the era-1 token is rejected
+    // and the era-2 value is version 0 of incarnation 1.
+    keyspace
+        .destroy(key, "probe-incarnation-leg", "real-s3-probe")
+        .await
+        .map_err(|error| format!("module destroy: {error}"))?;
+    created.push(format!("{KEYSPACE_ROOT}/{namespace}/tombstones/{key}"));
+    created.push(format!("{KEYSPACE_ROOT}/{namespace}/incarnations/{key}"));
+    keyspace
+        .create(key, payload_a.clone())
+        .await
+        .map_err(|error| format!("module era-2 re-create: {error}"))?;
+    let (recreated, incarnation_2, version_2, etag_era2) = keyspace
+        .get_with_version(key)
+        .await
+        .map_err(|error| format!("module get era-2: {error}"))?
+        .ok_or_else(|| "module get era-2: key absent".to_string())?;
+    if recreated != payload_a || incarnation_2 != 1 || version_2 != 0 {
+        return Err(format!(
+            "module era-2 mismatch: payload_matches={}, incarnation={incarnation_2}, version={version_2}",
+            recreated == payload_a
+        ));
+    }
+    if etag_era2 == etag_a3 {
+        return Err(format!(
+            "module cross-deletion closure failed: era-2 recreated identical bytes shares era-1's etag {etag_a3}"
+        ));
+    }
+    note(
+        verdicts,
+        format!(
+            "AtomicKeyspace destroy→recreate(identical bytes): era-2 is incarnation 1 version 0; envelope etag moved ({etag_a3} != {etag_era2})"
+        ),
+    );
+    match keyspace
+        .compare_exchange(key, &etag_a3, Bytes::from_static(b"cross-era-stale"))
+        .await
+    {
+        Err(KeyspaceError::PreconditionFailed {
+            observed_incarnation: Some(1),
+            ..
+        }) => note(
+            verdicts,
+            "AtomicKeyspace era-1 token across the destroy: PreconditionFailed naming incarnation 1".to_string(),
+        ),
+        Err(error) => {
+            return Err(format!(
+                "module era-1 token across destroy returned unexpected error: {error}"
+            ));
+        }
+        Ok(_) => {
+            return Err(
+                "module era-1 token was ACCEPTED across the destroy (cross-deletion ABA)".to_string(),
+            );
+        }
+    }
+    keyspace
+        .compare_exchange(key, &etag_era2, Bytes::from_static(b"era-2-next"))
+        .await
+        .map_err(|error| format!("module era-2 current-token CAS: {error}"))?;
+    note(
+        verdicts,
+        "AtomicKeyspace era-2 current-token CAS: accepted (versions advance within the new incarnation)"
             .to_string(),
     );
 
