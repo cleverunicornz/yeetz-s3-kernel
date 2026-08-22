@@ -251,6 +251,27 @@ impl Streams {
         Ok(stream)
     }
 
+    /// Read a stream's config: the genesis (seq-0) payload that
+    /// `create_stream` wrote. `None` when the stream does not exist.
+    /// The genesis envelope is verified exactly as on every other
+    /// read path — key agreement, format version, digest.
+    pub async fn read_config(&self, stream: &StreamId) -> Result<Option<Vec<u8>>, StreamsError> {
+        let bytes = self
+            .keyspace
+            .get(&Self::log_key(stream, 0))
+            .await
+            .map_err(map_keyspace("read_config"))?;
+        let Some(bytes) = bytes else {
+            return Ok(None);
+        };
+        let envelope =
+            Envelope::decode_and_verify(stream, 0, &bytes).map_err(|_| StreamsError::Corrupt {
+                stream: stream.clone(),
+                missing_or_mismatched: vec![0],
+            })?;
+        Ok(Some(envelope.payload.to_vec()))
+    }
+
     /// Append one event. The event object's conditional create IS the
     /// allocation; the successful create is the linearization point.
     /// A retry whose byte-identical envelope already landed (lost
@@ -581,7 +602,6 @@ impl Streams {
                         }
                         Replay::Page {
                             events,
-                            next_seq: last.saturating_add(1),
                             complete: false,
                         }
                     } else {
@@ -662,10 +682,8 @@ impl Streams {
                 if events.is_empty() {
                     Replay::Empty
                 } else {
-                    let last = last_fetched.expect("events nonempty");
                     Replay::Page {
                         events,
-                        next_seq: last.saturating_add(1),
                         complete: end_witnessed,
                     }
                 }
@@ -826,11 +844,26 @@ impl Streams {
         Ok(cursor)
     }
 
-    /// LIST-derived max log seq (existence-witnessed floor).
+    /// LIST-derived max log seq (existence-witnessed floor). Seeded
+    /// from the verified tail hint minus the idempotency scan window:
+    /// keys at or below a verified-dense hint exist and cannot raise
+    /// the max above it, so re-listing them costs O(N/1000) LISTs per
+    /// append for nothing. The seeded walk still sees the hint seq's
+    /// own key, so the derived max is exact; with no verified hint the
+    /// walk starts at genesis. The idempotency-window formula in
+    /// `append` is unchanged — only the walk's start moves.
     async fn list_log_max(&self, stream: &StreamId) -> Result<Seq, StreamsError> {
+        let seed = self
+            .verified_tail_hint(stream)
+            .await
+            .map(|hint| {
+                hint.highest_validated_dense_seq
+                    .saturating_sub(IDEMPOTENT_SCAN_WINDOW)
+            })
+            .unwrap_or(0);
         let prefix = format!("{}/log/", stream.as_str());
-        let mut after = Some(Self::log_key(stream, 0)); // walk from genesis
-        let mut max = 0u64;
+        let mut after = Some(Self::log_key(stream, seed)); // walk from the seed
+        let mut max = seed;
         loop {
             let keys = self
                 .keyspace

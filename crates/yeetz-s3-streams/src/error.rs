@@ -80,7 +80,7 @@ pub enum StreamsError {
 }
 
 /// The six-state typed read outcome (ADR 0017): `NotFound | Empty |
-/// Page { events, next_seq, complete } | Corrupt {
+/// Page { events, complete } | Corrupt {
 /// missing_or_mismatched_seqs } | Unavailable | BackendUnqualified`.
 ///
 /// `complete=true` is witness-bounded (human-ruled contract): it
@@ -103,11 +103,13 @@ pub enum Replay {
     /// The stream exists; there are no events after `after_seq` (the
     /// LIST-qualified end).
     Empty,
-    /// A dense, verified page. `next_seq` continues the walk;
+    /// A dense, verified page. Resume the walk with
+    /// `after_seq = events.last().seq` — the read is after-exclusive,
+    /// so any cursor beyond the last fetched seq would skip events
+    /// (the D2 defect; there is deliberately no `next_seq` field).
     /// `complete` is witness-bounded — see the enum docs.
     Page {
         events: Vec<crate::Envelope>,
-        next_seq: Seq,
         complete: bool,
     },
     /// The log is damaged: seqs missing inside a range the LIST
