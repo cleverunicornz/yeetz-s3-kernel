@@ -134,11 +134,7 @@ impl Streams {
         let mut after = 0u64;
         loop {
             match self.read(stream, after, 256).await {
-                Replay::Page {
-                    events,
-                    next_seq,
-                    complete,
-                } => {
+                Replay::Page { events, complete } => {
                     for envelope in &events {
                         if envelope.seq != after + 1 {
                             return Err(StreamsError::BackendUnqualified {
@@ -154,7 +150,6 @@ impl Streams {
                     if complete {
                         break;
                     }
-                    let _ = next_seq;
                 }
                 Replay::Empty => break,
                 Replay::Corrupt {

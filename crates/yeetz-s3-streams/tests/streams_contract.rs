@@ -61,8 +61,10 @@ async fn s1_contiguity_one_winner_per_seq() {
     }
 }
 
-/// S2: replay order and completeness — pages chain through next_seq in
-/// seq order; complete=true only at the witness-bounded qualified end.
+/// S2: replay order and completeness — a paginated walk advances on
+/// `events.last().seq` (the read is after-exclusive; anything beyond
+/// the last fetched seq would skip) and `complete=true` only at the
+/// witness-bounded qualified end.
 #[tokio::test]
 async fn s2_replay_order_and_completeness() {
     let streams = streams_on_in_memory_store();
@@ -82,11 +84,7 @@ async fn s2_replay_order_and_completeness() {
     let mut after = 0u64;
     loop {
         match streams.read(&stream, after, 3).await {
-            Replay::Page {
-                events,
-                next_seq,
-                complete,
-            } => {
+            Replay::Page { events, complete } => {
                 assert!(!events.is_empty());
                 for envelope in &events {
                     // Order is seq order; payloads verify.
@@ -94,7 +92,6 @@ async fn s2_replay_order_and_completeness() {
                     collected.push((envelope.seq, envelope.stable_event_id.as_str().to_string()));
                     after = envelope.seq;
                 }
-                assert_eq!(next_seq, after + 1);
                 if complete {
                     break;
                 }
@@ -144,6 +141,74 @@ async fn s2_replay_remains_dense_across_fetch_chunks() {
         }
         other => panic!("expected dense chunked replay, got {other:?}"),
     }
+}
+
+/// S2 (D2 regression, crate-side witness): paginating with
+/// `limit < total` across the internal fetch-chunk boundary (8-seq
+/// chunks) while advancing on `events.last().seq` must see every
+/// event exactly once, dense. The removed `next_seq` field
+/// (= last + 1) resumed one-past-the-end under after-exclusive
+/// semantics and skipped an event per page — the yeetz #113 defect;
+/// this keeps the regression pinned on the crate side.
+#[tokio::test]
+async fn s2_paginated_walk_limit_below_total_advances_on_last_seq() {
+    let streams = streams_on_in_memory_store();
+    let stream = streams.create_stream(&[]).await.unwrap();
+    const TOTAL: u64 = 25; // > 2× the 8-seq fetch chunk; 3 pages of 10
+    for index in 1..=TOTAL {
+        streams
+            .append(
+                &stream,
+                &schema("paged.v1"),
+                &event(&format!("page-{index}")),
+                &[index as u8],
+            )
+            .await
+            .unwrap();
+    }
+
+    let mut collected: Vec<u64> = Vec::new();
+    let mut after = 0u64;
+    let mut pages = 0u32;
+    loop {
+        match streams.read(&stream, after, 10).await {
+            Replay::Page { events, complete } => {
+                assert!(!events.is_empty(), "a non-terminal page must carry events");
+                pages += 1;
+                // The resume discipline: after-exclusive read at the
+                // LAST FETCHED seq. Any cursor beyond it skips.
+                after = events.last().expect("checked nonempty").seq;
+                collected.extend(events.iter().map(|event| event.seq));
+                if complete {
+                    break;
+                }
+            }
+            other => panic!("expected page, got {other:?}"),
+        }
+    }
+    assert!(pages >= 3, "the walk must actually paginate: {pages} pages");
+    assert_eq!(collected, (1..=TOTAL).collect::<Vec<_>>());
+}
+
+/// `read_config` returns exactly the bytes `create_stream` wrote
+/// (verified through the genesis envelope), and `None` for a stream
+/// that does not exist.
+#[tokio::test]
+async fn read_config_returns_genesis_payload_or_absence() {
+    let streams = streams_on_in_memory_store();
+    let config = b"{\"sid\":\"repo:demo/hello\",\"ref\":\"refs/heads/main\"}".as_slice();
+    let stream = streams.create_stream(config).await.unwrap();
+    assert_eq!(
+        streams.read_config(&stream).await.unwrap().as_deref(),
+        Some(config)
+    );
+
+    // Empty config round-trips as an empty payload, not absence.
+    let bare = streams.create_stream(&[]).await.unwrap();
+    assert_eq!(streams.read_config(&bare).await.unwrap(), Some(Vec::new()));
+
+    let ghost = StreamId::new("sghost-config").unwrap();
+    assert_eq!(streams.read_config(&ghost).await.unwrap(), None);
 }
 
 /// S3 (in-memory leg): a byte-identical re-append converges to the
@@ -371,13 +436,8 @@ async fn s4_damage_loud_and_named() {
         .await
         .unwrap();
     match streams.read(&stream, 0, 2).await {
-        Replay::Page {
-            events,
-            next_seq,
-            complete,
-        } => {
+        Replay::Page { events, complete } => {
             assert_eq!(events.len(), 2);
-            assert_eq!(next_seq, 3);
             assert!(!complete);
         }
         other => panic!("expected partial page, got {other:?}"),
