@@ -392,32 +392,23 @@ impl ControlEnvelope {
     }
 }
 
-/// Mint a writer-scoped commit ID. Not logical content identity: it
-/// distinguishes concurrent contenders for one target generation and
-/// is retained only across retries of the same pending write
-/// (ADR 0004 §1.2).
+/// Mint a writer-scoped commit ID from 128 bits of independently
+/// seeded randomness. Not logical content identity: it distinguishes
+/// contenders across processes and is retained only across retries of
+/// the same pending write (ADR 0004 §1.2).
 pub(crate) fn mint_commit_id() -> [u8; COMMIT_ID_BYTES] {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos() as u64)
-        .unwrap_or(0);
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut hasher = Sha256::new();
-    hasher.update(nanos.to_be_bytes());
-    hasher.update(counter.to_be_bytes());
-    hasher.update(std::process::id().to_be_bytes());
-    let digest: [u8; 32] = hasher.finalize().into();
-    let mut commit_id = [0u8; COMMIT_ID_BYTES];
-    commit_id.copy_from_slice(&digest[..COMMIT_ID_BYTES]);
-    commit_id
+    rand::random()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writer_commit_ids_are_unique_in_large_sample() {
+        let ids: std::collections::HashSet<_> = (0..4096).map(|_| mint_commit_id()).collect();
+        assert_eq!(ids.len(), 4096);
+    }
 
     fn manifest_fixture(count: u32, final_len: u32) -> ValueManifest {
         let entries: Vec<ManifestEntry> = (0..count)
