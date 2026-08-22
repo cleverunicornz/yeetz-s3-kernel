@@ -310,7 +310,10 @@ addendum ships the trim that unblock permits.
    structural (teardown finding T1, 2026-08-22): a `trims` path
    segment naming a following component is a reserved certificate
    key and refuses direct caller create/CAS/delete — a deletable
-   maximum certificate is a regressable floor.
+   maximum certificate is a regressable floor. The floor walk steps
+   over sibling keys sorting before the certificate range
+   (`{scope}/trims-x` and friends) and terminates only at the first
+   key at or past the range (teardown finding T2, 2026-08-22).
 2. **Reads below the floor are typed.** A stream read that would
    start below `first_retained` is `OffsetExpired { first_retained }`
    — the seventh `Replay` state. Never empty, never corruption:
