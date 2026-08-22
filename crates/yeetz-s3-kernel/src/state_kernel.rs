@@ -1597,36 +1597,32 @@ impl StateKernel {
                 prior: prior.clone(),
             };
             let bytes = head.canonical_bytes()?;
+            let head_key = self.lineage.head_key();
             match self
                 .object_store
-                .upload_conditional(&self.lineage.head_key(), bytes.clone().into(), None)
+                .upload_conditional(&head_key, bytes.into(), None)
                 .await
             {
                 Ok(etag) => {
+                    let etag = etag.ok_or(KernelError::StateUnavailable {
+                        operation: "head create did not return an ETag",
+                    })?;
                     let now = self.current_incarnation().await?;
                     if now == incarnation {
-                        return Ok(HeadRead {
-                            head,
-                            etag: etag.ok_or(KernelError::StateUnavailable {
-                                operation: "head create did not return an ETag",
-                            })?,
-                        });
+                        return Ok(HeadRead { head, etag });
                     }
-                    match self.object_store.download(&self.lineage.head_key()).await {
-                        Ok(stored) if stored.as_ref() == bytes.as_slice() => {
-                            // Still our stale-era write: evict it.
-                            let _ = self.object_store.delete(&self.lineage.head_key()).await;
-                        }
-                        Ok(_) => {
-                            // A fresh-era head holds the key: this
-                            // create lost the put-if-absent race, the
-                            // same conflict a sequential racer sees.
+                    // The PUT's etag is the ownership token for the
+                    // stale-era bytes. Delete only that exact object:
+                    // a fresh writer may replace it between the
+                    // counter re-check and this request.
+                    match self.object_store.delete_conditional(&head_key, &etag).await {
+                        Ok(()) | Err(ObjectStoreError::NotFound(_)) => {}
+                        Err(ObjectStoreError::PreconditionFailed(_)) => {
                             return Err(self.head_conflict().await);
                         }
-                        Err(ObjectStoreError::NotFound(_)) => {}
                         Err(_) => {
                             return Err(KernelError::StateUnavailable {
-                                operation: "head create (stale-era eviction check)",
+                                operation: "head create (stale-era conditional eviction)",
                             });
                         }
                     }
@@ -7122,6 +7118,96 @@ pub mod gateway_state_contract {
                 Err(KernelError::LineageHeadConflict { .. })
             ),
             "a stale HeadRead from the destroyed lifetime must not CAS the recreated lineage"
+        );
+        let _ = counterpart.shutdown().await;
+    }
+
+    /// Batch-9 teardown L8: the stale-era eviction is a mutation, so
+    /// the ownership check and delete must be one store-level
+    /// If-Match request. Red witness on the merged implementation:
+    /// ci-dev run 32594909133.
+    #[tokio::test]
+    async fn l8_stale_genesis_eviction_is_if_match_guarded() {
+        let (store, _keyspace, counterpart) = keyspace_fixture("l8-eviction-wire").await;
+        let lineage =
+            KernelLineage::new("l8/eviction-wire", SuccessorPolicy::SuccessorCapable).unwrap();
+        let kernel = StateKernel::new(Arc::clone(&store), lineage.clone());
+        let head_key = lineage.head_key();
+        let genesis_record = record(&lineage, 0, None, b"l8-same-genesis");
+        kernel
+            .append_genesis(&genesis_record)
+            .await
+            .expect("era-1 genesis");
+
+        counterpart.arm_conditional_head_barrier(&head_key).await;
+        let writer = tokio::spawn({
+            let store = Arc::clone(&store);
+            let lineage = lineage.clone();
+            let record = genesis_record.clone();
+            async move {
+                StateKernel::new(store, lineage)
+                    .append_genesis(&record)
+                    .await
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let snapshot = counterpart.snapshot().await;
+                if snapshot
+                    .barrier
+                    .as_ref()
+                    .expect("head barrier stays armed")
+                    .arrivals
+                    >= 1
+                {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("parked head PUT reaches the barrier");
+
+        kernel
+            .destroy("l8-race", "batch9-teardown")
+            .await
+            .expect("destroy while stale writer is parked");
+
+        // A doomed If-Match is arrival two: it opens the barrier but
+        // cannot write, so the parked stale-era If-None-Match lands
+        // deterministically and takes the moved-counter eviction path.
+        assert!(
+            store
+                .upload_conditional(
+                    &head_key,
+                    b"doomed-gate-opener".to_vec().into(),
+                    Some("etag-that-cannot-match"),
+                )
+                .await
+                .is_err(),
+            "the gate opener must not create a head"
+        );
+        let repaired = writer
+            .await
+            .expect("parked writer joins")
+            .expect("stale writer evicts and retries at the fresh era");
+        assert_eq!(repaired.incarnation(), 1);
+
+        let snapshot = counterpart.snapshot().await;
+        let conditional_head_deletes: Vec<_> = snapshot
+            .requests
+            .iter()
+            .filter(|request| {
+                request.method == Method::DELETE.as_str()
+                    && request.key.as_deref() == Some(head_key.as_str())
+                    && request.if_match.is_some()
+            })
+            .collect();
+        assert_eq!(
+            conditional_head_deletes.len(),
+            1,
+            "stale-era eviction must be one If-Match DELETE: {:?}",
+            snapshot.requests
         );
         let _ = counterpart.shutdown().await;
     }
