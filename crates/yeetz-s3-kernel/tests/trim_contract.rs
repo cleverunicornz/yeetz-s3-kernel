@@ -230,3 +230,76 @@ async fn r7_resurrection_rejected_by_certificate_not_absence() {
         assert!(ks.get(&data_key(seq)).await.unwrap().is_some(), "seq {seq}");
     }
 }
+
+/// R8 (teardown finding T1, 2026-08-22): trim certificates are
+/// structurally immutable. ADR 0002's batch-5 addendum calls the
+/// certificate "an immutable, create-once object" — the `trims` path
+/// segment is now reserved exactly like `tombstones/` and
+/// `incarnations/`: direct create, compare-and-swap, delete, and bulk
+/// delete are refused, at any scope depth. A deletable maximum
+/// certificate is a regressable floor, and a regressable floor
+/// reopens the resurrection attack (retired history reads `Absent`,
+/// lower trims are accepted) that the certificate exists to prevent.
+#[tokio::test]
+async fn r8_trim_certificates_are_immutable() {
+    let ks = keyspace("r8");
+    for seq in 0..=9u64 {
+        ks.create(&data_key(seq), Bytes::from_static(b"payload"))
+            .await
+            .unwrap();
+    }
+    ks.propose_trim("", 6).await.unwrap();
+    let certificate = "trims/00000000000000000006";
+
+    assert!(matches!(
+        ks.create(certificate, Bytes::from_static(b"forged"))
+            .await
+            .unwrap_err(),
+        KeyspaceError::TrimCertificateImmutable(_)
+    ));
+    let (_, etag) = ks.get_with_etag(certificate).await.unwrap().unwrap();
+    assert!(matches!(
+        ks.compare_exchange(certificate, &etag, Bytes::from_static(b"x"))
+            .await
+            .unwrap_err(),
+        KeyspaceError::TrimCertificateImmutable(_)
+    ));
+    assert!(matches!(
+        ks.delete(certificate).await.unwrap_err(),
+        KeyspaceError::TrimCertificateImmutable(_)
+    ));
+    assert!(matches!(
+        ks.delete_many(&[certificate]).await.unwrap_err(),
+        KeyspaceError::TrimCertificateImmutable(_)
+    ));
+
+    // The certificate stands: the floor and its monotonicity rule.
+    assert_eq!(ks.trim_floor("").await.unwrap(), Some(6));
+    assert!(matches!(
+        ks.propose_trim("", 3).await.unwrap_err(),
+        KeyspaceError::TrimNotMonotone {
+            requested: 3,
+            certified: 6
+        }
+    ));
+
+    // The certified sweep still works through its own raw path.
+    let report = ks.delete_below("", "data/", 6).await.unwrap();
+    assert_eq!(report.deleted, 5);
+
+    // Scoped certificate shapes are guarded at any depth.
+    ks.propose_trim("s1", 2).await.unwrap();
+    assert!(matches!(
+        ks.delete("s1/trims/00000000000000000002")
+            .await
+            .unwrap_err(),
+        KeyspaceError::TrimCertificateImmutable(_)
+    ));
+
+    // An ordinary key whose FINAL segment is "trims" is not a
+    // certificate and stays writable.
+    ks.create("notes/trims", Bytes::from_static(b"ordinary"))
+        .await
+        .unwrap();
+    ks.delete("notes/trims").await.unwrap();
+}

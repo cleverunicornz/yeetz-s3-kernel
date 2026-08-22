@@ -306,7 +306,11 @@ addendum ships the trim that unblock permits.
    certificate, never object absence, is the boundary, so a stale
    writer cannot resurrect a lower floor by recreating what the
    sweeper deleted. Equal proposals are idempotent; a concurrent
-   higher proposal wins by max-by-key.
+   higher proposal wins by max-by-key. The immutability is
+   structural (teardown finding T1, 2026-08-22): a `trims` path
+   segment naming a following component is a reserved certificate
+   key and refuses direct caller create/CAS/delete — a deletable
+   maximum certificate is a regressable floor.
 2. **Reads below the floor are typed.** A stream read that would
    start below `first_retained` is `OffsetExpired { first_retained }`
    — the seventh `Replay` state. Never empty, never corruption:

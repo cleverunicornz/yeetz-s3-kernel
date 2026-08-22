@@ -9,7 +9,9 @@
 //! (batch 5): an immutable create-once certificate at
 //! `{scope}/trims/{first_retained:020}` bounds a scope's retained
 //! prefix (max-by-key is the floor); [`AtomicKeyspace::delete_below`]
-//! is the certified, idempotent, resumable GC primitive. Values are
+//! is the certified, idempotent, resumable GC primitive; the
+//! certificate keys themselves are reserved (`trims` path segment)
+//! and refuse direct caller writes. Values are
 //! stored in an internal versioned envelope so byte-identical
 //! payloads in different CAS eras have different object bytes. **No
 //! unconditional overwrite exists in this module.**
@@ -159,6 +161,15 @@ pub enum KeyspaceError {
     /// only by a certified trim sweep.
     #[error("incarnation counter namespace is reserved: {0}")]
     IncarnationCounterImmutable(String),
+    /// The trim-certificate namespace (any `{scope}/trims/{seq}` key)
+    /// is reserved and immutable: certificates are written only by
+    /// [`AtomicKeyspace::propose_trim`], never overwritten, never
+    /// deleted by callers. The maximum certificate IS the certified
+    /// floor — a deletable certificate is a regressable floor, which
+    /// reopens the resurrection attack the certificate exists to
+    /// close (teardown finding T1, 2026-08-22).
+    #[error("trim certificate namespace is immutable: {0}")]
+    TrimCertificateImmutable(String),
     /// The backing store failed in a way the caller should retry.
     #[error("keyspace store unavailable: {operation}")]
     Unavailable { operation: &'static str },
@@ -314,17 +325,31 @@ impl AtomicKeyspace {
 
     /// Reserved prefixes refuse every direct write/delete path:
     /// tombstones are written only by `destroy`, incarnation
-    /// counters only by `destroy`'s bump; both are removed only by
-    /// a certified trim sweep.
-    fn ensure_not_tombstone_key(key: &str) -> Result<(), KeyspaceError> {
+    /// counters only by `destroy`'s bump, trim certificates only by
+    /// `propose_trim`; all three are removed only by a certified
+    /// trim sweep. The certificate guard is structural: a key with a
+    /// `trims` path segment naming a FOLLOWING component is a
+    /// certificate (`{scope}/trims/{seq:020}` at any scope depth),
+    /// and the maximum certificate is the certified floor — a
+    /// deletable certificate is a regressable floor (teardown
+    /// finding T1).
+    fn ensure_not_reserved_key(key: &str) -> Result<(), KeyspaceError> {
         if key.starts_with(Self::TOMBSTONE_ROOT) && key.len() > Self::TOMBSTONE_ROOT.len() {
             return Err(KeyspaceError::TombstoneImmutable(key.to_string()));
         }
         if key.starts_with(Self::INCARNATION_ROOT) && key.len() > Self::INCARNATION_ROOT.len() {
             return Err(KeyspaceError::IncarnationCounterImmutable(key.to_string()));
         }
+        let segments: Vec<&str> = key.split('/').collect();
+        if segments[..segments.len() - 1].contains(&Self::TRIMS_SEGMENT) {
+            return Err(KeyspaceError::TrimCertificateImmutable(key.to_string()));
+        }
         Ok(())
     }
+
+    /// The reserved certificate path segment (ADR 0002 batch 5):
+    /// `{scope}/trims/{first_retained:020}` at any scope depth.
+    const TRIMS_SEGMENT: &str = "trims";
 
     /// The incarnation-counter object mirroring a data key:
     /// `incarnations/{key}`. Raw big-endian u64: created once
@@ -448,7 +473,7 @@ impl AtomicKeyspace {
     /// (batch 7) — a fresh lifetime, never a versioned continuation
     /// of the destroyed era.
     pub async fn create(&self, key: &str, value: Bytes) -> Result<(), KeyspaceError> {
-        Self::ensure_not_tombstone_key(key)?;
+        Self::ensure_not_reserved_key(key)?;
         let object_key = self.object_key(key)?;
         let incarnation = self.current_incarnation(key).await?;
         let value = ValueEnvelope::new(incarnation, 0, value).encode();
@@ -556,7 +581,7 @@ impl AtomicKeyspace {
         expected_etag: &str,
         value: Bytes,
     ) -> Result<String, KeyspaceError> {
-        Self::ensure_not_tombstone_key(key)?;
+        Self::ensure_not_reserved_key(key)?;
         let object_key = self.object_key(key)?;
         let current = match self.store.download_with_etag(&object_key).await {
             Ok(meta) => meta,
@@ -684,7 +709,7 @@ impl AtomicKeyspace {
     /// Delete a key (namespaced). Idempotent: deleting an absent key
     /// succeeds — object stores treat it that way and so do we.
     pub async fn delete(&self, key: &str) -> Result<(), KeyspaceError> {
-        Self::ensure_not_tombstone_key(key)?;
+        Self::ensure_not_reserved_key(key)?;
         let object_key = self.object_key(key)?;
         self.store
             .delete(&object_key)
@@ -705,7 +730,7 @@ impl AtomicKeyspace {
         // identifier error after earlier deletes would discard the outcome
         // report the caller needs to resume safely.
         for key in keys {
-            Self::ensure_not_tombstone_key(key)?;
+            Self::ensure_not_reserved_key(key)?;
             self.object_key(key)?;
         }
 
@@ -881,8 +906,26 @@ impl AtomicKeyspace {
             }
         }
         let key = format!("{cert_prefix}{}", Self::seq_component(first_retained));
-        self.create(&key, Bytes::from_static(b"trim-certificate"))
-            .await?;
+        // The certificate key is structurally guarded against caller
+        // writes; propose itself writes through the raw put-if-absent
+        // path (the same discipline `destroy` uses for tombstones).
+        // The value is the canonical v2 envelope so certified keys
+        // stay readable through the value surface.
+        let certificate =
+            ValueEnvelope::new(0, 0, Bytes::from_static(b"trim-certificate")).encode();
+        let object_key = self.object_key(&key)?;
+        match self
+            .store
+            .upload_conditional(&object_key, certificate, None)
+            .await
+        {
+            Ok(_) | Err(ObjectStoreError::PreconditionFailed(_)) => {}
+            Err(_) => {
+                return Err(KeyspaceError::Unavailable {
+                    operation: "propose_trim: certificate create",
+                });
+            }
+        }
         // Max-by-key is the truth: report the effective floor, not
         // the caller's proposal (a concurrent higher cert wins).
         let effective = self.trim_floor(scope).await?.unwrap_or(first_retained);
