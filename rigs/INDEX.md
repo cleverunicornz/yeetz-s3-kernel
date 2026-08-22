@@ -35,6 +35,12 @@ streaming contract suite. A single oversized `poll_write` must stop
 after four complete chunks, so queued upload futures and retained
 chunk buffers cannot exceed ADR 0004's declared concurrency window.
 
+The batch-10 teardown fence-namespace witness is
+`teardown_fence_aliases_are_rejected_after_path_composition` in the
+public streaming contract suite. It proves that namespace/key segment
+splits cannot compose another namespace's exact `fences/gc` object,
+while a non-control near miss remains usable.
+
 The forge-facing rigs (connect transport legs, gRPC legs, write-path
 concurrency, events migration) stayed in the parent `yeetz` repo —
 they prove forge behavior against forge types.

@@ -222,6 +222,35 @@ async fn a35_lineage_reserved_roots_rejected_and_near_misses_accepted() {
     }
 }
 
+#[tokio::test]
+async fn teardown_fence_aliases_are_rejected_after_path_composition() {
+    for (namespace, key) in [
+        ("tenant", "child/fences/gc"),
+        ("tenant/child", "fences/gc"),
+        ("tenant/child/fences", "gc"),
+    ] {
+        let keyspace = keyspace("fence-alias", namespace);
+        assert!(matches!(
+            keyspace.create(key, Bytes::from_static(b"alias")).await,
+            Err(KeyspaceError::MaintenanceFenceImmutable(_))
+        ));
+        assert!(matches!(
+            keyspace.get(key).await,
+            Err(KeyspaceError::MaintenanceFenceImmutable(_))
+        ));
+    }
+
+    let near_miss = keyspace("fence-alias-near-miss", "tenant/child/fences");
+    near_miss
+        .create("gc-data", Bytes::from_static(b"ordinary"))
+        .await
+        .unwrap();
+    assert_eq!(
+        near_miss.get("gc-data").await.unwrap(),
+        Some(Bytes::from_static(b"ordinary"))
+    );
+}
+
 // --- Metering classification on the public surface -----------------------------------
 
 #[tokio::test]
