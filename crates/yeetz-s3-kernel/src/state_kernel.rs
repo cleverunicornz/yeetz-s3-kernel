@@ -6012,7 +6012,8 @@ pub mod gateway_state_contract {
                 .compare_exchange(&key, &era1_etag, Bytes::from_static(b"stale-era-writer"))
                 .await
             {
-                Err(crate::KeyspaceError::PreconditionFailed { .. }) => continue,
+                // The only correct outcome: the era-1 token lost.
+                Err(crate::KeyspaceError::PreconditionFailed { .. }) => {}
                 Ok(new_etag) => panic!(
                     "A15 DEFECT (attempt {attempt}): an era-1 etag was ACCEPTED \
                      across a destroy (counter now 1); the racing create minted \
