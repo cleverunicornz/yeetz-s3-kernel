@@ -1234,6 +1234,35 @@ async fn a34_unavailable_and_corrupt_control_fail_closed() {
     counterpart.shutdown().await;
 }
 
+#[tokio::test]
+async fn teardown_malformed_chunk_path_is_unresolved_and_never_deleted() {
+    let (store, keyspace, counterpart) = keyspace_fixture("malformed-path").await;
+    let malformed = format!(
+        "{CHUNK_ROOT}/v1/malformed-path/2f/{:020}/{:020}/{}",
+        0,
+        0,
+        "ab".repeat(32)
+    );
+    store
+        .upload(&malformed, Bytes::from_static(b"unowned"))
+        .await
+        .unwrap();
+
+    let inventory = keyspace.chunk_inventory().await.unwrap();
+    assert_eq!(inventory.listed_chunks, 1);
+    assert_eq!(inventory.unresolved_chunks, 1);
+    assert_eq!(inventory.candidate_orphan_chunks, 0);
+
+    keyspace.set_maintenance_fence().await.unwrap();
+    let report = keyspace.sweep_chunks().await.unwrap();
+    assert_eq!(report.examined, 1);
+    assert_eq!(report.deleted, 0);
+    assert_eq!(report.remaining, 1);
+    assert!(store.exists(&malformed).await.unwrap());
+    keyspace.release_maintenance_fence().await.unwrap();
+    counterpart.shutdown().await;
+}
+
 /// A frozen (stale) chunk LIST hides garbage and causes a leak only —
 /// eligibility always comes from the exact control read, so no live
 /// chunk is deleted on the stale view.

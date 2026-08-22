@@ -17,7 +17,7 @@
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 
-use crate::atomic_keyspace::{KeyspaceError, ValueEnvelope};
+use crate::atomic_keyspace::{KeyspaceError, ValueEnvelope, validate_identifier};
 
 /// Reserved physical root for chunk objects (kernel-owned, like
 /// `keyspace`): `keyspace-chunks/v1/{namespace}/...`. Lineages cannot
@@ -333,9 +333,8 @@ pub(crate) fn parse_chunk_object_key(object_key: &str) -> Option<ChunkObjectPath
     }
     let logical_key = String::from_utf8(hex::decode(encoded_key).ok()?).ok()?;
     let namespace = segments.join("/");
-    if namespace.is_empty() {
-        return None;
-    }
+    validate_identifier("chunk namespace", &namespace).ok()?;
+    validate_identifier("chunk logical key", &logical_key).ok()?;
     Some(ChunkObjectPath {
         namespace,
         logical_key,
@@ -605,7 +604,8 @@ mod tests {
         assert_eq!(parsed.namespace, "streams/v1");
         assert_eq!(parsed.logical_key, "k");
         // Refusals: wrong digest width, non-hex key, missing
-        // generation, empty namespace, odd-length hex.
+        // generation, empty namespace, odd-length hex, or an encoded
+        // logical key outside the identifier grammar.
         assert!(
             parse_chunk_object_key(
                 "keyspace-chunks/v1/ns/612f/00000000000000000000/00000000000000000000/abcd"
@@ -628,6 +628,12 @@ mod tests {
         assert!(
             parse_chunk_object_key(&format!(
                 "other-root/v1/ns/612f/00000000000000000000/00000000000000000000/{digest}"
+            ))
+            .is_none()
+        );
+        assert!(
+            parse_chunk_object_key(&format!(
+                "keyspace-chunks/v1/ns/2f/00000000000000000000/00000000000000000000/{digest}"
             ))
             .is_none()
         );

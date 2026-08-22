@@ -317,7 +317,7 @@ impl DeleteOutcome {
 /// Conservative identifier rule: non-empty slash-joined segments of
 /// `[A-Za-z0-9][A-Za-z0-9._-]*`, total length ≤ 255, no leading or
 /// trailing slash, no empty segments.
-fn validate_identifier(kind: &str, value: &str) -> Result<(), KeyspaceError> {
+pub(crate) fn validate_identifier(kind: &str, value: &str) -> Result<(), KeyspaceError> {
     let invalid = || KeyspaceError::InvalidIdentifier(format!("{kind} {value:?}"));
     if value.is_empty() || value.len() > 255 || value.starts_with('/') || value.ends_with('/') {
         return Err(invalid());
