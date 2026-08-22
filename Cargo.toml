@@ -15,9 +15,9 @@ license = "MIT"
 
 [workspace.dependencies]
 # Internal
-yeetz-sdk-core = { path = "crates/yeetz-sdk-core" }
-yeetz-sdk-s3 = { path = "crates/yeetz-sdk-s3" }
-yeetz-s3-kernel = { path = "crates/yeetz-s3-kernel" }
+yeetz-sdk-core = { path = "crates/yeetz-sdk-core", version = "0.4.0" }
+yeetz-sdk-s3 = { path = "crates/yeetz-sdk-s3", version = "0.4.0" }
+yeetz-s3-kernel = { path = "crates/yeetz-s3-kernel", version = "0.4.0" }
 yeetz-s3-streams = { path = "crates/yeetz-s3-streams" }
 
 # Kernel closure (pins carried from the parent yeetz repo — the kernel
