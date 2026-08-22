@@ -514,8 +514,10 @@ async fn teardown_value_control_has_era_gates_and_conditional_destroy_tail() {
         .await
         .unwrap();
     let pending = writer.seal().await.unwrap();
-    let control_key = control_key("k10-value-life", "post-gate");
-    counterpart.arm_conditional_head_barrier(&control_key).await;
+    let post_gate_control_key = control_key("k10-value-life", "post-gate");
+    counterpart
+        .arm_conditional_head_barrier(&post_gate_control_key)
+        .await;
     let commit = tokio::spawn(async move { pending.commit().await });
     wait_for_first_barrier_arrival(&counterpart).await;
     store
@@ -528,7 +530,7 @@ async fn teardown_value_control_has_era_gates_and_conditional_destroy_tail() {
         .unwrap();
     let opener = store
         .upload_conditional(
-            &control_key,
+            &post_gate_control_key,
             Bytes::from_static(b"barrier-opener"),
             Some("never-matches"),
         )
@@ -547,7 +549,7 @@ async fn teardown_value_control_has_era_gates_and_conditional_destroy_tail() {
         "the closed-era publication self-evicts"
     );
     counterpart
-        .assert_conditional_head_race(&control_key, false)
+        .assert_conditional_head_race(&post_gate_control_key, false)
         .await;
 
     // Destroy's tail owns only the control etag it observed.
