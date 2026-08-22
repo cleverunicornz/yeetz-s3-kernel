@@ -533,8 +533,7 @@ mod tests {
         // an oversized logical_len unreachable in a canonical encode.
         let manifest = manifest_fixture(MAX_CHUNKS, CHUNK_BYTES as u32);
         assert_eq!(
-            manifest.logical_len,
-            MAX_LOGICAL_BYTES,
+            manifest.logical_len, MAX_LOGICAL_BYTES,
             "the maximum canonical encode is exactly the 1 TiB bound"
         );
         assert!(ValueManifest::decode("k", &manifest.encode()).is_ok());
