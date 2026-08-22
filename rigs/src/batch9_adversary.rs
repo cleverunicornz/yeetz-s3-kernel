@@ -7,9 +7,10 @@
 //! cross-destroy fencing, monotone incarnation convergence under
 //! concurrent first destroys, and terminal-read/taxonomy behavior.
 //! The private-request interleavings live beside the implementation as
-//! L8-L13 in `state_kernel::gateway_state_contract`; those canaries own
+//! L8-L14 in `state_kernel::gateway_state_contract`; those canaries own
 //! the eviction wire, post-landing fault cut, destroy wire, exact dual
-//! decode, counter race, and GET-count evidence.
+//! decode, counter race, GET-count evidence, and the post-bump
+//! pre-delete successor window.
 
 use yeetz_s3_kernel::state_kernel::{
     CanonicalRecord, HeadRead, KernelError, KernelLineage, SuccessorPolicy,

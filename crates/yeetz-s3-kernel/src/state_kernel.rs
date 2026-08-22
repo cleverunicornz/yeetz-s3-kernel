@@ -7489,4 +7489,56 @@ pub mod gateway_state_contract {
         );
         fixture.shutdown().await;
     }
+
+    /// L14 (batch-9 teardown): the incarnation bump is documented as
+    /// the destroy linearization point. Once it lands, an era-0
+    /// HeadRead must not advance the still-visible era-0 head during
+    /// the crash-before-delete window.
+    #[tokio::test]
+    async fn l14_post_bump_pre_delete_rejects_closed_era_successor() {
+        let fixture =
+            new_named_fixture("l14/post-bump-append", SuccessorPolicy::SuccessorCapable).await;
+        let genesis_record = record(&fixture.lineage, 0, None, b"l14-genesis");
+        let era1 = fixture
+            .kernel
+            .append_genesis(&genesis_record)
+            .await
+            .expect("genesis");
+
+        let tombstone = Tombstone::new(era1.incarnation(), era1.generation(), "crash", "l14");
+        raw_create(
+            &fixture.store,
+            &fixture.lineage.tombstone_key(),
+            tombstone.encode().expect("tombstone bytes"),
+        )
+        .await;
+        raw_create(
+            &fixture.store,
+            &fixture.lineage.incarnation_key(),
+            1u64.to_be_bytes().to_vec(),
+        )
+        .await;
+
+        assert!(matches!(
+            fixture.kernel.read_head_state().await.unwrap(),
+            LineageHeadState::Present(_)
+        ));
+        let successor = record(
+            &fixture.lineage,
+            1,
+            Some(era1.record_position()),
+            b"l14-closed-era-successor",
+        );
+        match fixture.kernel.append_successor(&successor, &era1).await {
+            Err(KernelError::LineageHeadConflict { .. }) => {}
+            Ok(advanced) => panic!(
+                "L14 DEFECT: a HeadRead advanced after destroy's incarnation bump; \
+                 generation {} still carries closed incarnation {}",
+                advanced.generation(),
+                advanced.incarnation()
+            ),
+            Err(other) => panic!("L14: unexpected closed-era result: {other:?}"),
+        }
+        fixture.shutdown().await;
+    }
 }
