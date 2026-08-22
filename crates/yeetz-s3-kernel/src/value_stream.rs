@@ -480,6 +480,9 @@ impl AsyncWrite for ValueWriter {
             this.total_len += take as u64;
             if this.buffer.len() == CHUNK_BYTES {
                 this.start_chunk_upload();
+                if this.in_flight.len() >= MAX_IN_FLIGHT_CHUNKS {
+                    break;
+                }
             }
         }
         Poll::Ready(Ok(consumed))
@@ -865,14 +868,18 @@ impl AtomicKeyspace {
     /// Whether a seq-shaped key is below the namespace's certified
     /// trim floor (logically retired history).
     pub(crate) async fn seq_retired(&self, key: &str) -> Result<Option<u64>, KeyspaceError> {
+        Ok(Self::seq_retired_at_floor(key, self.trim_floor("").await?))
+    }
+
+    fn seq_retired_at_floor(key: &str, first_retained: Option<u64>) -> Option<u64> {
         if let Some(seq) = key.rsplit('/').next().and_then(Self::parse_seq_component)
             && seq > 0
-            && let Some(first_retained) = self.trim_floor("").await?
+            && let Some(first_retained) = first_retained
             && seq < first_retained
         {
-            return Ok(Some(first_retained));
+            return Some(first_retained);
         }
-        Ok(None)
+        None
     }
 
     /// The control-metadata era read (ADR 0004 §2.3): incarnation and
@@ -1210,7 +1217,7 @@ impl AtomicKeyspace {
         let window = match range {
             None => 0..logical_len,
             Some(range) => {
-                if range.end > logical_len {
+                if range.start > range.end || range.end > logical_len {
                     return Err(KeyspaceError::InvalidRange {
                         key: key.to_string(),
                         start: range.start,
@@ -1540,7 +1547,15 @@ impl AtomicKeyspace {
     /// does NOT prove quiescence; the operational assertion remains
     /// load-bearing.
     pub async fn set_maintenance_fence(&self) -> Result<(), KeyspaceError> {
-        let fence = ValueEnvelope::new(0, 0, Bytes::from_static(b"fenced")).encode();
+        // Each distinct erection needs distinct bytes: S3 etags may
+        // be content-derived, so a recurrent fence body would let a
+        // delayed release from an older erection delete the new one.
+        let fence = ValueEnvelope::new(
+            0,
+            0,
+            Bytes::copy_from_slice(&crate::value_manifest::mint_commit_id()),
+        )
+        .encode();
         match self
             .store
             .upload_conditional(&self.fence_object_key(), fence, None)
@@ -1554,42 +1569,45 @@ impl AtomicKeyspace {
     }
 
     /// Release the fence by conditional delete (the release CAS).
-    /// Idempotent; bounded contention retry.
+    /// Absence is idempotent. One invocation is bound to the epoch it
+    /// reads: contention returns a typed conflict rather than deleting
+    /// a replacement fence.
     pub async fn release_maintenance_fence(&self) -> Result<(), KeyspaceError> {
         let fence_object_key = self.fence_object_key();
-        for _ in 0..8 {
-            match self.store.download_with_etag(&fence_object_key).await {
-                Ok(meta) => {
-                    let Some(etag) = meta.etag else {
-                        return Err(KeyspaceError::Unavailable {
-                            operation: "keyspace release_maintenance_fence (no etag)",
-                        });
-                    };
-                    match self
-                        .store
-                        .delete_conditional(&fence_object_key, &etag)
-                        .await
-                    {
-                        Ok(()) | Err(ObjectStoreError::NotFound(_)) => return Ok(()),
-                        Err(ObjectStoreError::PreconditionFailed(_)) => {}
-                        Err(_) => {
-                            return Err(KeyspaceError::Unavailable {
-                                operation: "keyspace release_maintenance_fence",
-                            });
-                        }
-                    }
-                }
-                Err(ObjectStoreError::NotFound(_)) => return Ok(()),
-                Err(_) => {
+        match self.store.download_with_etag(&fence_object_key).await {
+            Ok(meta) => {
+                let Some(etag) = meta.etag else {
                     return Err(KeyspaceError::Unavailable {
-                        operation: "keyspace release_maintenance_fence read",
+                        operation: "keyspace release_maintenance_fence (no etag)",
                     });
-                }
+                };
+                self.release_observed_maintenance_fence(&etag).await
             }
+            Err(ObjectStoreError::NotFound(_)) => Ok(()),
+            Err(_) => Err(KeyspaceError::Unavailable {
+                operation: "keyspace release_maintenance_fence read",
+            }),
         }
-        Err(KeyspaceError::Unavailable {
-            operation: "keyspace release_maintenance_fence (contention)",
-        })
+    }
+
+    /// Execute one release CAS against the exact observed fence epoch.
+    pub(crate) async fn release_observed_maintenance_fence(
+        &self,
+        etag: &str,
+    ) -> Result<(), KeyspaceError> {
+        match self
+            .store
+            .delete_conditional(&self.fence_object_key(), etag)
+            .await
+        {
+            Ok(()) | Err(ObjectStoreError::NotFound(_)) => Ok(()),
+            Err(ObjectStoreError::PreconditionFailed(_)) => Err(
+                KeyspaceError::MaintenanceFenceConflict(self.namespace.clone()),
+            ),
+            Err(_) => Err(KeyspaceError::Unavailable {
+                operation: "keyspace release_maintenance_fence",
+            }),
+        }
     }
 
     /// Whether the maintenance fence currently stands (test/probe
@@ -1683,37 +1701,46 @@ impl AtomicKeyspace {
                 _ => classification.unresolved_count += 1,
             }
         }
+        // A certified root trim is the logical commit even when a
+        // pre-sweep v3 control survives below it. Resolve the floor
+        // once per bounded page; an unavailable floor read aborts the
+        // sweep rather than risking a live-chunk delete.
+        let root_trim_floor = self.trim_floor("").await?;
         for (key, chunk_keys) in by_key {
             let control_object_key = self.object_key(&key)?;
-            // Exact-read current control once per key.
+            // Non-retired keys exact-read current control once.
             let referenced: Option<HashSet<String>> =
-                match self.store.download(&control_object_key).await {
-                    Ok(bytes) => match ControlEnvelope::decode(&key, &bytes) {
-                        Ok(ControlEnvelope::Chunked(manifest)) => Some(
-                            manifest
-                                .entries
-                                .iter()
-                                .map(|entry| {
-                                    chunk_object_key(
-                                        &self.namespace,
-                                        &key,
-                                        manifest.incarnation,
-                                        manifest.version,
-                                        &entry.digest_hex(),
-                                    )
-                                })
-                                .collect(),
-                        ),
-                        // Inline v2 references no chunks.
-                        Ok(ControlEnvelope::Inline(_)) => Some(HashSet::new()),
-                        // Corrupt control: fail closed for this key.
+                if Self::seq_retired_at_floor(&key, root_trim_floor).is_some() {
+                    Some(HashSet::new())
+                } else {
+                    match self.store.download(&control_object_key).await {
+                        Ok(bytes) => match ControlEnvelope::decode(&key, &bytes) {
+                            Ok(ControlEnvelope::Chunked(manifest)) => Some(
+                                manifest
+                                    .entries
+                                    .iter()
+                                    .map(|entry| {
+                                        chunk_object_key(
+                                            &self.namespace,
+                                            &key,
+                                            manifest.incarnation,
+                                            manifest.version,
+                                            &entry.digest_hex(),
+                                        )
+                                    })
+                                    .collect(),
+                            ),
+                            // Inline v2 references no chunks.
+                            Ok(ControlEnvelope::Inline(_)) => Some(HashSet::new()),
+                            // Corrupt control: fail closed for this key.
+                            Err(_) => None,
+                        },
+                        // Absent control: every chunk is an orphan candidate
+                        // (online this includes live candidates — quiescence
+                        // is what makes them true orphans).
+                        Err(ObjectStoreError::NotFound(_)) => Some(HashSet::new()),
                         Err(_) => None,
-                    },
-                    // Absent control: every chunk is an orphan candidate
-                    // (online this includes live candidates — quiescence
-                    // is what makes them true orphans).
-                    Err(ObjectStoreError::NotFound(_)) => Some(HashSet::new()),
-                    Err(_) => None,
+                    }
                 };
             match referenced {
                 Some(referenced) => {

@@ -10,8 +10,8 @@
 use bytes::Bytes;
 use yeetz_s3_kernel::state_kernel::{KernelLineage, SuccessorPolicy};
 use yeetz_s3_kernel::{
-    AtomicKeyspace, ChunkInventory, KernelHandle, KeyspaceError, StreamKeyState,
-    ValueRepresentation,
+    AtomicKeyspace, ChunkInventory, KernelHandle, KeyspaceError, MAX_IN_FLIGHT_CHUNKS,
+    StreamKeyState, ValueRepresentation,
 };
 
 const CHUNK_BYTES: usize = 16 * 1024 * 1024;
@@ -39,6 +39,18 @@ async fn stream_create(keyspace: &AtomicKeyspace, key: &str, data: &Bytes) {
     let mut writer = keyspace.begin_stream_create(key).await.unwrap();
     writer.write_all(data).await.unwrap();
     writer.seal().await.unwrap().commit().await.unwrap();
+}
+
+#[tokio::test]
+async fn teardown_writer_stops_at_the_four_upload_window() {
+    use tokio::io::AsyncWriteExt;
+
+    let keyspace = keyspace("writer-window", "ns");
+    let mut writer = keyspace.begin_stream_create("cell").await.unwrap();
+    let input = vec![0x5a; (MAX_IN_FLIGHT_CHUNKS + 1) * CHUNK_BYTES];
+
+    let consumed = writer.write(&input).await.unwrap();
+    assert_eq!(consumed, MAX_IN_FLIGHT_CHUNKS * CHUNK_BYTES);
 }
 
 async fn read_range(keyspace: &AtomicKeyspace, key: &str, start: u64, end: u64) -> Bytes {
@@ -108,6 +120,17 @@ async fn a28_range_boundary_table() {
     match keyspace.open_stream_range("cell", len + 1..len + 2).await {
         Err(KeyspaceError::InvalidRange { .. }) => {}
         other => panic!("start beyond length must be typed, got {other:?}"),
+    }
+    let reversed = std::ops::Range { start: 5, end: 4 };
+    match keyspace.open_stream_range("cell", reversed).await {
+        Err(KeyspaceError::InvalidRange {
+            start: 5, end: 4, ..
+        }) => {}
+        other => panic!("reversed range must be typed InvalidRange, got {other:?}"),
+    }
+    match keyspace.open_stream_range("cell", len + 1..len).await {
+        Err(KeyspaceError::InvalidRange { .. }) => {}
+        other => panic!("reversed range above EOF must be typed, got {other:?}"),
     }
 
     // The full-stream read equals the collected whole value.
@@ -208,6 +231,35 @@ async fn a35_lineage_reserved_roots_rejected_and_near_misses_accepted() {
             "{accepted} remains valid"
         );
     }
+}
+
+#[tokio::test]
+async fn teardown_fence_aliases_are_rejected_after_path_composition() {
+    for (namespace, key) in [
+        ("tenant", "child/fences/gc"),
+        ("tenant/child", "fences/gc"),
+        ("tenant/child/fences", "gc"),
+    ] {
+        let keyspace = keyspace("fence-alias", namespace);
+        assert!(matches!(
+            keyspace.create(key, Bytes::from_static(b"alias")).await,
+            Err(KeyspaceError::MaintenanceFenceImmutable(_))
+        ));
+        assert!(matches!(
+            keyspace.get(key).await,
+            Err(KeyspaceError::MaintenanceFenceImmutable(_))
+        ));
+    }
+
+    let near_miss = keyspace("fence-alias-near-miss", "tenant/child/fences");
+    near_miss
+        .create("gc-data", Bytes::from_static(b"ordinary"))
+        .await
+        .unwrap();
+    assert_eq!(
+        near_miss.get("gc-data").await.unwrap(),
+        Some(Bytes::from_static(b"ordinary"))
+    );
 }
 
 // --- Metering classification on the public surface -----------------------------------

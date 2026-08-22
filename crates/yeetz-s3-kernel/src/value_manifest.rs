@@ -17,7 +17,7 @@
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 
-use crate::atomic_keyspace::{KeyspaceError, ValueEnvelope};
+use crate::atomic_keyspace::{KeyspaceError, ValueEnvelope, validate_identifier};
 
 /// Reserved physical root for chunk objects (kernel-owned, like
 /// `keyspace`): `keyspace-chunks/v1/{namespace}/...`. Lineages cannot
@@ -333,9 +333,8 @@ pub(crate) fn parse_chunk_object_key(object_key: &str) -> Option<ChunkObjectPath
     }
     let logical_key = String::from_utf8(hex::decode(encoded_key).ok()?).ok()?;
     let namespace = segments.join("/");
-    if namespace.is_empty() {
-        return None;
-    }
+    validate_identifier("chunk namespace", &namespace).ok()?;
+    validate_identifier("chunk logical key", &logical_key).ok()?;
     Some(ChunkObjectPath {
         namespace,
         logical_key,
@@ -392,32 +391,23 @@ impl ControlEnvelope {
     }
 }
 
-/// Mint a writer-scoped commit ID. Not logical content identity: it
-/// distinguishes concurrent contenders for one target generation and
-/// is retained only across retries of the same pending write
-/// (ADR 0004 §1.2).
+/// Mint a writer-scoped commit ID from 128 bits of independently
+/// seeded randomness. Not logical content identity: it distinguishes
+/// contenders across processes and is retained only across retries of
+/// the same pending write (ADR 0004 §1.2).
 pub(crate) fn mint_commit_id() -> [u8; COMMIT_ID_BYTES] {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos() as u64)
-        .unwrap_or(0);
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut hasher = Sha256::new();
-    hasher.update(nanos.to_be_bytes());
-    hasher.update(counter.to_be_bytes());
-    hasher.update(std::process::id().to_be_bytes());
-    let digest: [u8; 32] = hasher.finalize().into();
-    let mut commit_id = [0u8; COMMIT_ID_BYTES];
-    commit_id.copy_from_slice(&digest[..COMMIT_ID_BYTES]);
-    commit_id
+    rand::random()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writer_commit_ids_are_unique_in_large_sample() {
+        let ids: std::collections::HashSet<_> = (0..4096).map(|_| mint_commit_id()).collect();
+        assert_eq!(ids.len(), 4096);
+    }
 
     fn manifest_fixture(count: u32, final_len: u32) -> ValueManifest {
         let entries: Vec<ManifestEntry> = (0..count)
@@ -605,7 +595,8 @@ mod tests {
         assert_eq!(parsed.namespace, "streams/v1");
         assert_eq!(parsed.logical_key, "k");
         // Refusals: wrong digest width, non-hex key, missing
-        // generation, empty namespace, odd-length hex.
+        // generation, empty namespace, odd-length hex, or an encoded
+        // logical key outside the identifier grammar.
         assert!(
             parse_chunk_object_key(
                 "keyspace-chunks/v1/ns/612f/00000000000000000000/00000000000000000000/abcd"
@@ -628,6 +619,12 @@ mod tests {
         assert!(
             parse_chunk_object_key(&format!(
                 "other-root/v1/ns/612f/00000000000000000000/00000000000000000000/{digest}"
+            ))
+            .is_none()
+        );
+        assert!(
+            parse_chunk_object_key(&format!(
+                "keyspace-chunks/v1/ns/2f/00000000000000000000/00000000000000000000/{digest}"
             ))
             .is_none()
         );

@@ -213,6 +213,11 @@ pub enum KeyspaceError {
     /// The quiesced chunk sweep requires the maintenance fence.
     #[error("keyspace chunk sweep requires the maintenance fence: {0}")]
     MaintenanceFenceRequired(String),
+    /// A release CAS observed one maintenance-fence epoch, but a
+    /// different epoch replaced it before conditional deletion. The
+    /// stale release must not rebind to and delete the replacement.
+    #[error("keyspace maintenance fence changed during release: {0}")]
+    MaintenanceFenceConflict(String),
     /// A write was bound to an incarnation that `destroy` closed. A
     /// streamed create or CAS publication that already landed was
     /// conditionally evicted; the caller must re-run in the fresh era.
@@ -312,7 +317,7 @@ impl DeleteOutcome {
 /// Conservative identifier rule: non-empty slash-joined segments of
 /// `[A-Za-z0-9][A-Za-z0-9._-]*`, total length ≤ 255, no leading or
 /// trailing slash, no empty segments.
-fn validate_identifier(kind: &str, value: &str) -> Result<(), KeyspaceError> {
+pub(crate) fn validate_identifier(kind: &str, value: &str) -> Result<(), KeyspaceError> {
     let invalid = || KeyspaceError::InvalidIdentifier(format!("{kind} {value:?}"));
     if value.is_empty() || value.len() > 255 || value.starts_with('/') || value.ends_with('/') {
         return Err(invalid());
@@ -371,7 +376,14 @@ impl AtomicKeyspace {
     /// `keyspace/{namespace}/{key}`.
     pub(crate) fn object_key(&self, key: &str) -> Result<String, KeyspaceError> {
         validate_identifier("key", key)?;
-        Ok(format!("{KEYSPACE_ROOT}/{}/{}", self.namespace, key))
+        let object_key = format!("{KEYSPACE_ROOT}/{}/{}", self.namespace, key);
+        // Namespace and key are both slash-joined identifiers. Guard
+        // the composed physical path so neither can supply part of a
+        // different namespace's exact `fences/gc` control location.
+        if object_key.ends_with("/fences/gc") {
+            return Err(KeyspaceError::MaintenanceFenceImmutable(key.to_string()));
+        }
+        Ok(object_key)
     }
 
     /// Reserved tombstone sub-root: `tombstones/{key}` mirrors the

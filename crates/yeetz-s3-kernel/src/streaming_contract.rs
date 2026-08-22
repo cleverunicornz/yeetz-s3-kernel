@@ -1120,6 +1120,83 @@ async fn a34_quiesced_sweep_inventory_and_fences() {
     counterpart.shutdown().await;
 }
 
+#[tokio::test]
+async fn teardown_reerected_fence_rejects_a_stale_release_etag() {
+    let (store, keyspace, counterpart) = keyspace_fixture("fence-aba").await;
+    let fence_key = control_key("fence-aba", "fences/gc");
+
+    keyspace.set_maintenance_fence().await.unwrap();
+    let first_etag = store
+        .download_with_etag(&fence_key)
+        .await
+        .unwrap()
+        .etag
+        .unwrap();
+    keyspace.release_maintenance_fence().await.unwrap();
+
+    keyspace.set_maintenance_fence().await.unwrap();
+    let second_etag = store
+        .download_with_etag(&fence_key)
+        .await
+        .unwrap()
+        .etag
+        .unwrap();
+    assert_ne!(first_etag, second_etag, "fence epochs must not recur");
+    assert!(matches!(
+        keyspace
+            .release_observed_maintenance_fence(&first_etag)
+            .await,
+        Err(KeyspaceError::MaintenanceFenceConflict(namespace)) if namespace == "fence-aba"
+    ));
+    assert!(keyspace.maintenance_fence_present_for_test().await.unwrap());
+
+    // Repeating set while the second fence stands is still idempotent.
+    keyspace.set_maintenance_fence().await.unwrap();
+    assert_eq!(
+        store
+            .download_with_etag(&fence_key)
+            .await
+            .unwrap()
+            .etag
+            .unwrap(),
+        second_etag
+    );
+    keyspace.release_maintenance_fence().await.unwrap();
+    counterpart.shutdown().await;
+}
+
+#[tokio::test]
+async fn teardown_sweep_reclaims_chunks_of_a_trimmed_zombie_control() {
+    let (_store, keyspace, counterpart) = keyspace_fixture("trimmed-chunks").await;
+    let key = "log/00000000000000000003";
+    let data = pattern(STREAMED_LEN, 0xEC);
+    stream_create(&keyspace, key, &data).await.unwrap();
+
+    // The certificate is the logical commit. Deliberately leave the
+    // old v3 control in place to model the window before delete_below.
+    keyspace.propose_trim("", 5).await.unwrap();
+    assert!(matches!(
+        keyspace.read_state_stream(key).await.unwrap(),
+        StreamKeyState::OffsetExpired { first_retained: 5 }
+    ));
+    let inventory = keyspace.chunk_inventory().await.unwrap();
+    assert_eq!(inventory.referenced_chunks, 0);
+    assert_eq!(inventory.candidate_orphan_chunks, 3);
+
+    keyspace.set_maintenance_fence().await.unwrap();
+    let report = keyspace.sweep_chunks().await.unwrap();
+    assert_eq!(report.examined, 3);
+    assert_eq!(report.deleted, 3);
+    assert_eq!(report.retained, 0);
+    assert_eq!(report.remaining, 0);
+    assert!(matches!(
+        keyspace.read_state_stream(key).await.unwrap(),
+        StreamKeyState::OffsetExpired { first_retained: 5 }
+    ));
+    keyspace.release_maintenance_fence().await.unwrap();
+    counterpart.shutdown().await;
+}
+
 /// Unavailable or corrupt control fails closed for that key: the sweep
 /// refuses to delete what it cannot classify.
 #[tokio::test]
@@ -1153,6 +1230,35 @@ async fn a34_unavailable_and_corrupt_control_fail_closed() {
     let report = keyspace.sweep_chunks().await.unwrap();
     assert_eq!(report.deleted, 0);
     assert_eq!(report.remaining, 3);
+    keyspace.release_maintenance_fence().await.unwrap();
+    counterpart.shutdown().await;
+}
+
+#[tokio::test]
+async fn teardown_malformed_chunk_path_is_unresolved_and_never_deleted() {
+    let (store, keyspace, counterpart) = keyspace_fixture("malformed-path").await;
+    let malformed = format!(
+        "{CHUNK_ROOT}/v1/malformed-path/2f/{:020}/{:020}/{}",
+        0,
+        0,
+        "ab".repeat(32)
+    );
+    store
+        .upload(&malformed, Bytes::from_static(b"unowned"))
+        .await
+        .unwrap();
+
+    let inventory = keyspace.chunk_inventory().await.unwrap();
+    assert_eq!(inventory.listed_chunks, 1);
+    assert_eq!(inventory.unresolved_chunks, 1);
+    assert_eq!(inventory.candidate_orphan_chunks, 0);
+
+    keyspace.set_maintenance_fence().await.unwrap();
+    let report = keyspace.sweep_chunks().await.unwrap();
+    assert_eq!(report.examined, 1);
+    assert_eq!(report.deleted, 0);
+    assert_eq!(report.remaining, 1);
+    assert!(store.exists(&malformed).await.unwrap());
     keyspace.release_maintenance_fence().await.unwrap();
     counterpart.shutdown().await;
 }

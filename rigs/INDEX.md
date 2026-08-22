@@ -29,6 +29,49 @@ requires the stale publication to self-evict, rejects an already-closed
 control before CAS, and asserts that VALUE destroy emits `DELETE +
 If-Match` against the exact control it observed.
 
+The batch-10 teardown writer-window witness is
+`teardown_writer_stops_at_the_four_upload_window` in the public
+streaming contract suite. A single oversized `poll_write` must stop
+after four complete chunks, so queued upload futures and retained
+chunk buffers cannot exceed ADR 0004's declared concurrency window.
+
+The batch-10 teardown fence-namespace witness is
+`teardown_fence_aliases_are_rejected_after_path_composition` in the
+public streaming contract suite. It proves that namespace/key segment
+splits cannot compose another namespace's exact `fences/gc` object,
+while a non-control near miss remains usable.
+
+The batch-10 teardown fence-ABA witness is
+`teardown_reerected_fence_rejects_a_stale_release_etag` in the
+loopback streaming contract suite. Successive fence erections have
+non-recurrent content etags, and the release CAS returns typed
+`MaintenanceFenceConflict` instead of rebinding to or removing a
+replacement fence.
+
+The batch-10 teardown trim/GC witness is
+`teardown_sweep_reclaims_chunks_of_a_trimmed_zombie_control` in the
+loopback streaming contract suite. A certified `OffsetExpired` key
+retains no chunks even when its old v3 control survives until the
+later control sweep.
+
+The batch-10 teardown malformed-path witness is
+`teardown_malformed_chunk_path_is_unresolved_and_never_deleted` in
+the loopback streaming contract suite. A hex segment that decodes to
+an invalid logical key is unresolved, survives fenced sweep, and is
+reported as the resumable remainder.
+
+The batch-10 teardown reversed-range witness is part of
+`a28_range_boundary_table` in the public streaming contract suite.
+Both an in-bounds reversed window and a reversed window starting past
+EOF return typed `InvalidRange`; `len..len` remains the valid empty
+EOF window.
+
+The batch-10 teardown commit-identity witness is
+`writer_commit_ids_are_unique_in_large_sample` in `value_manifest`.
+The construction now draws 128 bits from the process RNG instead of
+clock/PID/process-local state; the witness checks that a 4,096-ID
+sample is collision-free.
+
 The forge-facing rigs (connect transport legs, gRPC legs, write-path
 concurrency, events migration) stayed in the parent `yeetz` repo —
 they prove forge behavior against forge types.
