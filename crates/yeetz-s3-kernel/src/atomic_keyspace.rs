@@ -1041,6 +1041,56 @@ impl AtomicKeyspace {
     /// truth, the witness remains as history until a certified trim
     /// sweep retires it.
     pub async fn destroy(&self, key: &str, cause: &str, actor: &str) -> Result<(), KeyspaceError> {
+        let Some((object_key, observed_etag)) = self.prepare_destroy(key, cause, actor).await?
+        else {
+            return Ok(());
+        };
+        // Delete only the control this destroy observed. A concurrent
+        // CAS or a fresh lifetime may replace it after the bump; an
+        // unconditional tail would erase that replacement.
+        match self
+            .store
+            .delete_conditional(&object_key, &observed_etag)
+            .await
+        {
+            Ok(()) | Err(ObjectStoreError::NotFound(_)) => Ok(()),
+            Err(ObjectStoreError::PreconditionFailed(_)) => {
+                Err(self.cas_conflict(key, &observed_etag).await)
+            }
+            Err(_) => Err(KeyspaceError::Unavailable {
+                operation: "keyspace destroy: conditional delete",
+            }),
+        }
+    }
+
+    /// Sequential lifecycle-algebra helper for the in-memory test
+    /// backend, which deliberately cannot model conditional DELETE.
+    /// Race and wire semantics must use the loopback/real-S3 rigs.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub async fn destroy_in_memory_for_test(
+        &self,
+        key: &str,
+        cause: &str,
+        actor: &str,
+    ) -> Result<(), KeyspaceError> {
+        let Some((object_key, _)) = self.prepare_destroy(key, cause, actor).await? else {
+            return Ok(());
+        };
+        self.store
+            .delete(&object_key)
+            .await
+            .map_err(|_| KeyspaceError::Unavailable {
+                operation: "keyspace test destroy: delete",
+            })
+    }
+
+    async fn prepare_destroy(
+        &self,
+        key: &str,
+        cause: &str,
+        actor: &str,
+    ) -> Result<Option<(String, String)>, KeyspaceError> {
         let object_key = self.object_key(key)?;
         // Control-metadata read (ADR 0004 §2.3): the tombstone's era
         // comes from a v2 OR v3 control decode — never a chunk
@@ -1048,7 +1098,7 @@ impl AtomicKeyspace {
         let Some((incarnation, version, observed_etag)) =
             self.read_control_era_with_etag(key).await?
         else {
-            return Ok(()); // nothing to witness — absence is already the truth
+            return Ok(None); // nothing to witness — absence is already the truth
         };
         let tombstone = Tombstone::new(incarnation, version, cause, actor);
         let tombstone_object_key = format!(
@@ -1075,22 +1125,7 @@ impl AtomicKeyspace {
         // lifetime is a NEW era: version 0 of a higher incarnation,
         // so an era-1 etag can never match era-2 bytes), then delete.
         self.bump_incarnation(key).await?;
-        // Delete only the control this destroy observed. A concurrent
-        // CAS or a fresh lifetime may replace it after the bump; an
-        // unconditional tail would erase that replacement.
-        match self
-            .store
-            .delete_conditional(&object_key, &observed_etag)
-            .await
-        {
-            Ok(()) | Err(ObjectStoreError::NotFound(_)) => Ok(()),
-            Err(ObjectStoreError::PreconditionFailed(_)) => {
-                Err(self.cas_conflict(key, &observed_etag).await)
-            }
-            Err(_) => Err(KeyspaceError::Unavailable {
-                operation: "keyspace destroy: conditional delete",
-            }),
-        }
+        Ok(Some((object_key, observed_etag)))
     }
 
     /// The existence read (batch 6): `Present` / `Destroyed` /

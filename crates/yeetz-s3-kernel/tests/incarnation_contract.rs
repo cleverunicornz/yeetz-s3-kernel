@@ -30,7 +30,9 @@ async fn i1_stale_era_cas_across_recreate_is_rejected() {
         .unwrap();
     let (_, era1_etag) = ks.get_with_etag("cell").await.unwrap().unwrap();
 
-    ks.destroy("cell", "rebuild", "i1").await.unwrap();
+    ks.destroy_in_memory_for_test("cell", "rebuild", "i1")
+        .await
+        .unwrap();
     // The recreation uses IDENTICAL payload bytes — the exact ABA
     // shape that content-derived etags cannot distinguish on their
     // own.
@@ -91,7 +93,9 @@ async fn i2_versions_reset_across_incarnations_not_within() {
     }
 
     // Across the boundary: version restarts at 0.
-    ks.destroy("cell", "cycle", "i2").await.unwrap();
+    ks.destroy_in_memory_for_test("cell", "cycle", "i2")
+        .await
+        .unwrap();
     ks.create("cell", Bytes::from_static(b"fresh"))
         .await
         .unwrap();
@@ -116,7 +120,9 @@ async fn i3_incarnation_never_decreases_across_cycles() {
         ks.create("cell", Bytes::from_static(b"life"))
             .await
             .unwrap();
-        ks.destroy("cell", "cycle", "i3").await.unwrap();
+        ks.destroy_in_memory_for_test("cell", "cycle", "i3")
+            .await
+            .unwrap();
         assert_eq!(
             ks.incarnation_for_test("cell").await.unwrap(),
             expected,
@@ -144,7 +150,9 @@ async fn i4_tombstone_records_the_destroyed_incarnation() {
     ks.create("cell", Bytes::from_static(b"first"))
         .await
         .unwrap();
-    ks.destroy("cell", "cycle", "i4").await.unwrap();
+    ks.destroy_in_memory_for_test("cell", "cycle", "i4")
+        .await
+        .unwrap();
     match ks.read_state("cell").await.unwrap() {
         KeyState::Destroyed { tombstone } => {
             assert_eq!(tombstone.incarnation, 0, "the first lifetime");
@@ -167,7 +175,9 @@ async fn i5_trim_retires_counters_with_the_history() {
             .unwrap();
     }
     // Two lifetimes on seq 3 (counter = 1).
-    ks.destroy(&data_key(3), "cycle", "i5").await.unwrap();
+    ks.destroy_in_memory_for_test(&data_key(3), "cycle", "i5")
+        .await
+        .unwrap();
     ks.create(&data_key(3), Bytes::from_static(b"v2"))
         .await
         .unwrap();
@@ -185,7 +195,9 @@ async fn i5_trim_retires_counters_with_the_history() {
     // Above the floor the counter survives: seq 8's value was never
     // destroyed (incarnation 0); its first destroy moves it to 1.
     assert_eq!(ks.incarnation_for_test(&data_key(8)).await.unwrap(), 0);
-    ks.destroy(&data_key(8), "cycle", "i5").await.unwrap();
+    ks.destroy_in_memory_for_test(&data_key(8), "cycle", "i5")
+        .await
+        .unwrap();
     assert_eq!(ks.incarnation_for_test(&data_key(8)).await.unwrap(), 1);
 }
 
