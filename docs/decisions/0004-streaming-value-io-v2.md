@@ -1,6 +1,6 @@
 # ADR 0004: Streaming-value I/O v2 — manifest commit, batch-8 composition, and bounded chunks
 
-Status: **PROPOSED / DRAFT — amended successor; human adjudication required; no implementation authorized**
+Status: **ACCEPTED — 2026-08-22, via human-delegated synthesis (see Acceptance Record)**
 
 Supersedes: ADR 0003 (proposed). ADR 0003 remains immutable; this record is
 the forward-only amended successor.
@@ -710,3 +710,53 @@ It must remain in the rig so future reviewers see the concrete blast radius.
 
 No implementation batch starts until these rulings are recorded in an
 accepted successor/addendum. This proposed amended record remains immutable.
+
+## Acceptance Record — 2026-08-22
+
+Basis: the human delegated adjudication of this ADR to the synthesis
+process ("adopt the best solution derivable from both reviewers;
+reserve only physics-class forks for me" — standing directive,
+2026-08-22). Both reviewers converged; no fork rose to the physics
+bar. The design-review verdict chain: SHIP WITH AMENDMENTS (first
+adversarial pass) → this successor → SHIP (re-check, 10/10 amendment
+fidelity, evidence verified). The live-Exoscale stance on part-addressed
+reads (measured absent on SOS; adopt the portable floor) was
+additionally and explicitly human-ratified in conversation.
+
+### Rulings (synthesis-adopted)
+
+1. **Representation: manifest/chunks.** Evidence-settled by the live
+   probe (run 32592980637): conditional completion supported, part-
+   addressed reads measured absent on Exoscale SOS. Portable-correctness
+   floor stands; any backend-specific fast path is a future,
+   capability-probed, feature-flagged addition.
+2. **Bounds: `CHUNK_BYTES` = 16 MiB, `INLINE_MAX` = 64 MiB.** Both
+   reviewers' recommendation: preserves the 16–64 MiB band's one-object
+   profile at identical peak memory to the 4-chunk prefetch window.
+   With the canonicality floor (`chunk_count ≥ 2`), 2× key encoding,
+   892 B max key, 1 TiB logical, 4 MiB manifest, 4 chunks in flight.
+3. **Chunk GC: quiesced-only v1**, with the enforceability caveat,
+   writer-race blast radius, delete-free orphan metering, and the
+   not-drain-proof writer fence as specced in §5.
+4. **Chunk scoping: per-key.** Rejection of global refcounted dedup
+   stands.
+5. **Git whole-read paths: 64 MiB adapter guard retained.** The
+   `object_exists()` / `FindHeader::try_header()` anti-OOM migration
+   sites are mandatory for the downstream adoption batch.
+6. **Key-late writes: bounded ephemeral spool** under the same 64 MiB
+   guard; durable prepared-upload remains rejected.
+
+### Acceptance footnotes (from the re-check)
+
+- **N1.** §2.2 row 2's "definite loss" is provable for CAS (an
+  If-Match etag is consumable exactly once); for **create**, a raw
+  delete/re-create inside the lost-response window can mislabel an
+  applied-then-raw-deleted create as never-landed — attribution-only,
+  inherited from batch 8's documented raw-delete discipline. A33 should
+  add the raw-delete-window leg.
+- **N2.** The §5.1 fence object must live at a kernel-reserved key
+  (like `trims/`) — caller-writable locations are not fences. The
+  implementation batch's contract text states the reserved key.
+
+Implementation is authorized as its own firewalled kernel batch,
+carrying these rulings and footnotes as binding contract inputs.
