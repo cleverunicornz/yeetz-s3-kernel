@@ -41,7 +41,7 @@ tasks:
   - "Extend the existing loopback bulk branch with key-vector logging and dedicated cuts; prove A36-A45, quiescence residuals, and real-S3 qualification."
   - "Publish the next free 0.4.x closure release; orchestrate every downstream adoption separately."
 witnesses:
-  - "https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/32658427460"
+  - "https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/32664321257"
 reflectDepth: 2
 oracle: "https://yeetz.dev/bedrock/path/docs/decisions/0005-batched-deletion.md"
 disposition:
