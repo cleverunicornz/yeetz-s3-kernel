@@ -10,20 +10,24 @@ intent: >
   AtomicKeyspace primitive for 1,000-key S3 DeleteObjects transport with honest
   per-key partial outcomes and unchanged single-key atomicity law.
 acceptanceCriteria:
-  - "A human explicitly accepts and merges ADR 0005; before that acceptance, no Decision vertex or accepted-log entry represents it as closed law."
-  - "The accepted API uses sequential chunks of at most 1,000 unique keys and returns exactly one ordered deleted-or-typed-failure outcome per admitted key."
-  - "A loopback partial-batch cut constructs mixed Deleted/Error entries in one request and the API reports exactly which keys were confirmed and which failed."
-  - "BeforeEffect and AfterEffect whole-response cuts are constructible; both report the current chunk Unconfirmed and the untouched tail NotAttempted without fabricated success."
-  - "Unconditional batch deletion writes no tombstone, bumps no incarnation counter, and touches no trim certificate, maintenance fence, or v3 chunk."
-  - "The change is additive: published delete_many, DeleteOutcome, delete, delete_if_match, destroy, and their contracts remain unchanged; no batch is a transaction or conditional delete."
-  - "The ADR and implementation ledger assigns A36-A45 without collision, all claims pass in CI, and a retained real-S3 run witnesses the assured provider path before publication."
-  - "The primitive deletes only caller-supplied keys; it neither treats LIST as inventory authority nor claims durable consumer checkpointing or namespace completeness."
+  - "A human accepts and merges ADR 0005; before acceptance, no Decision vertex or accepted-log entry represents it as closed law."
+  - "The API admits at most 100,000 unique keys, sends sequential chunks of at most 1,000, and returns one ordered outcome per admitted key."
+  - "The existing loopback bulk branch gains exact key-vector logging; a dedicated partial cut reports mixed Deleted/Error entries exactly."
+  - "Dedicated BeforeEffect and AfterEffect whole-request cuts both report current Unconfirmed with owned diagnosis and tail NotAttempted."
+  - "Invalid, incomplete, contradictory, or non-bijective responses never default an omitted key to success."
+  - "An incapable or definitively refusing backend returns typed Unsupported and never silently falls back to per-key deletion."
+  - "Deletion writes no tombstone or counter and touches no trim/fence/chunk; fence blindness is tied to ADR 0004's named quiescence residual."
+  - "Published delete_many/delete/delete_if_match behavior remains unchanged; no batch is transactional or conditionally guarded."
+  - "remaining is unresolved work, not a retry set; bounded caller policy terminates or surfaces permanent and unsupported failures."
+  - "A36-A45 pass in CI and a real-S3 witness proves checksum-compatible exact response bijection; refutation blocks publication."
+  - "The primitive uses caller-supplied keys only; LIST authority, durable job checkpoints, and epoch adoption remain outside it."
 consumes:
   - "https://yeetz.dev/bedrock/vertex/invariant-kernel-extension"
   - "https://yeetz.dev/bedrock/vertex/invariant-13-state"
   - "https://yeetz.dev/bedrock/vertex/invariant-08-dependency-boundary"
   - "https://yeetz.dev/bedrock/vertex/structure-kernel"
   - "https://yeetz.dev/bedrock/vertex/decision-0001-atomic-keyspace"
+  - "https://yeetz.dev/bedrock/vertex/decision-0002-streams"
   - "https://yeetz.dev/bedrock/vertex/decision-0004-streaming-value-io-v2"
   - "https://yeetz.dev/bedrock/path/docs/decisions/0005-batched-deletion.md"
   - "https://yeetz.dev/bedrock/path/crates/yeetz-s3-kernel"
@@ -33,19 +37,20 @@ tasks:
   - "Run the independent adversarial review and amend the proposal forward where required."
   - "Obtain human acceptance and merge; only then register ADR 0005 as a Decision and add it to the accepted structure log."
   - "Obtain separate human authorization for one firewalled kernel implementation batch."
-  - "Implement the SDK one-chunk wire seam and additive AtomicKeyspace API without migrating existing methods."
-  - "Implement both loopback fault cuts, prove A36-A45, and retain current-tip ci-dev plus real-S3 witnesses."
+  - "Implement the bounded direct-SDK seam and additive AtomicKeyspace API without migrating or strengthening existing methods."
+  - "Extend the existing loopback bulk branch with key-vector logging and dedicated cuts; prove A36-A45, quiescence residuals, and real-S3 qualification."
   - "Publish the next free 0.4.x closure release; orchestrate every downstream adoption separately."
 witnesses:
   - "https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/32658427460"
 reflectDepth: 2
+oracle: "https://yeetz.dev/bedrock/path/docs/decisions/0005-batched-deletion.md"
 disposition:
   state: draft
   residual: >
-    This draft does not assure human acceptance, implementation authorization,
-    A36-A45 behavior, live-S3 support, publication, inventory completeness,
-    durable consumer checkpoints, or downstream adoption. The shipped boundary
-    remains the existing delete/delete_many/delete_if_match contracts.
+    This draft does not assure acceptance, implementation authorization,
+    A36-A45 behavior, provider qualification, publication, inventory/job
+    completeness, or adoption. It leaves ADR 0004 quiescence external and the
+    weaker legacy DeleteObjects response path live; retry policy stays caller-owned.
 source: "https://yeetz.dev/bedrock/path/docs/decisions/0005-batched-deletion.md"
 body: |
   ## Proposal depth
