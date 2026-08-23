@@ -87,8 +87,7 @@ fn bulk_posts(snapshot: &CounterpartSnapshot) -> Vec<&LoopbackRequestObservation
 /// other store failure fails the leg.
 async fn assert_object_state(store: &ObjectStoreClient, path: &str, present: bool) {
     match (store.download(path).await, present) {
-        (Ok(_), true) => {}
-        (Err(yeetz_sdk_s3::ObjectStoreError::NotFound(_)), false) => {}
+        (Ok(_), true) | (Err(yeetz_sdk_s3::ObjectStoreError::NotFound(_)), false) => {}
         (outcome, expected) => panic!("object {path} present={expected}, got {outcome:?}"),
     }
 }
@@ -149,9 +148,9 @@ fn classify_outcome(outcome: &DeleteObjectsOutcome) -> PolicyAction {
             Some("TransientHiccup") => PolicyAction::Replay,
             _ => PolicyAction::Surface,
         },
-        Err(DeleteObjectsFailure::Unconfirmed { .. }) => PolicyAction::Replay,
+        Err(DeleteObjectsFailure::Unconfirmed { .. })
+        | Err(DeleteObjectsFailure::NotAttempted) => PolicyAction::Replay,
         Err(DeleteObjectsFailure::Unsupported { .. }) => PolicyAction::Terminal,
-        Err(DeleteObjectsFailure::NotAttempted) => PolicyAction::Replay,
     }
 }
 
