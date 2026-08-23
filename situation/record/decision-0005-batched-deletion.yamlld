@@ -1,0 +1,60 @@
+# Registers docs/decisions/0005-batched-deletion.md as a Decision
+# vertex: the human merge of PR #33 (merge commit 60cb5c35,
+# 2026-08-23) is the acceptance; the immutable ADR file keeps its
+# at-authoring PROPOSED status line (floor invariant 15). The ADR
+# file is the depth document delivered by `source`. Implementation
+# is a separately authorized kernel-extension batch
+# (invariant-kernel-extension) — not yet authorized at registration.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/decision-0005-batched-deletion"
+"@type": "https://yeetz.dev/bedrock/ontology/Decision"
+label: "ADR 0005: unconditional S3 multi-object deletion — typed outcomes, bounded chunks"
+timestamp: "2026-08-23T22:27:03"
+source: "https://yeetz.dev/bedrock/path/docs/decisions/0005-batched-deletion.md"
+requires: "https://yeetz.dev/bedrock/vertex/decision-0001-atomic-keyspace"
+references:
+  - "https://yeetz.dev/bedrock/vertex/invariant-kernel-extension"
+  - "https://yeetz.dev/bedrock/vertex/structure-kernel"
+  - "https://yeetz.dev/bedrock/vertex/plan-batched-deletion-primitive"
+  - "https://yeetz.dev/bedrock/vertex/decision-0004-streaming-value-io-v2"
+statement: >
+  Accepted 2026-08-23 by human merge of PR #33 (merge commit
+  60cb5c35) after a two-round independent adversarial review — both
+  rounds returned AMEND (round two: G1-G5 plus five nitpicks) and
+  landed as forward commits on the proposal branch; the final
+  re-check at witness tip b3c13365 raised zero blocking findings.
+  Chosen: additive AtomicKeyspace::delete_objects over S3
+  DeleteObjects beside the published delete_many — neither wraps the
+  other; delete_many stays frozen (A6/G117) and not deprecated, and
+  two response-trust implementations deliberately coexist (the
+  legacy object_store path keeps its missing-member-defaults-to-
+  success and unrequested-key panic residuals). Transport: sequential
+  chunks of at most 1,000 keys under DELETE_OBJECTS_MAX_INPUT =
+  100_000, verbose responses only, exact per-chunk response
+  bijection — no omitted key ever defaults to success; batch is
+  transport, never transaction, and cross-key atomicity is a
+  permanent non-goal. No batched conditional delete: delete_if_match
+  remains the only conditional surface, per-key, permanently.
+  Outcomes: one typed result per input key — Ok, Rejected,
+  Unconfirmed, NotAttempted, Unsupported — behind an admission-only
+  outer error; an Unconfirmed stop labels its untouched tail
+  NotAttempted, a definitive mid-call refusal labels current chunk
+  and tail Unsupported, and remaining() is checkpoint serialization,
+  never retry policy. The primitive sits below lifecycle machinery:
+  no tombstone, no incarnation bump, no fence read; its
+  fence-blindness couples to ADR 0004 quiescence as the named
+  residual — raw batch delete plus same-incarnation/version-0
+  recreate can re-materialize the exact chunk paths a concurrent
+  sweep classified as orphaned, producing ADR 0004's forbidden
+  ManifestIncomplete (witnessed as KeyspaceError::ChunkMissing; up
+  to 1,000 controls per request). Claims A36-A45; a real-S3
+  DeleteObjects leg gates publication; implementation is one
+  separately authorized kernel-extension batch targeting the next
+  free 0.4.x. Rejected: mutating delete_many in place, wrapping
+  delete_many over the new method, object_store::delete_stream for
+  the assured path, one top-level wholesale error, read-then-delete,
+  rollback/compensation (permanent). Flips if: a portable
+  standards-level multi-object conditional (a per-object If-Match
+  equivalent) emerges — that demands a superseding ADR with backend
+  qualification, never a silent extension; cross-key
+  transactionality stays out regardless.
