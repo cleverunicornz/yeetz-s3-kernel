@@ -1,4 +1,4 @@
-# Installed by bedrock v0.2.1 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
+# Installed by bedrock v0.3.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
 # Bedrock operating reference — the base protocol
 
 This is the standardized minimum every bedrock repo builds on, plus the
@@ -39,7 +39,7 @@ check` violation (rule C8) — no witness, no done.
 | architecture/ | `https://yeetz.dev/graph/architecture` | Identity, SituationStructure |
 | risk/ | `https://yeetz.dev/graph/risk` | Risk |
 | plan/ | `https://yeetz.dev/graph/plan` | Plan |
-| record/ | `https://yeetz.dev/graph/record` | EpochRecord, DeployRecord, ReflectVerdict |
+| record/ | `https://yeetz.dev/graph/record` | EpochRecord, DeployRecord, ReflectVerdict, Decision |
 
 Base @types are the bedrock vocabulary; consumers never add to it.
 
@@ -54,6 +54,8 @@ excuse to mint a new edge.
 - `consumes` — a vertex draws on a listed vertex or repo path as input.
 - `produces` — a vertex yields a listed repo path as output.
 - `member-of` — a vertex belongs to another vertex's set.
+- `supersedes` — a vertex replaces an earlier vertex, which stays untouched
+  (append-only — floor invariant 15).
 
 ## Archetype rule
 
@@ -117,12 +119,38 @@ A plan carries exactly these seven fields:
 - `tasks` — the ordered work that makes the promise real.
 - `witnesses` — retained CI-run-URL observations; required before `done`.
 - `reflectDepth` — how deep the follow-up reflection must go.
-- `disposition` + `residual` — the closing state and what was not assured.
+- `disposition` + `residual` — the closing state and what was not assured;
+  both land at close, not at authoring.
 
 Deliberately excluded, permanently: no custody choreography, no per-actor
 openings or closures, no round ordinals, no confirmation passes. This is a
 thin transaction log with measured ceremony — those four mechanisms are not
 coming back.
+
+## Decisions
+
+A Decision is a named collapse of the possibility space at design level:
+the record of a fork that was closed — what was chosen, what was rejected,
+and the conditions under which the choice flips. Decisions live in record/.
+They are write-once and immutable at birth (floor invariant 15: supersede,
+never edit), and they never render in the register — they are walked to,
+not listed.
+
+Write one when a fork you close would be plausibly re-opened by a reader
+with zero context — at the moment of collapse, never reconstructed later.
+Most choices need no vertex; when in doubt, do not write one.
+
+Fields: `statement` carries the choice, the rejected alternatives, and the
+revisit conditions in bounded prose — no template, no status field, and the
+schema rejects `disposition` and `witnesses`: a decision is not CI-judged.
+`timestamp` orders the log. `references` links the invariants and risks the
+decision touches — an invariant pointing at a decision carries its reason,
+not just its rule.
+
+Reading: a decision with no incoming `supersedes` edge is live. Before
+proposing to change a settled choice, walk the chain first — the
+alternative you are about to propose may already be recorded, with its
+reason and its flip conditions.
 
 ## Refusals
 

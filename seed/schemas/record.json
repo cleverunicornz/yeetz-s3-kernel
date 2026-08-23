@@ -1,9 +1,9 @@
 {
-  "$comment": "Installed by bedrock v0.2.1 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.",
+  "$comment": "Installed by bedrock v0.3.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://yeetz.dev/bedrock/schema/record/v2",
+  "$id": "https://yeetz.dev/bedrock/schema/record/v3",
   "title": "Bedrock record namespace vertex schema",
-  "description": "Epoch records, deploy placements, and reflect verdicts (0.2.0 base protocol). DeployRecord is digest-pinned — it records what was actually placed, never a 'latest' pointer. ReflectVerdict carries subject, criteria, witnesses, findings (optional suspect: code|promise|instrument), disposition+residual. Validates every situation/record/*.yamlld vertex.",
+  "description": "Epoch records, deploy placements, reflect verdicts, and decisions (0.3.0 base protocol). DeployRecord is digest-pinned — it records what was actually placed, never a 'latest' pointer. ReflectVerdict carries subject, criteria, witnesses, findings (optional suspect: code|promise|instrument), disposition+residual. Decision is a named collapse of the possibility space: write-once, immutable at birth, no status field — liveness is derived from the supersedes chain. Validates every situation/record/*.yamlld vertex.",
   "type": "object",
   "additionalProperties": false,
   "required": ["@context", "@id", "@type"],
@@ -40,6 +40,7 @@
     "consumes": { "$ref": "#/$defs/pointerList" },
     "produces": { "$ref": "#/$defs/pathPointerList" },
     "member-of": { "$ref": "#/$defs/vertexPointer" },
+    "supersedes": { "$ref": "#/$defs/vertexPointer", "$comment": "this record replaces an earlier vertex, which stays untouched (append-only — floor invariant 15)" },
     "source": { "$ref": "#/$defs/pathPointer" },
     "path": { "$ref": "#/$defs/pathPointerList" }
   },
@@ -65,6 +66,17 @@
         { "properties": { "@type": { "type": "array", "contains": { "const": "https://yeetz.dev/bedrock/ontology/ReflectVerdict" } } } }
       ], "required": ["@type"] },
       "then": { "required": ["subject", "criteria"] }
+    },
+    {
+      "if": { "anyOf": [
+        { "properties": { "@type": { "const": "https://yeetz.dev/bedrock/ontology/Decision" } } },
+        { "properties": { "@type": { "type": "array", "contains": { "const": "https://yeetz.dev/bedrock/ontology/Decision" } } } }
+      ], "required": ["@type"] },
+      "then": {
+        "required": ["statement", "timestamp"],
+        "not": { "anyOf": [ { "required": ["disposition"] }, { "required": ["witnesses"] } ] }
+      },
+      "$comment": "Decision: the named collapse — statement carries the choice, the rejected alternatives, and the revisit conditions; timestamp orders the log. disposition and witnesses are rejected here: a decision is not CI-judged."
     }
   ],
   "anyOf": [{ "required": ["label"] }, { "required": ["statement"] }],
@@ -97,14 +109,16 @@
         { "type": "string", "enum": [
           "https://yeetz.dev/bedrock/ontology/EpochRecord",
           "https://yeetz.dev/bedrock/ontology/DeployRecord",
-          "https://yeetz.dev/bedrock/ontology/ReflectVerdict"
+          "https://yeetz.dev/bedrock/ontology/ReflectVerdict",
+          "https://yeetz.dev/bedrock/ontology/Decision"
         ] },
         { "type": "array", "minItems": 1, "uniqueItems": true,
           "items": { "type": "string", "pattern": "^https://[^\\s]+$" },
           "contains": { "enum": [
             "https://yeetz.dev/bedrock/ontology/EpochRecord",
             "https://yeetz.dev/bedrock/ontology/DeployRecord",
-            "https://yeetz.dev/bedrock/ontology/ReflectVerdict"
+            "https://yeetz.dev/bedrock/ontology/ReflectVerdict",
+            "https://yeetz.dev/bedrock/ontology/Decision"
           ] } }
       ]
     }

@@ -1,4 +1,4 @@
-# Installed by bedrock v0.2.1 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
+# Installed by bedrock v0.3.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
 # Bedrock repo-local @context — the single serviceable context for every
 # situation/<ns>/ vertex (SPINE §4 C3: one @context, no remote loading).
 # W1 embeds this exact map and serves it for the IRI
@@ -43,6 +43,9 @@
     "@container": "@set"
   member-of:
     "@id": "https://yeetz.dev/bedrock/member-of"
+    "@type": "@id"
+  supersedes:
+    "@id": "https://yeetz.dev/bedrock/supersedes"
     "@type": "@id"
   # depth and layout pointers — path-encoded, IRI-valued
   source:

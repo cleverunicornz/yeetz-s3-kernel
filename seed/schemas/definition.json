@@ -1,5 +1,5 @@
 {
-  "$comment": "Installed by bedrock v0.2.1 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.",
+  "$comment": "Installed by bedrock v0.3.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://yeetz.dev/bedrock/schema/definition/v1",
   "title": "Bedrock definition namespace vertex schema",
