@@ -1,0 +1,15 @@
+# Floor invariant 5 of 16 (spec/floor-v2.md §4). Layer: floor.
+# Statement carries the floor prose with "(→ Review Playbook breadcrumb)"
+# tightened out — that pointer is now the typed `references` edge below,
+# resolving to the breadcrumb-adversarial-review vertex.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/invariant-05-make-it-first"
+"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+label: "Make it first, prove it after"
+layer: "floor"
+statement: >
+  Make it first, prove it after. Build the slice, prove it, fix, continue.
+  Teardown on demand, never a precondition. Deep adversarial review is
+  human-invoked.
+references:
+  - "https://yeetz.dev/bedrock/vertex/breadcrumb-adversarial-review"

@@ -1,0 +1,14 @@
+# Floor invariant 11 of 16 (spec/floor-v2.md §4). Layer: floor.
+# Statement carries the floor prose verbatim.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/invariant-11-ci-rules"
+"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+label: "CI: one runner posture, the real suite"
+layer: "floor"
+statement: >
+  CI: every Linux/platform-neutral job runs on `org-ci-linux-x64`; WarpBuild only
+  for native macOS/Windows artifacts (`warp-macos-15-arm64-6x`,
+  `warp-windows-latest-x64-4x`); fork-PR code is mechanically rejected before
+  runner assignment; a missing host tool is a P0 infrastructure defect — never
+  install a hidden substitute; CI runs the real suite (fmt, clippy `-D warnings`,
+  locked build, nextest).

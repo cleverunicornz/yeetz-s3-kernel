@@ -1,0 +1,57 @@
+# Installed by bedrock v0.2.1 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
+# Bedrock CI template — installable by copy into `.github/workflows/`.
+#
+# Runs `bedrock check` + `bedrock build` whenever situation/ changes and
+# fails if the regenerated output (AGENTS.md, situation/graph.trig) differs
+# from what is committed. Fork pull requests never run the job.
+
+name: bedrock
+
+on:
+  push:
+    paths:
+      - 'situation/**'
+  pull_request:
+    paths:
+      - 'situation/**'
+
+jobs:
+  bedrock:
+    runs-on: org-ci-linux-x64
+
+    # Fork-PR guard: run only when the PR head is this repository. A fork's
+    # situation/ is untrusted and its diff is meaningless against this repo's
+    # committed graph, so skip fork PRs entirely.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+    env:
+      # Placeholder — pin the exact bedrock version this repo operates under.
+      # Set the real released version (or pinned nightly) before enabling.
+      BEDROCK_VERSION: '0.2.1'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install bedrock ${{ env.BEDROCK_VERSION }}
+        # Pinned install of the bedrock binary (crate yeetz-bedrock).
+        # Swap for a direct prebuilt-binary download once releases publish
+        # assets; BEDROCK_VERSION stays the single version knob.
+        run: |
+          cargo install --locked --version "$BEDROCK_VERSION" yeetz-bedrock
+
+      - name: bedrock check
+        run: bedrock check
+
+      - name: bedrock build
+        run: bedrock build
+
+      - name: Verify generated output is committed
+        run: |
+          if ! git diff --exit-code -- AGENTS.md situation/graph.trig; then
+            echo "error: AGENTS.md or situation/graph.trig is out of date." >&2
+            echo "run 'bedrock build' and commit the regenerated output." >&2
+            exit 1
+          fi

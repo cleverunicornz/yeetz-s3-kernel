@@ -1,0 +1,11 @@
+# Floor invariant 4 of 16 (spec/floor-v2.md §4). Layer: floor.
+# Statement carries the floor prose verbatim.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/invariant-04-completion-boundary"
+"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+label: "Completion is behavior at the promised boundary"
+layer: "floor"
+statement: >
+  Completion is behavior at the promised boundary. Nothing in a deliverable is a
+  stub, placeholder, or deferred branch. Not done: "compiles", "structure in
+  place", "foundation for later."

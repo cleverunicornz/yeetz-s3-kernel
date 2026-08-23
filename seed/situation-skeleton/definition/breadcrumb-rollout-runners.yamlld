@@ -1,0 +1,9 @@
+# Breadcrumb: rollout & runners infra ownership. Spec/floor-v2.md §4 list.
+# Pointer is institutional (repo owned elsewhere); it lives in the gate prose.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/breadcrumb-rollout-runners"
+"@type": "https://yeetz.dev/bedrock/ontology/Breadcrumb"
+label: "Rollout & runners"
+gate: >
+  Rollout and runners are Ansible owned by gh-runners (roles/inventory/
+  toolchain manifest); the performance topology there is human-gated.

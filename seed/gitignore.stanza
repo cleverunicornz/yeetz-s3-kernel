@@ -1,0 +1,5 @@
+# --- bedrock: append to the consumer repo's .gitignore ---
+# situation/ is repository law, not generated noise: every vertex, the
+# compiled graph.trig, and the root AGENTS.md register are versioned and
+# committed. NEVER ignore anything under situation/; if a file there looks
+# generated, it is still law — commit it.

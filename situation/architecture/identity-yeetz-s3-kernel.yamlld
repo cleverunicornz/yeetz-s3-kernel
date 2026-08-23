@@ -1,0 +1,11 @@
+# The repo's identity: names the register title and anchors the closure.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/identity-yeetz-s3-kernel"
+"@type": "https://yeetz.dev/bedrock/ontology/Identity"
+label: "yeetz-s3-kernel"
+role: "identity"
+statement: >
+  S3-native storage kernel in Rust: the single atomic point through which
+  durable state is written. Extracted from the yeetz forge (parent:
+  cleverunicornz/yeetz) because it is infrastructure consumed by multiple
+  products; this repo is the kernel's source of record.

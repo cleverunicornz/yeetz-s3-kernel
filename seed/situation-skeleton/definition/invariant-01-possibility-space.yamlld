@@ -1,0 +1,12 @@
+# Floor invariant 1 of 16 (spec/floor-v2.md §4). Layer: floor.
+# Statement carries the floor prose verbatim.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/invariant-01-possibility-space"
+"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+label: "Code is a possibility space"
+layer: "floor"
+statement: >
+  Code is a possibility space. A surface does everything it *can* do, not what
+  its author meant. Work is collapsing possibilities to defined behavior. A green
+  test proves a behavior exists — never that nothing else happens. Say what else
+  could happen; declare what you did not collapse.

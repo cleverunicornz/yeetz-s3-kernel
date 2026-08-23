@@ -1,0 +1,11 @@
+# Breadcrumb to the Review Playbook. Spec/floor-v2.md §4 breadcrumb list.
+# source points at the playbook path W3 ships in situation/references/;
+# the file's absence is tolerated until W3 lands it (playbooks in flight).
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/breadcrumb-adversarial-review"
+"@type": "https://yeetz.dev/bedrock/ontology/Breadcrumb"
+label: "Adversarial review"
+gate: >
+  Adversarial review is human-invoked: expansive review, hard debug, hard code
+  review — never a silent retry against the same failure.
+source: "https://yeetz.dev/bedrock/path/situation/references/review-playbook.md"

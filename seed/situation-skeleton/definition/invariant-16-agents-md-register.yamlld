@@ -1,0 +1,11 @@
+# Floor invariant 16 of 16 (spec/floor-v2.md §4). Layer: floor.
+# Statement carries the floor prose verbatim.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/invariant-16-agents-md-register"
+"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+label: "AGENTS.md is the register"
+layer: "floor"
+statement: >
+  AGENTS.md is the register: one screen of numbered invariants + "where things
+  live" (graph epoch: generated from `situation/`, never hand-edited). After work
+  that changes reality, re-situate it — emit knowledge, never rules.

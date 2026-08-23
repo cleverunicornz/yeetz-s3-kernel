@@ -1,0 +1,43 @@
+{
+  "$comment": "Installed by bedrock v0.2.1 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yeetz.dev/bedrock/schema/risk/v1",
+  "title": "Bedrock risk namespace vertex schema",
+  "description": "Present-tense warnings; deleted when retired (SPINE §4 C4 minimum-vertex rule). Validates every situation/risk/*.yamlld vertex.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["@context", "@id", "@type"],
+  "properties": {
+    "@context": { "const": "https://yeetz.dev/bedrock/context/v1" },
+    "@id": { "$ref": "#/$defs/vertexId" },
+    "@type": {
+      "description": "Risk scalar, or an array containing Risk (repo archetypes ride alongside; rule C9)",
+      "oneOf": [
+        { "const": "https://yeetz.dev/bedrock/ontology/Risk" },
+        { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^https://[^\\s]+$" }, "contains": { "const": "https://yeetz.dev/bedrock/ontology/Risk" } }
+      ]
+    },
+    "label": { "$ref": "#/$defs/label" },
+    "statement": { "$ref": "#/$defs/boundedText" },
+    "requires": { "$ref": "#/$defs/vertexPointer" },
+    "references": { "$ref": "#/$defs/vertexPointerList" },
+    "consumes": { "$ref": "#/$defs/pointerList" },
+    "produces": { "$ref": "#/$defs/pathPointerList" },
+    "member-of": { "$ref": "#/$defs/vertexPointer" },
+    "source": { "$ref": "#/$defs/pathPointer" },
+    "path": { "$ref": "#/$defs/pathPointerList" }
+  },
+  "minProperties": 3,
+  "anyOf": [{ "required": ["label"] }, { "required": ["statement"] }],
+  "$defs": {
+    "vertexId": { "type": "string", "pattern": "^https://yeetz\\.dev/bedrock/vertex/[a-z0-9][a-z0-9-]*$" },
+    "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "boundedText": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "pathPointer": { "type": "string", "pattern": "^https://yeetz\\.dev/bedrock/path/[A-Za-z0-9._/\\-]+$" },
+    "vertexPointer": { "type": "string", "pattern": "^https://yeetz\\.dev/bedrock/vertex/[a-z0-9][a-z0-9-]*$" },
+    "vertexPointerList": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/vertexPointer" } },
+    "pointer": { "type": "string", "pattern": "^https://yeetz\\.dev/bedrock/(vertex|path)/[A-Za-z0-9._/\\-]+$" },
+    "pointerList": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/pointer" } },
+    "pathPointerList": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/pathPointer" } }
+  }
+}

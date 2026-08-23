@@ -1,0 +1,12 @@
+# Floor invariant 7 of 16 (spec/floor-v2.md §4). Layer: floor.
+# Statement carries the floor prose verbatim.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/invariant-07-predeclare-criteria"
+"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+label: "Predeclare criteria"
+layer: "floor"
+statement: >
+  Predeclare criteria before the run that answers them; judge results only
+  against them. A refuted hypothesis is a successful experiment. Mixed outcomes
+  stay mixed — never round toward a verdict. Timebox exploration; when the
+  decision point arrives, resolve with what you have.

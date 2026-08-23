@@ -1,0 +1,10 @@
+# Floor invariant 10 of 16 (spec/floor-v2.md §4). Layer: floor.
+# Statement carries the floor prose verbatim.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/invariant-10-git-rules"
+"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+label: "Git: force push does not exist"
+layer: "floor"
+statement: >
+  Git: force push does not exist; nothing pushed is deleted; one writer per ref;
+  PRs always — a human merges the default branch. Same policy in every repo.

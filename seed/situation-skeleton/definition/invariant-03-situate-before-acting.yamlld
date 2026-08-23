@@ -1,0 +1,12 @@
+# Floor invariant 3 of 16 (spec/floor-v2.md §4). Layer: floor.
+# Statement carries the floor prose verbatim.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/invariant-03-situate-before-acting"
+"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+label: "Situate before acting; re-situate after"
+layer: "floor"
+statement: >
+  Situate before acting; re-situate after. Relationships carry unequal mass; the
+  loudest, freshest signal is usually the smallest. Interrogate a contradiction
+  before displacing what it contradicts. Authority attaches to landed sentences,
+  not to your readings of them.

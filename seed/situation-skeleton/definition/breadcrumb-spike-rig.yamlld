@@ -1,0 +1,11 @@
+# Breadcrumb to the Spike Playbook. Spec/floor-v2.md §4 breadcrumb list.
+# source points at the playbook path W3 ships in situation/references/;
+# the file's absence is tolerated until W3 lands it (playbooks in flight).
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/breadcrumb-spike-rig"
+"@type": "https://yeetz.dev/bedrock/ontology/Breadcrumb"
+label: "Spike rig"
+gate: >
+  When a question needs a build: quarantine it, timebox it, predeclare criteria
+  before the rig answers them.
+source: "https://yeetz.dev/bedrock/path/situation/references/spike-playbook.md"

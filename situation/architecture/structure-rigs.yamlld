@@ -1,0 +1,9 @@
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/structure-rigs"
+"@type": "https://yeetz.dev/bedrock/ontology/SituationStructure"
+label: "Durable verification rigs (index: rigs/INDEX.md)"
+statement: >
+  rigs/ — durable verification rigs (streams contracts, real-S3 ABA
+  probe); index in rigs/INDEX.md.
+path:
+  - "https://yeetz.dev/bedrock/path/rigs/INDEX.md"

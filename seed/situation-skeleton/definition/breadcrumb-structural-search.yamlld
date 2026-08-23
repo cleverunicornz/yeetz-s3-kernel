@@ -1,0 +1,9 @@
+# Breadcrumb: structural search tooling. Spec/floor-v2.md §4 list.
+# Pointer is institutional (provisioned tool); caveat lives in the gate prose.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/breadcrumb-structural-search"
+"@type": "https://yeetz.dev/bedrock/ontology/Breadcrumb"
+label: "Structural search"
+gate: >
+  ast-grep preferred where provisioned; it is blind to macros/codegen — an empty
+  structural result is never evidence of absence.

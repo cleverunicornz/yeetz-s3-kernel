@@ -1,0 +1,10 @@
+# Floor invariant 6 of 16 (spec/floor-v2.md §4). Layer: floor.
+# Statement carries the floor prose verbatim.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/invariant-06-regenerate-from-source"
+"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+label: "Verify by regenerating from source"
+layer: "floor"
+statement: >
+  Verify by regenerating from source, never by reading the claim. Gate claims
+  cite a CI run URL, never a local attestation.
