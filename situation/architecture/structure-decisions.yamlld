@@ -1,15 +1,14 @@
 "@context": "https://yeetz.dev/bedrock/context/v1"
 "@id": "https://yeetz.dev/bedrock/vertex/structure-decisions"
 "@type": "https://yeetz.dev/bedrock/ontology/SituationStructure"
-label: "ADRs (atomic keyspace, streams, streaming I/O, batched deletion)"
+label: "ADRs (atomic keyspace, streams, streaming-value I/O)"
 statement: >
   docs/decisions/ — ADR 0001 (atomic keyspace), 0002 (streams), 0003
   (streaming-value I/O, proposed draft), 0004 (streaming-value I/O v2,
-  supersedes 0003), and 0005 (unconditional S3 multi-object deletion,
-  proposed). Append-only; supersede, never edit. Each is registered as a
-  Decision vertex in situation/record/ (decision-0001…decision-0005);
-  liveness is read from status and supersedes edges — 0001, 0002, and 0004
-  are live, 0003 is superseded, and 0005 is proposed. Walk the chain before
-  relitigating any of these choices.
+  supersedes 0003). Append-only; supersede, never edit. Each is registered
+  as a Decision vertex in situation/record/ (decision-0001…
+  decision-0004); liveness is read from the supersedes chain — 0001,
+  0002, and 0004 are live, 0003 is superseded by 0004. Walk the chain
+  before relitigating any of these choices.
 path:
   - "https://yeetz.dev/bedrock/path/docs/decisions"

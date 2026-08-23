@@ -1,0 +1,70 @@
+# Draft registration for the ADR 0005 proposal. A Decision vertex is created
+# only after human acceptance and merge, never while this plan remains draft.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/plan-batched-deletion-primitive"
+"@type": "https://yeetz.dev/bedrock/ontology/Plan"
+label: "Plan: propose typed S3 multi-object deletion"
+intent: >
+  Carry ADR 0005 through adversarial review and human acceptance, then — only
+  under a separately authorized kernel-extension batch — deliver an additive
+  AtomicKeyspace primitive for 1,000-key S3 DeleteObjects transport with honest
+  per-key partial outcomes and unchanged single-key atomicity law.
+acceptanceCriteria:
+  - "A human explicitly accepts and merges ADR 0005; before that acceptance, no Decision vertex or accepted-log entry represents it as closed law."
+  - "The accepted API uses sequential chunks of at most 1,000 unique keys and returns exactly one ordered deleted-or-typed-failure outcome per admitted key."
+  - "A loopback partial-batch cut constructs mixed Deleted/Error entries in one request and the API reports exactly which keys were confirmed and which failed."
+  - "BeforeEffect and AfterEffect whole-response cuts are constructible; both report the current chunk Unconfirmed and the untouched tail NotAttempted without fabricated success."
+  - "Unconditional batch deletion writes no tombstone, bumps no incarnation counter, and touches no trim certificate, maintenance fence, or v3 chunk."
+  - "The change is additive: published delete_many, DeleteOutcome, delete, delete_if_match, destroy, and their contracts remain unchanged; no batch is a transaction or conditional delete."
+  - "The ADR and implementation ledger assigns A36-A45 without collision, all claims pass in CI, and a retained real-S3 run witnesses the assured provider path before publication."
+  - "The primitive deletes only caller-supplied keys; it neither treats LIST as inventory authority nor claims durable consumer checkpointing or namespace completeness."
+consumes:
+  - "https://yeetz.dev/bedrock/vertex/invariant-kernel-extension"
+  - "https://yeetz.dev/bedrock/vertex/invariant-13-state"
+  - "https://yeetz.dev/bedrock/vertex/invariant-08-dependency-boundary"
+  - "https://yeetz.dev/bedrock/vertex/structure-kernel"
+  - "https://yeetz.dev/bedrock/vertex/decision-0001-atomic-keyspace"
+  - "https://yeetz.dev/bedrock/vertex/decision-0004-streaming-value-io-v2"
+  - "https://yeetz.dev/bedrock/path/docs/decisions/0005-batched-deletion.md"
+  - "https://yeetz.dev/bedrock/path/crates/yeetz-s3-kernel"
+  - "https://yeetz.dev/bedrock/path/crates/yeetz-sdk-s3"
+tasks:
+  - "Keep ADR 0005 explicitly proposed and register it only as this draft plan."
+  - "Run the independent adversarial review and amend the proposal forward where required."
+  - "Obtain human acceptance and merge; only then register ADR 0005 as a Decision and add it to the accepted structure log."
+  - "Obtain separate human authorization for one firewalled kernel implementation batch."
+  - "Implement the SDK one-chunk wire seam and additive AtomicKeyspace API without migrating existing methods."
+  - "Implement both loopback fault cuts, prove A36-A45, and retain current-tip ci-dev plus real-S3 witnesses."
+  - "Publish the next free 0.4.x closure release; orchestrate every downstream adoption separately."
+witnesses:
+  - "https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/32658427460"
+reflectDepth: 2
+disposition:
+  state: draft
+  residual: >
+    This draft does not assure human acceptance, implementation authorization,
+    A36-A45 behavior, live-S3 support, publication, inventory completeness,
+    durable consumer checkpoints, or downstream adoption. The shipped boundary
+    remains the existing delete/delete_many/delete_if_match contracts.
+source: "https://yeetz.dev/bedrock/path/docs/decisions/0005-batched-deletion.md"
+body: |
+  ## Proposal depth
+
+  The complete semantics, Rust API sketches, alternatives, release plan, and
+  A36-A45 oracle are in `docs/decisions/0005-batched-deletion.md`. This vertex
+  routes that proposal through the execution graph; it does not close the fork
+  and does not authorize implementation.
+
+  ## Authorization gates
+
+  Human acceptance and merge come first. The acceptance-time change writes the
+  Decision vertex and extends the accepted ADR structure log. A second explicit
+  human authorization is then required before the kernel implementation batch.
+  Downstream yeetz epoch adoption remains a separate orchestration after the
+  assured crate release.
+
+  ## Reflection depth
+
+  Depth 2 means reflection reads both this plan/ADR and the independent review,
+  then checks the implementation witnesses and declared residuals rather than
+  treating a green design-branch gate as proof that the primitive exists.

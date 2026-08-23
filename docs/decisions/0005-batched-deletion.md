@@ -21,7 +21,7 @@ its history.
 
 ## Verified source ground
 
-This decision starts from the repository and published boundary, not from the
+This proposal starts from the repository and published boundary, not from the
 intended shape of the old API:
 
 - `yeetz-s3-kernel 0.4.0` already publishes
@@ -58,7 +58,7 @@ before deletion, so unconditional removal of every supplied object is the
 correct operation. The kernel API does not import epoch types or attempt to
 prove that policy. It is a general raw keyspace primitive. Certified-trim
 physical sweeps and chunk GC are possible later consumers through the same
-kernel-closure provider primitive; neither migration is part of this decision
+kernel-closure provider primitive; neither migration is part of this proposal
 or its implementation batch.
 
 The epoch review also found that deletion completeness cannot be inferred from
@@ -66,7 +66,7 @@ LIST. This primitive does not discover objects and does not make LIST an
 authority: it deletes exactly the caller-supplied keys. A consumer still needs
 its own witnessed inventory and durable job state.
 
-## Decision summary
+## Proposal summary
 
 1. Add `AtomicKeyspace::delete_objects`, named after S3 DeleteObjects. It is a
    new API beside the published `delete_many`; neither wraps nor replaces the
@@ -107,7 +107,7 @@ The new name is **`delete_objects`**. It deliberately mirrors the S3 operation
 whose semantics it exposes and avoids implying that the published
 `delete_many` changed underneath callers.
 
-| Surface | Requests on S3 | Per-key result | Role after this decision |
+| Surface | Requests on S3 | Per-key result | Role under this proposal |
 |---|---|---|---|
 | `delete` | One store delete for one key | `Result<(), KeyspaceError>` | Existing single-key unconditional primitive; unchanged. |
 | `delete_many` | One store delete operation per key | `DeleteOutcome { deleted: bool }` | Published compatibility surface; unchanged and not deprecated. |
