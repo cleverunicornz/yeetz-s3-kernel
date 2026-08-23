@@ -356,16 +356,16 @@ async fn a38_delete_objects_partial_batch_is_typed_per_key() {
         .arm_multi_delete_entry_fault(
             &control_path("a38", "k1"),
             StorageFaultPhase::BeforeEffect,
-            "PolicyViolation",
-            "detected by policy",
+            "TransientHiccup",
+            "retryable under policy",
         )
         .await;
     counterpart
         .arm_multi_delete_entry_fault(
             &control_path("a38", "k3"),
             StorageFaultPhase::BeforeEffect,
-            "QuotaExceeded",
-            "quota exhausted",
+            "AccessDenied",
+            "permanent rejection",
         )
         .await;
     let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
@@ -377,9 +377,9 @@ async fn a38_delete_objects_partial_batch_is_typed_per_key() {
             1 | 3 => {
                 let diagnostic = rejected_diagnostic(outcome);
                 let expected_code = if index == 1 {
-                    "PolicyViolation"
+                    "TransientHiccup"
                 } else {
-                    "QuotaExceeded"
+                    "AccessDenied"
                 };
                 assert_eq!(diagnostic.code.as_deref(), Some(expected_code));
                 assert!(!diagnostic.truncated);
@@ -407,19 +407,10 @@ async fn a38_delete_objects_partial_batch_is_typed_per_key() {
             .any(|fault| fault.cut == StorageFaultCut::KeyspaceDelete)
     );
 
-    // A bounded sample policy iterates outcomes and replays only the
-    // transient classification; the permanent rejection surfaces and
-    // is never replayed.
-    counterpart
-        .arm_multi_delete_entry_fault(
-            &control_path("a38", "k1"),
-            StorageFaultPhase::BeforeEffect,
-            "TransientHiccup",
-            "retryable",
-        )
-        .await;
-    let first_pass = keyspace.delete_objects(&["k1", "k3"]).await.unwrap();
-    let replay: Vec<&str> = first_pass
+    // A bounded sample policy iterates the first call's outcomes and
+    // replays only the transient classification; the permanent
+    // rejection surfaces and is never replayed.
+    let replay: Vec<&str> = outcomes
         .iter()
         .filter(|outcome| outcome.result.is_err())
         .filter(|outcome| matches!(classify_outcome(outcome), PolicyAction::Replay))
@@ -475,11 +466,11 @@ async fn a38_delete_objects_partial_batch_is_typed_per_key() {
 async fn a39_delete_objects_remainder_crosses_chunks() {
     let (store, keyspace, counterpart) = keyspace_fixture("a39").await;
 
-    // 2,501 keys → three chunks [0,1000) [1000,2000) [2000,2500) and a
-    // one-key tail chunk [2500]. Per-entry failures on both sides of
+    // 3,001 keys → chunks [0,1000) [1000,2000) [2000,3000) and a
+    // one-key tail chunk [3000]. Per-entry failures on both sides of
     // the 1,000 boundary; the third chunk loses its whole response;
     // the tail is NotAttempted.
-    const SIZE: usize = 2_501;
+    const SIZE: usize = 3_001;
     let keys: Vec<String> = (0..SIZE).map(|index| format!("c{index}")).collect();
     keyspace
         .create(&keys[999], Bytes::from_static(b"a"))
@@ -530,11 +521,11 @@ async fn a39_delete_objects_remainder_crosses_chunks() {
                 let diagnostic = rejected_diagnostic(outcome);
                 assert_eq!(diagnostic.code.as_deref(), Some("AccessDenied"));
             }
-            2000..=2499 => {
+            2000..=2999 => {
                 let (reason, _) = unconfirmed_parts(outcome);
                 assert_eq!(reason, DeleteObjectsUnconfirmedReason::RequestFailed);
             }
-            2500 => assert_not_attempted(outcome),
+            3000 => assert_not_attempted(outcome),
             _ => assert!(outcome.result.is_ok(), "index {index}"),
         }
     }
@@ -556,7 +547,7 @@ async fn a39_delete_objects_remainder_crosses_chunks() {
     }
     assert_eq!(surfaced, 1, "exactly the AccessDenied rejection surfaces");
     let expected_replay: Vec<&str> = std::iter::once(keys[999].as_str())
-        .chain((2000..2500).map(|index| keys[index].as_str()))
+        .chain((2000..=3000).map(|index| keys[index].as_str()))
         .collect();
     assert_eq!(replay_set, expected_replay);
 
@@ -566,6 +557,7 @@ async fn a39_delete_objects_remainder_crosses_chunks() {
         .chain(2000..SIZE)
         .map(|index| keys[index].clone())
         .collect();
+    debug_assert_eq!(expected_remaining.len(), 1_002);
     assert_eq!(DeleteObjectsOutcome::remaining(&outcomes), expected_remaining);
 
     // The bounded replay converges with no side effects on the
@@ -610,10 +602,14 @@ async fn a40_delete_objects_lost_response_marks_chunk_unconfirmed() {
     assert_object_state(&store, &control_path("a40", &keys[0]), true).await;
     assert_object_state(&store, &control_path("a40", &keys[1_200]), true).await;
 
-    // AfterEffect on the second chunk of three: the first chunk stays
+    counterpart.shutdown().await;
+
+    // AfterEffect on the second chunk of three (fresh fixture so the
+    // occurrence counter starts clean): the first chunk stays
     // confirmed, the second is Unconfirmed (applied — some or all of
     // its keys may already be gone), the third is NotAttempted.
     const THREE: usize = 2_500;
+    let (store, keyspace, counterpart) = keyspace_fixture("a40a").await;
     let keys3: Vec<String> = (0..THREE).map(|index| format!("t{index}")).collect();
     for index in [3usize, 1_003, 2_003] {
         keyspace
@@ -638,9 +634,9 @@ async fn a40_delete_objects_lost_response_marks_chunk_unconfirmed() {
     // Confirmed prefix applied; the ambiguous chunk also applied (its
     // seeded key is gone — Unconfirmed is not a presence proof); the
     // untouched tail stayed.
-    assert_object_state(&store, &control_path("a40", &keys3[3]), false).await;
-    assert_object_state(&store, &control_path("a40", &keys3[1_003]), false).await;
-    assert_object_state(&store, &control_path("a40", &keys3[2_003]), true).await;
+    assert_object_state(&store, &control_path("a40a", &keys3[3]), false).await;
+    assert_object_state(&store, &control_path("a40a", &keys3[1_003]), false).await;
+    assert_object_state(&store, &control_path("a40a", &keys3[2_003]), true).await;
 
     // One request-level diagnostic allocation is shared across the
     // ambiguous chunk's outcomes.
@@ -1031,7 +1027,7 @@ async fn a44_delete_objects_has_no_condition_or_transaction() {
 
     // Mixed success plus an earlier-chunk success and a later stop:
     // partial state is recorded and earlier deletions stand.
-    const SIZE: usize = 2_500;
+    const SIZE: usize = 2_501;
     let keys: Vec<String> = (0..SIZE).map(|index| format!("p{index}")).collect();
     for index in [7usize, 1_507] {
         keyspace
@@ -1066,7 +1062,7 @@ async fn a44_delete_objects_has_no_condition_or_transaction() {
     // ...and a stopped later chunk with an untouched NotAttempted tail.
     let (reason, _) = unconfirmed_parts(&outcomes[2_000]);
     assert_eq!(reason, DeleteObjectsUnconfirmedReason::RequestFailed);
-    assert_not_attempted(&outcomes[2_499]);
+    assert_not_attempted(&outcomes[2_500]);
     assert_object_state(&store, &control_path("a44", &keys[1_507]), false).await;
 
     // The request may delete a concurrent replacement: an unconditional
