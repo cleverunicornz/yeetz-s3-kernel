@@ -43,10 +43,11 @@ intended shape of the old API:
   path succeeded and then overlays returned `<Error>` entries. That is useful
   adapter behavior, but it is not a sufficient assurance boundary for this
   API: the kernel must never infer success from a missing response member.
-- ADR 0001 batch 2 already made the loopback parse multi-key `POST ?delete`
-  bodies and emit verbose mixed `<Deleted>`/`<Error>` results
-  (`state_kernel.rs:3320-3440`). This proposal extends that one model; it does
-  not introduce a second bulk-delete wire truth.
+- ADR 0001 batch 2 already made the test-only
+  `state_kernel::gateway_state_contract::loopback_s3_request` bulk branch
+  (currently lines 3320-3440), together with `extract_delete_keys`, parse
+  multi-key `POST ?delete` bodies and emit verbose mixed results. This proposal
+  extends those symbols; it does not introduce a second wire truth.
 - `yeetz-sdk-s3` already carries the pinned `aws-sdk-s3 = 1.130.0` client for
   explicit multipart operations and `delete_conditional`. That client exposes
   DeleteObjects and its separate `deleted` and `errors` collections, so no new
@@ -154,8 +155,11 @@ Names and shapes below are binding design, modulo ordinary Rust formatting and
 documentation during implementation:
 
 ```rust
+use std::sync::Arc;
+
 pub const DELETE_OBJECTS_MAX_KEYS: usize = 1_000;
 pub const DELETE_OBJECTS_MAX_INPUT: usize = 100_000;
+pub const DELETE_OBJECTS_MAX_DIAGNOSTIC_BYTES: usize = 512;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeleteObjectsOutcome {
@@ -166,8 +170,19 @@ pub struct DeleteObjectsOutcome {
 }
 
 impl DeleteObjectsOutcome {
+    /// Serialize unresolved key identity for a durable checkpoint.
+    /// Classification is intentionally discarded; policy-driven callers
+    /// inspect `outcomes` directly.
     #[must_use]
     pub fn remaining(outcomes: &[Self]) -> Vec<String>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteObjectsDiagnostic {
+    pub code: Option<String>,
+    pub message: String,
+    /// Either provider field exceeded the combined UTF-8 byte budget.
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -175,28 +190,29 @@ impl DeleteObjectsOutcome {
 pub enum DeleteObjectsFailure {
     /// The valid DeleteResult contained an Error entry for this exact key.
     /// It is not a proof that the key remains present.
-    #[error("multi-object delete rejected for {code}: {message}")]
-    Rejected { code: String, message: String },
+    #[error("multi-object delete rejected: {diagnostic:?}")]
+    Rejected {
+        diagnostic: Arc<DeleteObjectsDiagnostic>,
+    },
 
-    /// The chunk had no trustworthy per-key response. Owned diagnostics
-    /// preserve request/service distinction without retaining SDK errors.
-    #[error("multi-object delete outcome unconfirmed ({reason:?}, {code:?}): {message}")]
+    /// The chunk had no trustworthy per-key response.
+    #[error("multi-object delete outcome unconfirmed ({reason:?}): {diagnostic:?}")]
     Unconfirmed {
         reason: DeleteObjectsUnconfirmedReason,
-        code: Option<String>,
-        message: String,
+        diagnostic: Arc<DeleteObjectsDiagnostic>,
     },
 
     /// The client lacks the wire capability or the service definitively
     /// refuses DeleteObjects. This is terminal until backend qualification
     /// changes; no per-key fallback was attempted.
-    #[error("multi-object delete unsupported ({code:?}): {message}")]
+    #[error("multi-object delete unsupported: {diagnostic:?}")]
     Unsupported {
-        code: Option<String>,
-        message: String,
+        diagnostic: Arc<DeleteObjectsDiagnostic>,
     },
 
-    /// An earlier chunk stopped processing, so this tail key was not sent.
+    /// This tail key was not sent because an earlier chunk was Unconfirmed.
+    /// A definitive Unsupported stop instead labels both its current chunk
+    /// and untouched tail Unsupported: the terminal cause is already known.
     #[error("multi-object delete was not attempted")]
     NotAttempted,
 }
@@ -253,17 +269,22 @@ batch error.
 
 `DeleteObjectsInputError` deliberately omits `PartialEq`/`Eq` because its
 `Key` variant carries `KeyspaceError`, which implements neither; the other new
-value types remain equality-comparable. `Unconfirmed` copies a sanitized
-request code and message into owned strings because `ObjectStoreError` is
-neither `Clone` nor equality-comparable; request-level diagnosis is returned,
-not tracing-only.
+value types remain equality-comparable. At the SDK seam, provider code plus
+message are normalized into at most `DELETE_OBJECTS_MAX_DIAGNOSTIC_BYTES`
+combined UTF-8 bytes, truncating at character boundaries and setting
+`truncated`. A request-level or capability diagnostic is wrapped once in
+`Arc` and shared by every affected current/tail outcome; it is not cloned
+100,000 times. Per-key `Rejected` diagnostics remain distinct but individually
+bounded.
 
-`remaining` retains input order and returns every `Err` key. It is a remainder
-for checkpointing and operator disposition, **not a retry set**:
-`Unsupported` is terminal, `Rejected` needs provider-code policy, and
-`Unconfirmed`/`NotAttempted` are replay candidates only under a bounded retry
-policy. After that policy selects owned keys, the caller re-borrows them with
-`selected.iter().map(String::as_str).collect::<Vec<_>>()` before a later call.
+`remaining` exists **only** to serialize the unresolved key set into a durable
+checkpoint. Its `Vec<String>` deliberately discards classification and is not
+input to retry policy. Policy-driven callers iterate the original outcome
+vector, inspect each `DeleteObjectsFailure`, select a bounded replay set, then
+re-borrow those owned keys with
+`selected.iter().map(String::as_str).collect::<Vec<_>>()`. `Unsupported` is
+terminal, `Rejected` needs provider-code policy, and
+`Unconfirmed`/`NotAttempted` are candidates only under attempt/time ceilings.
 No failure outcome claims that its key still exists.
 
 ## Input admission
@@ -275,14 +296,17 @@ Admission completes before allocation of the first provider request:
 2. Walk members in input order and run `ensure_not_reserved_key` **before**
    identifier/physical-path validation, matching `delete` and `delete_many`.
    A key such as `tombstones/a!b` therefore reports `TombstoneImmutable`, not
-   `InvalidIdentifier`. The existing typed sources remain
+   `InvalidIdentifier`. Direct reserved prefixes preserve
    `TombstoneImmutable`, `IncarnationCounterImmutable`,
    `TrimCertificateImmutable`, and `MaintenanceFenceImmutable`.
-3. Run the existing identifier and physical-path validation for that key.
+3. Run identifier and physical-path validation. `object_key` may independently
+   return `MaintenanceFenceImmutable` when accepted namespace/key components
+   compose the exact physical `/fences/gc` control path.
 4. Reject a duplicate namespace-relative key at its second input index. S3
    responses are keyed by object name rather than input ordinal; accepting
    duplicates would make a mixed response impossible to attribute honestly.
-5. Only after every key passes, retain provider paths and begin chunking.
+5. Only after every key passes, allocate outcomes. Construct and drop full
+   provider paths one 1,000-key chunk at a time; do not retain `N` paths.
 
 The size error precedes every member error. Otherwise the first error by input
 index is deterministic, with reserved-state precedence within that member.
@@ -300,9 +324,14 @@ therefore has one deterministic untouched tail, provider staging stays at
 1,000 paths, and a consumer with a larger witnessed inventory must page and
 checkpoint outside this future.
 
-At the maximum 255-byte logical key, cloned key bytes are bounded near 25.5 MiB
-plus vector/allocation and diagnostic overhead. This deliberate `O(N)` bound
-buys one outcome per input without admitting a million-key, hours-long future.
+At 100,000 maximum-length 255-byte keys, the method owns 24.32 MiB of outcome
+key bytes. One provider-path chunk adds at most about 0.50 MiB (1,000 paths of
+at most 520 bytes), rather than a second `N`-sized copy. Distinct per-key
+diagnostics add at most 48.83 MiB (100,000 × 512 bytes); a request-level stop
+shares one diagnostic `Arc`. Thus method-owned string/diagnostic payload is
+bounded near 73.65 MiB plus `Vec`/`String`/enum/allocator overhead. The
+caller's borrowed input keeps up to another 24.32 MiB of key bytes live but is
+not allocated by this method.
 
 For `N > 0`, a clean call makes `ceil(N / 1000)` logical DeleteObjects
 operations. The configured AWS SDK may retry an identical logical operation at
@@ -314,8 +343,8 @@ Verbose response mode is mandatory (`quiet = false`). For each unique requested
 physical key, the provider response must contain exactly one of:
 
 - `Deleted` -> `DeleteObjectsOutcome { result: Ok(()) }`; or
-- `Error { Code, Message }` ->
-  `Err(DeleteObjectsFailure::Rejected { code, message })`.
+- `Error { Code, Message }` -> a bounded
+  `Err(DeleteObjectsFailure::Rejected { diagnostic })`.
 
 Response order is irrelevant. The SDK layer reconciles by exact physical key;
 the kernel restores original input order and strips only the namespace prefix
@@ -327,55 +356,73 @@ be `Absent` and not that prior bucket versions were physically reclaimed.
 A response with a missing requested key, duplicate result for one key,
 Deleted/Error conflict, or an unexpected key is not a partial success report
 the kernel can safely reinterpret. The current chunk becomes
-`Unconfirmed { reason: InvalidResponse, code: None, message }`, the untouched
-tail becomes `NotAttempted`, and processing stops. No omitted member defaults
-to success.
+`Unconfirmed { reason: InvalidResponse, diagnostic }`, the untouched tail
+becomes `NotAttempted`, and processing stops. No omitted member defaults to
+success.
+
+`NotAttempted` is used only when an `Unconfirmed` current chunk stops the call.
+When capability is definitively `Unsupported` mid-call, that known terminal
+cause labels both the current chunk and every untouched tail key
+`Unsupported`; earlier confirmed chunks stay confirmed. HTTP status
+classification precedes body parsing: only a successful status can yield a
+valid `DeleteResult`; 405/501 yields `Unsupported`, never a mixed body verdict.
 
 ### Semantics and recovery table
 
 | Cut / provider result | Current-chunk outcomes | Later chunks | Durable possibility | Disposition / bounded resume |
 |---|---|---|---|---|
 | All requested keys have `Deleted` entries | Every key `Ok(())` | Continue | Every target control is gone; some may already have been absent | Nothing from this chunk remains. |
-| One valid `200 DeleteResult` contains both `Deleted` and `Error` entries | Exact `Ok(())` / `Rejected { code, message }` by key | Continue | Confirmed keys are gone. A rejected key is not confirmed and may be present or already gone; the legacy `KeyspaceDelete` AfterEffect cut demonstrates the latter. | Checkpoint every `Err`; retry only provider codes the caller's bounded policy classifies transient. Surface permanent rejection such as `AccessDenied`. |
-| Request fails before the service applies it | Every key `Unconfirmed { RequestFailed, code, message }` | `NotAttempted`; stop | Current chunk may remain | Retry current chunk and tail only when the owned diagnostic is retryable under a bounded policy; otherwise stop and surface it. |
-| Service applies the request but the response is lost | Same `Unconfirmed { RequestFailed, code, message }` for every key | `NotAttempted`; stop | Some or all current keys may already be gone | A policy-selected replay is idempotent, but not automatic or unbounded. |
-| Response is malformed, incomplete, contradictory, or names an unexpected key | Every key `Unconfirmed { InvalidResponse, code: None, message }` | `NotAttempted`; stop | Any subset may be gone; no success is inferred | Treat as provider/protocol qualification failure. Do not blind-retry until the cause is corrected. |
-| Client lacks the wire, or service definitively refuses DeleteObjects (`405 MethodNotAllowed`, `501 NotImplemented`, or equivalent service code) | Current and untouched keys `Unsupported { code, message }`; stop | No per-key fallback | Keys not already confirmed by earlier chunks are unchanged or unresolved only where a response was lost | Terminal until backend qualification changes. |
+| One valid `200 DeleteResult` contains both `Deleted` and `Error` entries | Exact `Ok(())` / `Rejected { diagnostic }` by key | Continue | Confirmed keys are gone. A rejected key is not confirmed and may be present or already gone; the legacy `KeyspaceDelete` AfterEffect cut demonstrates the latter. | Iterate outcomes; retry only diagnostics the caller's bounded policy classifies transient. Surface permanent rejection such as `AccessDenied`. |
+| Request fails before the service applies it | Every key `Unconfirmed { RequestFailed, diagnostic }` | `NotAttempted`; stop | Current chunk may remain | Retry current chunk and tail only when the diagnostic is retryable under a bounded policy; otherwise stop and surface it. |
+| Service applies the request but the response is lost | Same shared-diagnostic `Unconfirmed { RequestFailed, diagnostic }` for every key | `NotAttempted`; stop | Some or all current keys may already be gone | A policy-selected replay is idempotent, but not automatic or unbounded. |
+| Response is malformed, incomplete, contradictory, or names an unexpected key | Every key `Unconfirmed { InvalidResponse, diagnostic }` | `NotAttempted`; stop | Any subset may be gone; no success is inferred | Treat as provider/protocol qualification failure. Do not blind-retry until the cause is corrected. |
+| Client lacks the wire, or service definitively refuses DeleteObjects (`405 MethodNotAllowed`, `501 NotImplemented`, or equivalent service code) | Current chunk and untouched tail share `Unsupported { diagnostic }`; stop | `Unsupported`, not `NotAttempted`; no fallback | Keys not already confirmed by earlier chunks were not sent after the refusal; the terminal capability cause applies to all | Terminal until backend qualification changes. |
 | The future is cancelled or dropped in a live process (`timeout`, `select!`, abort) | No vector reaches the caller | Unknown | Any completed or in-flight request may have applied | Replay the caller's last durable page under its bounded policy; cancellation supplies no hidden checkpoint. |
 | Process dies before returning the vector | No vector reaches the caller | Unknown | Any completed or in-flight request may have applied | Same durable-page recovery, without relying on a process-death signal from the API. |
 
-A returned vector is a complete **remainder report** for that invocation, not a
-self-executing resume token. The caller owns retry classification, attempt and
-time ceilings, and durable inventory/page checkpoints. The kernel does not
-create persistent deletion jobs, enumerate keys, or certify namespace
-completeness.
+The outcome vector is the complete classified remainder report for that
+invocation. `remaining()` is only its checkpoint-serialization projection and
+cannot drive policy because it contains bare keys. The caller owns
+classification, attempt/time ceilings, and durable inventory/page checkpoints.
+The kernel does not create persistent deletion jobs, enumerate keys, or certify
+namespace completeness.
 
 ## Partial-batch loopback counterpart
 
-ADR 0001 batch 2 already supplies the one authoritative bulk-delete model.
-`state_kernel.rs:3320-3440` recognizes path-style `POST ?delete`, parses every
-`<Object><Key>` member, mutates per key, and emits one verbose
-`<DeleteResult>` containing mixed `<Deleted>` and `<Error>` entries. ADR 0005
-extends that branch; building a second DeleteObjects router or response model
-is a defect.
+ADR 0001 batch 2 already supplies the one authoritative bulk-delete model in
+the test-only `state_kernel::gateway_state_contract` module:
+`loopback_s3_request`'s bulk branch (currently lines 3320-3440) recognizes
+path-style `POST ?delete`, while `extract_delete_keys` parses every
+`<Object><Key>` member; the branch emits one verbose `<DeleteResult>` with
+mixed `<Deleted>` and `<Error>` entries. ADR 0005 extends those symbols;
+building a second router or response model is a defect.
 
-The implementation delta is exactly:
+The implementation delta required by A37/A38/A40/A42 is:
 
 1. **Key-vector observation.** Extend `LoopbackRequestObservation` for the
    bucket-level POST to retain the ordered submitted physical-key vector.
    Today `counterpart_key("/{bucket}")` is `None`, so method/path observation
    alone cannot prove A37's count, order, uniqueness, or 1,000-key ceiling.
-2. **Dedicated per-entry cut.**
+2. **Request-scoped arming.** Extend `ArmStorageFault` with a target form such
+   as `MultiDeleteRequest { occurrence }`, alongside its existing keyed form.
+   It arms the first, second, or later bucket-level POST without inventing a
+   key for a request whose `counterpart_key` is `None`.
+3. **Configurable per-entry cut.**
    `StorageFaultCut::KeyspaceMultiDeleteEntry` is matched by physical key
    inside the existing bulk branch without re-labelling the request as method
-   `DELETE`. A38 arms its BeforeEffect form on one or more keys; those keys stay
-   present and receive configured `<Error Code/Message>` entries while siblings
-   receive `<Deleted>`.
-3. **Dedicated whole-request cut.**
-   `StorageFaultCut::KeyspaceMultiDeleteRequest` matches the bucket-level POST
-   even though its single `key` field is `None`. BeforeEffect refuses the
-   entire request. AfterEffect applies the request and then drops or corrupts
-   the whole response. A40 arms only this cut for request ambiguity.
+   `DELETE`. Its arm carries bounded `Code` and `Message`, allowing A38 to
+   produce distinct errors. The BeforeEffect form leaves those keys present
+   while siblings receive `<Deleted>`.
+4. **Dedicated whole-request cut.**
+   `StorageFaultCut::KeyspaceMultiDeleteRequest` uses the request-scoped arm.
+   BeforeEffect refuses the entire request. AfterEffect applies it and then
+   drops or corrupts the whole response. A40 arms only this cut.
+5. **Definitive-refusal response mode.** A request-scoped, occurrence-selective
+   arm returns configurable HTTP 405/501 plus `MethodNotAllowed` /
+   `NotImplemented` metadata before effects. The existing bulk branch otherwise
+   returns 200 unconditionally. A42 places this refusal after one confirmed
+   chunk to prove that current and untouched tail outcomes are `Unsupported`,
+   never `NotAttempted`, and that no per-key fallback runs.
 
 The deterministic partial case remains one request, for example
 `deleted=[k0,k2,k4]`, `errors=[k1,k3]`, with public results restored to input
@@ -405,24 +452,21 @@ pub struct ObjectDeleteOutcome {
     pub result: Result<(), ObjectDeleteFailure>,
 }
 
-pub struct ObjectDeleteFailure {
-    pub code: String,
+pub struct ObjectDeleteDiagnostic {
+    pub code: Option<String>,
     pub message: String,
+    pub truncated: bool,
+}
+
+pub struct ObjectDeleteFailure {
+    pub diagnostic: ObjectDeleteDiagnostic,
 }
 
 #[non_exhaustive]
 pub enum DeleteObjectsRequestError {
-    Unsupported {
-        code: Option<String>,
-        message: String,
-    },
-    Request {
-        code: Option<String>,
-        message: String,
-    },
-    InvalidResponse {
-        message: String,
-    },
+    Unsupported { diagnostic: ObjectDeleteDiagnostic },
+    Request { diagnostic: ObjectDeleteDiagnostic },
+    InvalidResponse { diagnostic: ObjectDeleteDiagnostic },
 }
 
 impl ObjectStoreClient {
@@ -443,13 +487,14 @@ The loopback does not validate that header, so only the publication-gating
 real-S3 leg witnesses checksum-compatible provider traffic.
 
 The method neither chunks nor retries individual entries; the kernel owns
-chunk sequencing and policy. It converts request/service metadata into owned,
-sanitized `code`/`message` fields. Client capability absence and definitive
-operation refusals — HTTP 405/501 or service codes `MethodNotAllowed` /
-`NotImplemented` — map to `Unsupported`. Other request errors retain their
-diagnosis as `Request`; response-bijection violations carry an
-`InvalidResponse` message. `AtomicKeyspace` copies those fields to each
-affected public outcome rather than erasing a whole-batch 403 into the same
+chunk sequencing and policy. At this SDK seam, every provider diagnostic is
+normalized to the shared 512-byte combined code/message budget and records
+truncation. Client capability absence and definitive operation refusals — HTTP
+405/501 or service codes `MethodNotAllowed` / `NotImplemented` — map to
+`Unsupported`. Other request errors retain their diagnosis as `Request`;
+response-bijection violations carry `InvalidResponse`. `AtomicKeyspace` wraps
+one request-level diagnostic in `Arc` for the current chunk and tail rather
+than cloning it into every outcome or erasing a whole-batch 403 into the same
 value as a TCP reset.
 
 Using `object_store::delete_stream` directly was rejected for the new assured
@@ -521,7 +566,7 @@ The new method is the unconditional sibling of `delete` and
 | `incarnations/{key}` | No | No | No counter bump; raw delete/recreate remains in the same incarnation. |
 | `{scope}/trims/{seq}` certificate | No | No | Existing `OffsetExpired` authority remains; direct targeting is refused before effects. |
 | `fences/gc` | No | No | Fence-blind by design. Direct targeting is refused, but invoking this method while a chunk-GC sweep holds the fence violates ADR 0004's operational quiescence assertion. |
-| `keyspace-chunks/...` | No | No | Deleting v3 controls leaves unreachable chunks; up to 1,000 reachability roots can disappear per request and enlarge ADR 0004's broken-quiescence exposure. |
+| `keyspace-chunks/...` | No | No | Control deletion does not bump incarnation. Recreate of the same key at version 0 can re-materialize identical chunk paths that a concurrent sweep already classified as orphaned. |
 | Prior provider object versions | No | No explicit version deletion | Bucket versioning/lifecycle policy controls physical reclamation. |
 
 ### Quiescence ownership
@@ -532,14 +577,26 @@ property the kernel can prove. `delete_objects` deliberately does not read
 chunk-GC sweep holds that fence**. Such overlap is a violated precondition, not
 supported concurrency.
 
-The failure kind is ADR 0004 §5.2's existing broken-quiescence race, but the
-batch rate increases its blast radius: one request can remove 1,000 control
-roots between the sweep's reachability inventory and physical deletion. Under
-the already-invalid writer/sweeper interleaving, the sweep can delete a chunk
-that a later manifest names, producing `ChunkMissing` /
-`ManifestIncomplete`. A43 must prove fence blindness as this declared property
-and retain the broken-quiescence demonstration signature; it must not describe
-the absence of a fence read as neutral safety.
+The data-loss mechanism couples fence blindness to the raw-delete incarnation
+decision:
+
+1. `delete_objects` removes a v3 control without bumping its incarnation.
+2. The sweep exact-reads that control as absent and classifies chunk `C` as an
+   orphan.
+3. A writer that began before the fence recreates the same key with
+   byte-identical bytes. `begin_stream_create` binds the unchanged incarnation
+   and version 0; `value_manifest::chunk_object_key` frames paths by
+   `{namespace, key, incarnation, version, digest}`, so it re-materializes the
+   identical path for `C`.
+4. The sweep deletes `C`; the writer's conditional manifest publication then
+   succeeds and names the now-absent chunk.
+
+The result is ADR 0004's forbidden `ManifestIncomplete` state, observed as
+`KeyspaceError::ChunkMissing` by
+`a34_broken_quiescence_demonstration_cut`. One batch can expose up to 1,000
+same-era recreate/path collisions per request. A43 must assert the unchanged
+counter and identical-path coupling, not infer loss merely from removing
+otherwise-unreferenced roots.
 
 `read_state` after a confirmed raw delete follows the state already present:
 
@@ -568,8 +625,9 @@ For `N` accepted keys and no request-level stop:
 - normal direct-SDK request count is `ceil(N / 1000)`, versus `N` one-key
   DeleteObjects POSTs through published `delete_many`;
 - provider request staging is bounded by 1,000 paths;
-- `N <= 100,000`; the returned report remains `O(N)`, with maximum logical-key
-  bytes near 25.5 MiB plus bounded vector/allocation and diagnostic overhead;
+- the bounded memory components are the 24.32 MiB outcome-key copy, at most
+  0.50 MiB of chunk-local provider paths, and at most 48.83 MiB of distinct
+  512-byte diagnostics; request-level diagnostics are shared by `Arc`;
 - chunks are sequential, so at most one DeleteObjects operation is active from
   one call;
 - verbose responses spend response bytes on every success because explicit
@@ -665,12 +723,12 @@ rerun unchanged. The new implementation batch owns these claims:
 |---|---|---|
 | P1. Admission is bounded, complete, and effect-free. | **A36** `a36_delete_objects_input_preflight_is_side_effect_free`: empty input; 100,001-key `TooManyKeys`; invalid identifier; every reserved family; reserved-and-malformed precedence; duplicates at boundary positions; zero delete requests. | Seed valid siblings before each bad member; require reserved-check-first parity with `delete_many`, deterministic index/source, intact values, and an empty loopback delete log. |
 | P2. Wire chunks are bounded and ordered. | **A37** `a37_delete_objects_chunks_exactly_at_1000`: sizes 0, 1, 999, 1,000, 1,001, 2,000, 2,001; public constants; each POST has at most 1,000 exact physical keys; output length/order equals input. | Independent partition oracle over the new key-vector request observation; reject quiet mode, duplicate/missing request keys, concurrent/out-of-order chunks, or hidden per-key fallback. |
-| P3. A valid partial response is reported per key. | **A38** `a38_delete_objects_partial_batch_is_typed_per_key`: `KeyspaceMultiDeleteEntry` creates multiple `Deleted` and distinct `<Error Code/Message>` entries in shuffled response order; exact `Ok`/`Rejected` vector and remainder. | Exact object map proves confirmed keys gone and BeforeEffect rejects present. A bounded sample policy replays only transient errors; a permanent error remains surfaced. The legacy cut is not armed. |
-| P4. Cross-chunk remainder is complete without prescribing infinite retry. | **A39** `a39_delete_objects_remainder_crosses_chunks`: valid per-key errors do not prevent later chunks; `remaining` contains every unresolved key in order; no confirmed key appears. | 2,001-key failures on both sides of boundaries; classify transient, permanent, unsupported, and not-attempted outcomes and prove the selected bounded retry set terminates or surfaces terminal state. |
-| P5. Whole-request ambiguity never fabricates success or erase diagnosis. | **A40** `a40_delete_objects_lost_response_marks_chunk_unconfirmed`: `KeyspaceMultiDeleteRequest` BeforeEffect/AfterEffect yield identical current `Unconfirmed { code, message }` plus tail `NotAttempted`; prior chunks stay confirmed. | Pure oracle permits applied or unapplied current keys, never `Ok` without a valid response; assert a service 403 remains distinguishable from a transport reset. |
-| P6. Invalid provider responses fail closed. | **A41** `a41_delete_objects_invalid_response_is_never_success`: missing requested member, duplicate member, Deleted/Error conflict, unknown key, malformed XML. | Mutate every response position; current chunk is diagnostic `InvalidResponse`, tail untouched, no omitted key defaults to success, and blind retry is not presented as qualification. |
-| P7. Incapable or definitively refusing backends never emulate the wire. | **A42** `a42_delete_objects_fails_closed_without_wire_support`: in-memory capability absence and loopback 405/501 or `NotImplemented` produce diagnostic `Unsupported` outcomes with values intact. | Request counter proves zero sequential deletes and no fallback through `ObjectStoreClient::delete`; other request failures remain diagnostic `Unconfirmed`. |
-| P8. Lifecycle machinery is untouched, with quiescence consequence named. | **A43** `a43_delete_objects_stays_below_lifecycle_state`: inline/v3 controls; absent, tombstone, trim, and nonzero-incarnation cases; no tombstone/counter/fence/certificate/chunk requests or mutations. | State oracle checks existing read states, counter equality, and orphan chunks. Request log proves fence blindness; invoking during ADR 0004 GC is marked a violated precondition and retains the broken-quiescence `ChunkMissing`/`ManifestIncomplete` demonstration. |
+| P3. A valid partial response is reported per key. | **A38** `a38_delete_objects_partial_batch_is_typed_per_key`: configurable `KeyspaceMultiDeleteEntry` arms create multiple `Deleted` and distinct bounded diagnostics in shuffled response order; exact `Ok`/`Rejected` vector and serialized remainder. | Exact object map proves confirmed keys gone and BeforeEffect rejects present. A bounded sample policy iterates outcomes and replays only transient errors; a permanent error remains surfaced. The legacy cut is not armed. |
+| P4. Cross-chunk classification is complete without prescribing infinite retry. | **A39** `a39_delete_objects_remainder_crosses_chunks`: valid per-key errors do not prevent later chunks; the outcome vector preserves every classification and `remaining()` serializes exactly its unresolved keys in order. | 2,001-key failures on both sides of boundaries; policy iterates outcomes to classify transient, permanent, unsupported, and not-attempted states, then terminates or surfaces terminal state. No confirmed key enters either projection. |
+| P5. Whole-request ambiguity never fabricates success nor erases diagnosis. | **A40** `a40_delete_objects_lost_response_marks_chunk_unconfirmed`: request-scoped `KeyspaceMultiDeleteRequest` BeforeEffect/AfterEffect yield identical current shared-diagnostic `Unconfirmed` plus tail `NotAttempted`; prior chunks stay confirmed. | Pure oracle permits applied or unapplied current keys, never `Ok` without a valid response; assert a service 403 remains distinguishable from a transport reset and one diagnostic allocation is shared. |
+| P6. Invalid provider responses fail closed. | **A41** `a41_delete_objects_invalid_response_is_never_success`: missing requested member, duplicate member, Deleted/Error conflict, unknown key, malformed XML. | Mutate every response position; current chunk shares diagnostic `InvalidResponse`, tail is `NotAttempted`, no omitted key defaults to success, and blind retry is not presented as qualification. |
+| P7. Incapable or definitively refusing backends never emulate the wire. | **A42** `a42_delete_objects_fails_closed_without_wire_support`: in-memory absence and configurable 405/501 or `NotImplemented` produce diagnostic `Unsupported` with values intact. A 2,001-key leg refuses the second request after one confirmed chunk. | Assert the confirmed prefix stays `Ok`, both refusing current chunk and untouched tail are `Unsupported` (never `NotAttempted`), one diagnostic is shared, and no fallback reaches `ObjectStoreClient::delete`. Other failures remain `Unconfirmed`. |
+| P8. Lifecycle machinery is untouched, with quiescence consequence named. | **A43** `a43_delete_objects_stays_below_lifecycle_state`: inline/v3 controls; absent, tombstone, trim, and nonzero-incarnation cases; no tombstone/counter/fence/certificate/chunk mutations. | Prove fence blindness, batch-delete a v3 control, assert its counter unchanged, and show byte-identical recreate binds the same incarnation/version-0 `chunk_object_key`. Under the pre-fence-writer/sweep cut, require ADR 0004's forbidden `ManifestIncomplete` state witnessed as `KeyspaceError::ChunkMissing` by `a34_broken_quiescence_demonstration_cut`. |
 | P9. The primitive is visibly unconditional and non-atomic. | **A44** `a44_delete_objects_has_no_condition_or_transaction`: mixed success, earlier-chunk success plus later stop, and a parked concurrent replacement the request may delete; no etag/version/If-Match in request. | Demonstration records the allowed race and partial state. Companion per-key `delete_if_match` protects the replacement. |
 | P10. Published deletion APIs and their weaker adapter path do not move. | **A45** `a45_delete_many_and_delete_if_match_remain_unchanged`: compile-time signatures/types, A6/G117/G118, `N` one-key DeleteObjects POSTs for `delete_many`, boolean outcomes, and old fault mapping remain beside the new surface. | Dual-call trace distinguishes the legacy `object_store` response-trust path from bounded direct-SDK requests; no wrapper/deprecation/alias exists, and the unchanged missing-member/panic residual is explicit. |
 
@@ -697,6 +755,8 @@ leg green. The retained `ci-dev real-s3` run URL is the witness.
   `destroy`, `delete_below`, or current chunk-sweep contracts.
 - Key discovery, LIST completeness, witnessed inventory construction, or a
   durable deletion-job/checkpoint store.
+- Unbounded input in one call: `DELETE_OBJECTS_MAX_INPUT` is the ceiling and
+  paging/checkpointing larger inventories belongs to the caller.
 - Tombstone creation/removal, incarnation movement, trim certification,
   maintenance fencing, or v3 chunk reclamation.
 - Physical deletion of prior bucket versions or a guarantee of immediate byte
@@ -715,9 +775,13 @@ Load-bearing residuals are explicit:
 
 - **ADR 0004 quiescence remains external.** `delete_objects` is fence-blind.
   Calling it while chunk GC holds `fences/gc` violates the caller's operational
-  assertion and can enlarge the documented broken-quiescence
-  `ChunkMissing`/`ManifestIncomplete` race to 1,000 removed controls per
-  request. This proposal does not prevent or narrow that misuse.
+  assertion. Because raw deletion leaves incarnation unchanged, byte-identical
+  recreate binds version 0 and can reuse the exact chunk paths the sweep
+  classified as orphaned; deleting those re-materialized chunks before manifest
+  publication creates ADR 0004's forbidden `ManifestIncomplete` state,
+  witnessed as `KeyspaceError::ChunkMissing` by
+  `a34_broken_quiescence_demonstration_cut`. Up to 1,000 controls per request
+  can enter this invalid interleaving. This proposal does not prevent it.
 - **Two response-trust implementations coexist.** Unchanged
   `ObjectStoreClient::delete` callers keep `object_store 0.13.2` behavior:
   omitted non-error response members imply success and an error naming an
@@ -727,10 +791,10 @@ Load-bearing residuals are explicit:
   `KeyspaceDelete::AfterEffect` can delete a key and emit per-entry
   `InternalError`, so the new algebra may report `Rejected` for an applied
   delete. New claims use dedicated cuts; no failure is a presence proof.
-- **Retry classification is caller policy.** `remaining()` is complete
-  unresolved work, not a promise that replay terminates. The caller must bound
-  attempts/time, classify provider codes, and surface permanent or unsupported
-  outcomes.
+- **Retry classification is caller policy.** `remaining()` serializes bare
+  unresolved keys for checkpoints; it cannot classify them. Policy iterates the
+  outcome vector, bounds attempts/time, classifies provider diagnostics, and
+  surfaces permanent or unsupported outcomes.
 
 What also remains unassured by this design-only PR:
 

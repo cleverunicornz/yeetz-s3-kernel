@@ -11,14 +11,13 @@ intent: >
   per-key partial outcomes and unchanged single-key atomicity law.
 acceptanceCriteria:
   - "A human accepts and merges ADR 0005; before acceptance, no Decision vertex or accepted-log entry represents it as closed law."
-  - "The API admits at most 100,000 unique keys, sends sequential chunks of at most 1,000, and returns one ordered outcome per admitted key."
-  - "The existing loopback bulk branch gains exact key-vector logging; a dedicated partial cut reports mixed Deleted/Error entries exactly."
-  - "Dedicated BeforeEffect and AfterEffect whole-request cuts both report current Unconfirmed with owned diagnosis and tail NotAttempted."
-  - "Invalid, incomplete, contradictory, or non-bijective responses never default an omitted key to success."
-  - "An incapable or definitively refusing backend returns typed Unsupported and never silently falls back to per-key deletion."
-  - "Deletion writes no tombstone or counter and touches no trim/fence/chunk; fence blindness is tied to ADR 0004's named quiescence residual."
+  - "The API admits at most 100,000 unique keys, sends 1,000-key sequential chunks, retains only chunk-local paths, caps each diagnostic at 512 bytes, and shares request-level instances."
+  - "The existing loopback bulk branch gains key-vector logging, key-less occurrence arms, configurable entry errors, whole-request cuts, and 405/501 refusal mode."
+  - "Unconfirmed stops label only their untouched tail NotAttempted; a mid-call definitive refusal labels its current chunk and untouched tail Unsupported."
+  - "Invalid, incomplete, contradictory, or non-bijective responses never default an omitted key to success and never trigger per-key fallback."
+  - "The outcome vector preserves classification for bounded policy; remaining only serializes unresolved keys for durable checkpoints."
+  - "Deletion writes no tombstone or counter; fence-blind batch delete plus same-incarnation/version-0 recreate can reuse swept chunk paths, the named ADR 0004 residual."
   - "Published delete_many/delete/delete_if_match behavior remains unchanged; no batch is transactional or conditionally guarded."
-  - "remaining is unresolved work, not a retry set; bounded caller policy terminates or surfaces permanent and unsupported failures."
   - "A36-A45 pass in CI and a real-S3 witness proves checksum-compatible exact response bijection; refutation blocks publication."
   - "The primitive uses caller-supplied keys only; LIST authority, durable job checkpoints, and epoch adoption remain outside it."
 consumes:
@@ -38,7 +37,7 @@ tasks:
   - "Obtain human acceptance and merge; only then register ADR 0005 as a Decision and add it to the accepted structure log."
   - "Obtain separate human authorization for one firewalled kernel implementation batch."
   - "Implement the bounded direct-SDK seam and additive AtomicKeyspace API without migrating or strengthening existing methods."
-  - "Extend the existing loopback bulk branch with key-vector logging and dedicated cuts; prove A36-A45, quiescence residuals, and real-S3 qualification."
+  - "Extend the existing loopback bulk branch with key-vector logging, key-less occurrence arms, configurable entry errors, request cuts, and refusal mode; prove A36-A45 and real-S3 qualification."
   - "Publish the next free 0.4.x closure release; orchestrate every downstream adoption separately."
 witnesses:
   - "https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/32664321257"
@@ -49,8 +48,9 @@ disposition:
   residual: >
     This draft does not assure acceptance, implementation authorization,
     A36-A45 behavior, provider qualification, publication, inventory/job
-    completeness, or adoption. It leaves ADR 0004 quiescence external and the
-    weaker legacy DeleteObjects response path live; retry policy stays caller-owned.
+    completeness, or adoption. It leaves ADR 0004 quiescence external,
+    including same-era chunk-path reuse, and keeps the weaker legacy response
+    path live; outcome classification and bounded retry policy stay caller-owned.
 source: "https://yeetz.dev/bedrock/path/docs/decisions/0005-batched-deletion.md"
 body: |
   ## Proposal depth
