@@ -1,9 +1,14 @@
 [package]
 name = "yeetz-s3-kernel"
-version = "0.4.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
 description = "Assured S3 lineage and canonical state kernel"
+keywords = ["s3", "storage", "kernel", "event-sourcing", "lineage"]
+categories = ["database-implementations", "asynchronous"]
 
 [dependencies]
 bytes.workspace = true

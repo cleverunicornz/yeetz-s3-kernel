@@ -3,7 +3,12 @@ name = "yeetz-sdk-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
 description = "Provider-neutral SDK foundation for the active Yeetz SDK hierarchy"
+keywords = ["sdk", "http-client", "retry", "rate-limiting"]
+categories = ["web-programming::http-client", "asynchronous"]
 
 [dependencies]
 base64.workspace = true

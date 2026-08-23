@@ -1,9 +1,14 @@
 [package]
 name = "yeetz-s3-streams"
-version = "0.4.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
 description = "Append-only event logs on the kernel AtomicKeyspace (ADR 0002)"
+keywords = ["s3", "event-log", "append-only", "event-sourcing", "streams"]
+categories = ["database-implementations", "asynchronous"]
 
 [dependencies]
 base64.workspace = true
