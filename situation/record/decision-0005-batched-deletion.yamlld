@@ -1,0 +1,35 @@
+# Registers docs/decisions/0005-batched-deletion.md as a proposed Decision
+# vertex. Design-only: implementation remains a separately authorized,
+# firewalled kernel batch under invariant-kernel-extension.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/decision-0005-batched-deletion"
+"@type": "https://yeetz.dev/bedrock/ontology/Decision"
+label: "ADR 0005: unconditional S3 multi-object deletion"
+timestamp: "2026-08-23T18:32:39Z"
+source: "https://yeetz.dev/bedrock/path/docs/decisions/0005-batched-deletion.md"
+requires: "https://yeetz.dev/bedrock/vertex/decision-0001-atomic-keyspace"
+references:
+  - "https://yeetz.dev/bedrock/vertex/invariant-kernel-extension"
+  - "https://yeetz.dev/bedrock/vertex/invariant-13-state"
+  - "https://yeetz.dev/bedrock/vertex/invariant-08-dependency-boundary"
+statement: >
+  PROPOSED, design-only; no implementation or publication is authorized.
+  Adds AtomicKeyspace::delete_objects beside the published, frozen
+  delete_many contract: sequential S3 DeleteObjects transport chunks of at
+  most 1,000 unique keys, with one ordered Ok(deleted) or typed failure per
+  admitted key. Valid mixed Deleted/Error responses are ordinary partial
+  success; a request-level or invalid-response ambiguity marks the current
+  chunk Unconfirmed and the untouched tail NotAttempted, so replay is
+  idempotent and no success is fabricated. Hard boundaries: batch is
+  transport, never a cross-key transaction; batched conditional delete is
+  permanently absent and delete_if_match remains per-key; the raw primitive
+  writes no tombstone, bumps no incarnation counter, and touches no trim
+  certificate, maintenance fence, or v3 chunk. The named consumer is
+  wholesale deletion of immutable, write-refused repository epochs, without
+  coupling the kernel to epoch types or treating LIST as inventory authority.
+  Proof plan A36-A45 covers admission, 1,000-key boundaries, deterministic
+  partial-batch and whole-response loopback cuts, resumability, lifecycle
+  non-effects, unconditional/non-atomic behavior, unsupported backends, and
+  coexistence with unchanged delete_many/delete_if_match. Publication, if
+  accepted and implemented in one later kernel batch, targets the next free
+  0.4.x release and requires ci-dev plus real-S3 witnesses.
