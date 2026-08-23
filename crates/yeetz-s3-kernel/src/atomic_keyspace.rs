@@ -476,7 +476,6 @@ fn kernel_delete_diagnostic(
     }
 }
 
-
 /// Conservative identifier rule: non-empty slash-joined segments of
 /// `[A-Za-z0-9][A-Za-z0-9._-]*`, total length ≤ 255, no leading or
 /// trailing slash, no empty segments.
@@ -1311,22 +1310,23 @@ impl AtomicKeyspace {
             // Label the current chunk with `reason` (one shared
             // diagnostic) and the untouched tail `NotAttempted`, then
             // stop: one ambiguous chunk has one deterministic tail.
-            let stop_unconfirmed = |outcomes: &mut Vec<DeleteObjectsOutcome>,
-                                        reason: DeleteObjectsUnconfirmedReason,
-                                        diagnostic: Arc<DeleteObjectsDiagnostic>| {
-                for (offset, outcome) in outcomes[start..].iter_mut().enumerate() {
-                    if outcome.result.is_ok() {
-                        outcome.result = Err(if offset < chunk.len() {
-                            DeleteObjectsFailure::Unconfirmed {
-                                reason,
-                                diagnostic: Arc::clone(&diagnostic),
-                            }
-                        } else {
-                            DeleteObjectsFailure::NotAttempted
-                        });
+            let stop_unconfirmed =
+                |outcomes: &mut Vec<DeleteObjectsOutcome>,
+                 reason: DeleteObjectsUnconfirmedReason,
+                 diagnostic: Arc<DeleteObjectsDiagnostic>| {
+                    for (offset, outcome) in outcomes[start..].iter_mut().enumerate() {
+                        if outcome.result.is_ok() {
+                            outcome.result = Err(if offset < chunk.len() {
+                                DeleteObjectsFailure::Unconfirmed {
+                                    reason,
+                                    diagnostic: Arc::clone(&diagnostic),
+                                }
+                            } else {
+                                DeleteObjectsFailure::NotAttempted
+                            });
+                        }
                     }
-                }
-            };
+                };
 
             match self.store.delete_objects(&paths).await {
                 Ok(entries) => {
@@ -1346,14 +1346,11 @@ impl AtomicKeyspace {
                             break;
                         }
                         filled[*local] = true;
-                        outcomes[start + *local].result =
-                            entry.result.clone().map_err(|failure| {
-                                DeleteObjectsFailure::Rejected {
-                                    diagnostic: Arc::new(kernel_delete_diagnostic(
-                                        &failure.diagnostic,
-                                    )),
-                                }
-                            });
+                        outcomes[start + *local].result = entry.result.clone().map_err(|failure| {
+                            DeleteObjectsFailure::Rejected {
+                                diagnostic: Arc::new(kernel_delete_diagnostic(&failure.diagnostic)),
+                            }
+                        });
                     }
                     if bijective {
                         bijective = filled.iter().all(|&slot| slot);

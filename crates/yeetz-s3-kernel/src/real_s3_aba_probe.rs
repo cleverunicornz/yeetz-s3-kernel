@@ -970,9 +970,7 @@ async fn deletion_battery(
         .map_err(|error| format!("deletion keyspace: {error}"))?;
     const TOTAL: usize = 1_001;
     const PRESENT: usize = 30;
-    let keys: Vec<String> = (0..TOTAL)
-        .map(|index| format!("cell-{index:04}"))
-        .collect();
+    let keys: Vec<String> = (0..TOTAL).map(|index| format!("cell-{index:04}")).collect();
     for key in keys.iter().take(PRESENT) {
         keyspace
             .create(key, Bytes::from_static(b"delete-objects-leg"))

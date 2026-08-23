@@ -8,8 +8,8 @@ use aws_sdk_s3::operation::delete_objects::DeleteObjectsError;
 use aws_sdk_s3::presigning::PresigningConfig;
 #[cfg(feature = "test-support")]
 use aws_sdk_s3::primitives::ByteStream;
-use aws_sdk_s3::types::{ChecksumAlgorithm, CompletedMultipartUpload, CompletedPart};
 use aws_sdk_s3::types::Delete as S3Delete;
+use aws_sdk_s3::types::{ChecksumAlgorithm, CompletedMultipartUpload, CompletedPart};
 use aws_sdk_s3::types::{DeletedObject, Error as S3ErrorEntry, ObjectIdentifier};
 use bytes::Bytes;
 use futures::stream::BoxStream;
@@ -170,22 +170,16 @@ pub enum DeleteObjectsRequestError {
     /// codes `MethodNotAllowed`/`NotImplemented`). Terminal until
     /// backend qualification changes; no per-key fallback runs.
     #[error("multi-object delete unsupported: {}", diagnostic.message)]
-    Unsupported {
-        diagnostic: ObjectDeleteDiagnostic,
-    },
+    Unsupported { diagnostic: ObjectDeleteDiagnostic },
     /// The request failed without a trustworthy per-key response
     /// (transport failure, timeout, or a non-refusal service error).
     #[error("multi-object delete request failed: {}", diagnostic.message)]
-    Request {
-        diagnostic: ObjectDeleteDiagnostic,
-    },
+    Request { diagnostic: ObjectDeleteDiagnostic },
     /// The response violated the exact bijection: a missing,
     /// duplicate, contradictory, or unexpected member, or a body that
     /// did not decode. No omitted key defaults to success.
     #[error("multi-object delete response invalid: {}", diagnostic.message)]
-    InvalidResponse {
-        diagnostic: ObjectDeleteDiagnostic,
-    },
+    InvalidResponse { diagnostic: ObjectDeleteDiagnostic },
 }
 
 /// Truncate `value` to at most `max` UTF-8 bytes on a char boundary.
@@ -203,10 +197,7 @@ fn truncate_utf8(value: &mut String, max: usize) {
 /// Bound provider code+message to the combined diagnostic budget:
 /// the code is policy-bearing and kept first; the message is truncated
 /// to the remainder; a code alone over budget is itself truncated.
-fn bounded_delete_diagnostic(
-    code: Option<String>,
-    message: String,
-) -> ObjectDeleteDiagnostic {
+fn bounded_delete_diagnostic(code: Option<String>, message: String) -> ObjectDeleteDiagnostic {
     let mut code = code.unwrap_or_default();
     let mut message = message;
     if code.len() + message.len() > DELETE_OBJECTS_DIAGNOSTIC_BUDGET {
@@ -311,9 +302,7 @@ fn reconcile_delete_objects(
 /// stays `Request` with its provider code so policy can tell it from
 /// a transport reset (which carries no code); a response that never
 /// decoded is `InvalidResponse`.
-fn map_delete_objects_error(
-    error: &SdkError<DeleteObjectsError>,
-) -> DeleteObjectsRequestError {
+fn map_delete_objects_error(error: &SdkError<DeleteObjectsError>) -> DeleteObjectsRequestError {
     match error {
         SdkError::ServiceError(service) => {
             let diagnostic = bounded_delete_diagnostic(
@@ -335,18 +324,16 @@ fn map_delete_objects_error(
         }
         // An HTTP response arrived but never became a typed
         // DeleteObjects output (malformed body): fail closed.
-        SdkError::ResponseError(response) => {
-            DeleteObjectsRequestError::InvalidResponse {
-                diagnostic: bounded_delete_diagnostic(
-                    None,
-                    format!(
-                        "response did not decode ({}): {}",
-                        response.raw().status().as_u16(),
-                        provider_error_text(error)
-                    ),
+        SdkError::ResponseError(response) => DeleteObjectsRequestError::InvalidResponse {
+            diagnostic: bounded_delete_diagnostic(
+                None,
+                format!(
+                    "response did not decode ({}): {}",
+                    response.raw().status().as_u16(),
+                    provider_error_text(error)
                 ),
-            }
-        }
+            ),
+        },
         _ => DeleteObjectsRequestError::Request {
             diagnostic: bounded_delete_diagnostic(None, provider_error_text(error)),
         },
@@ -1149,9 +1136,7 @@ impl ObjectStoreClient {
             .send()
             .await
         {
-            Ok(output) => {
-                reconcile_delete_objects(paths, output.deleted(), output.errors())
-            }
+            Ok(output) => reconcile_delete_objects(paths, output.deleted(), output.errors()),
             Err(error) => Err(map_delete_objects_error(&error)),
         }
     }

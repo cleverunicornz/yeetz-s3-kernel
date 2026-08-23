@@ -3430,10 +3430,7 @@ pub mod gateway_state_contract {
                     if let Some(start) = xml.find(&member(tag))
                         && let Some(rel) = xml[start..].find(&end_tag(tag))
                     {
-                        xml.replace_range(
-                            start..start + rel + end_tag(tag).len(),
-                            "",
-                        );
+                        xml.replace_range(start..start + rel + end_tag(tag).len(), "");
                         return true;
                     }
                     false

@@ -24,12 +24,12 @@ use yeetz_sdk_s3::ObjectStoreClient;
 
 use crate::atomic_keyspace::{
     AtomicKeyspace, DELETE_OBJECTS_MAX_DIAGNOSTIC_BYTES, DELETE_OBJECTS_MAX_INPUT,
-    DELETE_OBJECTS_MAX_KEYS, DeleteObjectsFailure, DeleteObjectsInputError,
-    DeleteObjectsOutcome, DeleteObjectsUnconfirmedReason, KEYSPACE_ROOT, KeyState, KeyspaceError,
+    DELETE_OBJECTS_MAX_KEYS, DeleteObjectsFailure, DeleteObjectsInputError, DeleteObjectsOutcome,
+    DeleteObjectsUnconfirmedReason, KEYSPACE_ROOT, KeyState, KeyspaceError,
 };
 use crate::state_kernel::gateway_state_contract::{
-    CounterpartSnapshot, LoopbackCounterpart, LoopbackRequestObservation, MultiDeleteResponseMutation,
-    StorageFaultCut, StorageFaultPhase,
+    CounterpartSnapshot, LoopbackCounterpart, LoopbackRequestObservation,
+    MultiDeleteResponseMutation, StorageFaultCut, StorageFaultPhase,
 };
 use crate::value_manifest::{CHUNK_BYTES, chunk_object_key};
 
@@ -148,8 +148,9 @@ fn classify_outcome(outcome: &DeleteObjectsOutcome) -> PolicyAction {
             Some("TransientHiccup") => PolicyAction::Replay,
             _ => PolicyAction::Surface,
         },
-        Err(DeleteObjectsFailure::Unconfirmed { .. })
-        | Err(DeleteObjectsFailure::NotAttempted) => PolicyAction::Replay,
+        Err(DeleteObjectsFailure::Unconfirmed { .. }) | Err(DeleteObjectsFailure::NotAttempted) => {
+            PolicyAction::Replay
+        }
         Err(DeleteObjectsFailure::Unsupported { .. }) => PolicyAction::Terminal,
     }
 }
@@ -219,7 +220,10 @@ async fn a36_delete_objects_input_preflight_is_side_effect_free() {
     }
 
     // Invalid identifier, by exact index.
-    match keyspace.delete_objects(&["fine", "bad key!", "tombstones/later"]).await {
+    match keyspace
+        .delete_objects(&["fine", "bad key!", "tombstones/later"])
+        .await
+    {
         Err(DeleteObjectsInputError::Key { index, key, source }) => {
             assert_eq!((index, key.as_str()), (1, "bad key!"));
             assert!(matches!(source, KeyspaceError::InvalidIdentifier(_)));
@@ -306,10 +310,7 @@ async fn a37_delete_objects_chunks_exactly_at_1000() {
             // Unconditional transport: no conditional header ever.
             assert!(post.if_match.is_none() && post.if_none_match.is_none());
         }
-        let expected: Vec<String> = keys
-            .iter()
-            .map(|key| control_path("a37", key))
-            .collect();
+        let expected: Vec<String> = keys.iter().map(|key| control_path("a37", key)).collect();
         assert_eq!(flattened, expected, "size {size}");
         let mut unique = flattened.clone();
         unique.sort_unstable();
@@ -319,7 +320,10 @@ async fn a37_delete_objects_chunks_exactly_at_1000() {
         // No hidden per-key fallback: the call issues no single-key
         // DELETE requests.
         assert!(
-            !snapshot.requests.iter().any(|request| request.method == "DELETE"),
+            !snapshot
+                .requests
+                .iter()
+                .any(|request| request.method == "DELETE"),
             "size {size}"
         );
 
@@ -416,10 +420,7 @@ async fn a38_delete_objects_partial_batch_is_typed_per_key() {
         .map(|outcome| outcome.key.as_str())
         .collect();
     assert_eq!(replay, ["k1"]);
-    let replayed = keyspace
-        .delete_objects(&["k1"])
-        .await
-        .unwrap();
+    let replayed = keyspace.delete_objects(&["k1"]).await.unwrap();
     assert!(replayed[0].result.is_ok());
     assert_object_state(&store, &control_path("a38", "k3"), true).await;
 
@@ -557,7 +558,10 @@ async fn a39_delete_objects_remainder_crosses_chunks() {
         .map(|index| keys[index].clone())
         .collect();
     debug_assert_eq!(expected_remaining.len(), 1_003);
-    assert_eq!(DeleteObjectsOutcome::remaining(&outcomes), expected_remaining);
+    assert_eq!(
+        DeleteObjectsOutcome::remaining(&outcomes),
+        expected_remaining
+    );
 
     // The bounded replay converges with no side effects on the
     // confirmed set; the surfaced key stays.
@@ -698,7 +702,9 @@ async fn a41_delete_objects_invalid_response_is_never_success() {
                 .await
                 .unwrap();
         }
-        counterpart.arm_multi_delete_response_mutation(1, mutation).await;
+        counterpart
+            .arm_multi_delete_response_mutation(1, mutation)
+            .await;
         let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
         let outcomes = keyspace.delete_objects(&refs).await.unwrap();
 
@@ -722,7 +728,11 @@ async fn a41_delete_objects_invalid_response_is_never_success() {
         }
         // One logical operation only: no blind retry was issued inside
         // the call.
-        assert_eq!(bulk_posts(&counterpart.snapshot().await).len(), 1, "{mutation:?}");
+        assert_eq!(
+            bulk_posts(&counterpart.snapshot().await).len(),
+            1,
+            "{mutation:?}"
+        );
         counterpart.shutdown().await;
     }
 }
@@ -788,12 +798,19 @@ async fn a42_delete_objects_fails_closed_without_wire_support() {
         let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
         let outcomes = keyspace.delete_objects(&refs).await.unwrap();
         assert_eq!(outcomes.len(), SIZE);
-        assert!(outcomes[..1_000].iter().all(|outcome| outcome.result.is_ok()));
+        assert!(
+            outcomes[..1_000]
+                .iter()
+                .all(|outcome| outcome.result.is_ok())
+        );
         for outcome in &outcomes[1_000..] {
             unsupported_diagnostic(outcome);
         }
         let shared = unsupported_diagnostic(&outcomes[1_000]);
-        assert!(Arc::ptr_eq(shared, unsupported_diagnostic(&outcomes[2_000])));
+        assert!(Arc::ptr_eq(
+            shared,
+            unsupported_diagnostic(&outcomes[2_000])
+        ));
         // Confirmed prefix applied; refused keys were not sent and
         // remain present.
         assert_object_state(&store, &control_path("a42", &keys[5]), false).await;
@@ -853,7 +870,10 @@ async fn a43_delete_objects_stays_below_lifecycle_state() {
         .unwrap();
     let inline = keyspace.delete_objects(&["inline"]).await.unwrap();
     assert!(inline[0].result.is_ok());
-    assert_eq!(keyspace.read_state("inline").await.unwrap(), KeyState::Absent);
+    assert_eq!(
+        keyspace.read_state("inline").await.unwrap(),
+        KeyState::Absent
+    );
     assert_object_state(&store, &control_path("a43", "tombstones/inline"), false).await;
     assert_eq!(keyspace.incarnation_for_test("inline").await.unwrap(), 0);
 
@@ -1053,10 +1073,12 @@ async fn a44_delete_objects_has_no_condition_or_transaction() {
     assert!(outcomes[6].result.is_ok());
     // ...an earlier confirmed chunk that stands, minus its own
     // per-key rejection at index 5...
-    assert!(outcomes[..1_000]
-        .iter()
-        .enumerate()
-        .all(|(index, outcome)| index == 5 || outcome.result.is_ok()));
+    assert!(
+        outcomes[..1_000]
+            .iter()
+            .enumerate()
+            .all(|(index, outcome)| index == 5 || outcome.result.is_ok())
+    );
     assert_object_state(&store, &control_path("a44", &keys[7]), false).await;
     // ...and a stopped later chunk with an untouched NotAttempted tail.
     let (reason, _) = unconfirmed_parts(&outcomes[2_000]);
@@ -1100,9 +1122,11 @@ async fn a44_delete_objects_has_no_condition_or_transaction() {
 
     // Unconditional wire: no etag, version, or If-Match in any request.
     let snapshot = counterpart.snapshot().await;
-    assert!(bulk_posts(&snapshot)
-        .iter()
-        .all(|post| post.if_match.is_none() && post.if_none_match.is_none()));
+    assert!(
+        bulk_posts(&snapshot)
+            .iter()
+            .all(|post| post.if_match.is_none() && post.if_none_match.is_none())
+    );
     counterpart.shutdown().await;
 }
 
@@ -1144,9 +1168,11 @@ async fn a45_delete_many_and_delete_if_match_remain_unchanged() {
         })
         .collect();
     assert_eq!(legacy_posts.len(), 3);
-    assert!(legacy_posts
-        .iter()
-        .all(|post| post.delete_keys.as_deref().is_some_and(|keys| keys.len() == 1)));
+    assert!(legacy_posts.iter().all(|post| {
+        post.delete_keys
+            .as_deref()
+            .is_some_and(|keys| keys.len() == 1)
+    }));
 
     // G117: an armed legacy KeyspaceDelete AfterEffect cut inside a
     // multi-key POST still reports deleted=false for that key only —
@@ -1194,7 +1220,8 @@ async fn a45_delete_many_and_delete_if_match_remain_unchanged() {
         .requests
         .iter()
         .find(|request| {
-            request.method == "DELETE" && request.key.as_deref() == Some(&control_path("a45", "cond"))
+            request.method == "DELETE"
+                && request.key.as_deref() == Some(&control_path("a45", "cond"))
         })
         .expect("the conditional delete wire request");
     assert!(conditional_delete.if_match.is_some());
