@@ -3,7 +3,12 @@ name = "yeetz-sdk-s3"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
 description = "Request-scoped S3-compatible object storage SDK mechanics"
+keywords = ["s3", "object-storage", "aws", "multipart"]
+categories = ["api-bindings", "asynchronous"]
 
 [dependencies]
 yeetz-sdk-core = { workspace = true }
