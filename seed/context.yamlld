@@ -1,0 +1,97 @@
+# Installed by bedrock v0.3.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
+# Bedrock repo-local @context — the single serviceable context for every
+# situation/<ns>/ vertex (SPINE §4 C3: one @context, no remote loading).
+# W1 embeds this exact map and serves it for the IRI
+#   https://yeetz.dev/bedrock/context/v1
+# via the JSON-LD load callback; every other URL is refused.
+#
+# Vocabulary rule: a term is typed "@id" when its value is a pointer
+# (edge target or resource locator), so it expands to an absolute IRI.
+# Pointer value convention: vertex locals live under
+#   https://yeetz.dev/bedrock/vertex/<local-name>
+# repo-relative paths are encoded under
+#   https://yeetz.dev/bedrock/path/<repo-path>   (strip the prefix -> path)
+# so that every pointer is absolute up front and the compiler can map
+# path pointers back to disk paths for resolution (C5).
+"@context":
+  # literal fields
+  label:
+    "@id": "https://yeetz.dev/bedrock/label"
+  statement:
+    "@id": "https://yeetz.dev/bedrock/statement"
+  layer:
+    "@id": "https://yeetz.dev/bedrock/layer"
+  role:
+    "@id": "https://yeetz.dev/bedrock/role"
+  gate:
+    "@id": "https://yeetz.dev/bedrock/gate"
+  # edge terms — IRI-valued pointers
+  requires:
+    "@id": "https://yeetz.dev/bedrock/requires"
+    "@type": "@id"
+  references:
+    "@id": "https://yeetz.dev/bedrock/references"
+    "@type": "@id"
+    "@container": "@set"
+  consumes:
+    "@id": "https://yeetz.dev/bedrock/consumes"
+    "@type": "@id"
+    "@container": "@set"
+  produces:
+    "@id": "https://yeetz.dev/bedrock/produces"
+    "@type": "@id"
+    "@container": "@set"
+  member-of:
+    "@id": "https://yeetz.dev/bedrock/member-of"
+    "@type": "@id"
+  supersedes:
+    "@id": "https://yeetz.dev/bedrock/supersedes"
+    "@type": "@id"
+  # depth and layout pointers — path-encoded, IRI-valued
+  source:
+    "@id": "https://yeetz.dev/bedrock/source"
+    "@type": "@id"
+  path:
+    "@id": "https://yeetz.dev/bedrock/path"
+    "@type": "@id"
+    "@container": "@set"
+  # plan + record fields (0.2.0 base protocol)
+  intent:
+    "@id": "https://yeetz.dev/bedrock/intent"
+  acceptanceCriteria:
+    "@id": "https://yeetz.dev/bedrock/acceptance-criteria"
+    "@container": "@set"
+  tasks:
+    "@id": "https://yeetz.dev/bedrock/tasks"
+    "@container": "@set"
+  witnesses:
+    "@id": "https://yeetz.dev/bedrock/witnesses"
+    "@container": "@set"
+  reflectDepth:
+    "@id": "https://yeetz.dev/bedrock/reflect-depth"
+  oracle:
+    "@id": "https://yeetz.dev/bedrock/oracle"
+    "@type": "@id"
+  disposition:
+    "@id": "https://yeetz.dev/bedrock/disposition"
+    "@type": "@json"
+  subject:
+    "@id": "https://yeetz.dev/bedrock/subject"
+    "@type": "@id"
+  criteria:
+    "@id": "https://yeetz.dev/bedrock/criteria"
+    "@container": "@set"
+  findings:
+    "@id": "https://yeetz.dev/bedrock/findings"
+    "@type": "@json"
+  artifactDigest:
+    "@id": "https://yeetz.dev/bedrock/artifact-digest"
+  destination:
+    "@id": "https://yeetz.dev/bedrock/destination"
+  config:
+    "@id": "https://yeetz.dev/bedrock/config"
+    "@type": "@id"
+  result:
+    "@id": "https://yeetz.dev/bedrock/result"
+  timestamp:
+    "@id": "https://yeetz.dev/bedrock/timestamp"

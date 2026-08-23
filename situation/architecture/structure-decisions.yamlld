@@ -1,0 +1,9 @@
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/structure-decisions"
+"@type": "https://yeetz.dev/bedrock/ontology/SituationStructure"
+label: "ADRs (atomic keyspace, streams)"
+statement: >
+  docs/decisions/ — ADR 0001 (atomic keyspace), ADR 0002 (streams).
+  Append-only; supersede, never edit.
+path:
+  - "https://yeetz.dev/bedrock/path/docs/decisions"

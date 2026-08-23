@@ -1,0 +1,8 @@
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/epoch-20260823-9eb367706d13"
+"@type": "https://yeetz.dev/bedrock/ontology/EpochRecord"
+commit: "9eb367706d133866ec5005d0b4127ce1b282bf14"
+version: "0.2.1"
+mode: adopt
+offline: false
+statement: "Everything after this commit operates under bedrock; prior history is reference, never law."

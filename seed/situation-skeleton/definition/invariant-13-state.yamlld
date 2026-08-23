@@ -1,0 +1,11 @@
+# Floor invariant 13 of 16 (spec/floor-v2.md §4). Layer: floor.
+# Statement carries the floor prose verbatim.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/invariant-13-state"
+"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+label: "State: one storage truth through the kernel"
+layer: "floor"
+statement: >
+  State: one storage truth through the kernel; records are immutable, created by
+  conditional write; pointers move by CAS; every projection is rebuildable from
+  records; reads are fenced; an integrity failure is never translated to absence.

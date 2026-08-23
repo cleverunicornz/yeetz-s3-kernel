@@ -1,0 +1,16 @@
+# Floor invariant 8 of 16 (spec/floor-v2.md §4). Layer: floor.
+# §4 item 8 reads "The dependency boundary is the assurance boundary. (§3
+# verbatim.)" — the statement below is the §3 text, verbatim.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/invariant-08-dependency-boundary"
+"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+label: "The dependency boundary is the assurance boundary"
+layer: "floor"
+statement: >
+  The dependency boundary is the assurance boundary. What crosses it
+  version-pinned is assured-by-default at that pin; you verify your
+  *consumption*, never the dependency's internals — the same law root already held for adopted
+  protocols (S3, Matrix, Git), generalized to every crate boundary. Pins are
+  assured versions; bumps are deliberate acts. A missing capability at a consumed
+  boundary is BLOCKING — stop and escalate; working around a boundary is the
+  disqualifying failure.

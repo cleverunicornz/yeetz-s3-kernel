@@ -1,0 +1,9 @@
+# Floor invariant 15 of 16 (spec/floor-v2.md §4). Layer: floor.
+# Statement carries the floor prose verbatim.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/invariant-15-decisions-append-only"
+"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+label: "Decisions are append-only"
+layer: "floor"
+statement: >
+  Decisions are append-only: ADRs are immutable — supersede, never edit.

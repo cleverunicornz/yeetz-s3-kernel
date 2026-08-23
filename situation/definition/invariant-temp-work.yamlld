@@ -1,0 +1,13 @@
+# Migrated from the hand-written root AGENTS.md TEMP-WORK LAW.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/invariant-temp-work"
+"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+label: "Temp work lives under /Volumes/code/temp"
+layer: "situated"
+statement: >
+  All scratch and temporary work lives under /Volumes/code/temp/ — nowhere
+  else. Never mktemp, /tmp, /private/tmp, $TMPDIR, or any path on the boot
+  drive (it is small and not ours to consume); git worktrees only in the
+  sanctioned worktree locations; tools that default to a temp location get
+  TMPDIR overridden or explicit output paths. When the task completes,
+  remove what you created — leftover scratch is an incomplete delivery.

@@ -1,0 +1,10 @@
+# Floor invariant 2 of 16 (spec/floor-v2.md §4). Layer: floor.
+# Statement carries the floor prose verbatim.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/invariant-02-gap-suspects"
+"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+label: "A gap has three suspects"
+layer: "floor"
+statement: >
+  A gap has three suspects — the code, the requirement, or the instrument.
+  Interrogate in the open before displacing any of them.

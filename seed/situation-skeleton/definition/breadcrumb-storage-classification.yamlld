@@ -1,0 +1,9 @@
+# Breadcrumb: storage classification tooling. Spec/floor-v2.md §4 list.
+# Pointer is institutional (ephemeral-test default); it lives in the gate prose.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/breadcrumb-storage-classification"
+"@type": "https://yeetz.dev/bedrock/ontology/Breadcrumb"
+label: "Storage classification"
+gate: >
+  Ephemeral-test default: fresh bucket + scoped key, torn down on exit;
+  retention needs a named owner and lifetime.

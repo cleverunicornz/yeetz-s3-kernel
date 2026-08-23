@@ -1,0 +1,8 @@
+# Breadcrumb: settings poison guard. Spec/floor-v2.md §4 list.
+# Pointer is institutional (merge=ours rule); it lives in the gate prose.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/breadcrumb-settings-poison-guard"
+"@type": "https://yeetz.dev/bedrock/ontology/Breadcrumb"
+label: "Settings poison guard"
+gate: >
+  A merged branch's agent-settings file is never accepted (merge=ours).

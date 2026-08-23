@@ -1,0 +1,12 @@
+# Floor invariant 9 of 16 (spec/floor-v2.md §4). Layer: floor.
+# Statement tightens the floor prose: "the rubric (§5)" dropped the spec-internal
+# section pointer, leaving "Extract when the rubric passes".
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/invariant-09-public-first"
+"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+label: "Public-first"
+layer: "floor"
+statement: >
+  Public-first. Before building inside, ask why this cannot be a public crate or
+  repo; work backwards from that. Extract when the rubric passes; private only
+  for named domain knowledge or secrets.

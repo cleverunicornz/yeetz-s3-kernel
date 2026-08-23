@@ -1,0 +1,10 @@
+# Breadcrumb: external source research bank. Spec/floor-v2.md §4 list.
+# Pointer is institutional (shared clone bank on the machine); it lives in the
+# gate prose.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/breadcrumb-external-source-research"
+"@type": "https://yeetz.dev/bedrock/ontology/Breadcrumb"
+label: "External source research"
+gate: >
+  Read the checked-out clone (shared bank at $YEETZ_EXTERNAL_REPOS, <owner>-<repo>,
+  pull --ff-only), not docs.

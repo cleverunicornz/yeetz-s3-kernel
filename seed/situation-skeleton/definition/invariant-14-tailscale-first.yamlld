@@ -1,0 +1,11 @@
+# Floor invariant 14 of 16 (spec/floor-v2.md §4). Layer: floor.
+# Statement carries the floor prose verbatim.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/invariant-14-tailscale-first"
+"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+label: "Tailscale-first"
+layer: "floor"
+statement: >
+  Tailscale-first: all internal reach rides the tailnet; SSH-over-Tailscale for
+  operators; nothing internal is served outside it; public-IP access is
+  break-glass only.

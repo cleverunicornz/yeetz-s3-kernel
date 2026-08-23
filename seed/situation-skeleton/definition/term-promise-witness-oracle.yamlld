@@ -1,0 +1,13 @@
+# Floor term (0.2.0 base protocol): THE CHAIN that anchors every plan.
+# Statement is the chain paragraph condensed to three sentences.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/term-promise-witness-oracle"
+"@type": "https://yeetz.dev/bedrock/ontology/Term"
+label: "promise, oracle, witness, residual"
+layer: "floor"
+statement: >
+  A promise states behavior; an oracle judges promise against actual. A
+  witness is the retained observation of one run and proves existence, never
+  exclusivity. Residual is what was deliberately not assured, declared so
+  everyone sees the line of demarcation — we assure the positive space only;
+  the negative space is infinite.

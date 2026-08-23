@@ -1,0 +1,15 @@
+# Migrated from root AGENTS.md invariant 8 + the state-kernel skill's
+# extension protocol; the floor's dependency-boundary law (invariant 08)
+# already covers BLOCKING-at-the-boundary — this adds the kernel's gating.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/invariant-kernel-extension"
+"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+label: "Kernel extension is human-gated"
+layer: "situated"
+statement: >
+  A kernel change ships as ONE tightly scoped batch — the change, its
+  contract suite, its proof — nothing else. Dispatches that touch the
+  kernel state their human authorization explicitly and where the decision
+  lives. Downstream breakage breaks definitively; repairs are separately
+  orchestrated afterward. Do not bump the assured dependency pins
+  casually (root Cargo.toml) — the kernel is assured at those versions.
