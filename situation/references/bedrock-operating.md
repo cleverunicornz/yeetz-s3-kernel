@@ -1,4 +1,4 @@
-# Installed by bedrock v0.3.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
+# Installed by bedrock v0.5.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
 # Bedrock operating reference — the base protocol
 
 This is the standardized minimum every bedrock repo builds on, plus the
@@ -57,6 +57,44 @@ excuse to mint a new edge.
 - `supersedes` — a vertex replaces an earlier vertex, which stays untouched
   (append-only — floor invariant 15).
 
+## Vertex anatomy — face and body
+
+A vertex file is ONE YAML-LD document with two zones:
+
+- **The face** — everything except `body`: `@id`, `@type`, `label`, the
+  edges, and a `statement`/`gate` whose job is routing — enough for a
+  reader of the injected graph to know what this node is, what it touches,
+  and when to pull the thread. The face compiles into the graph; every
+  agent context pays for it on every task. Target 500–1000 tokens;
+  `bedrock check`/`build` print a SOFT line when a compiled face exceeds
+  4096 chars (≈1k tokens). Soft means soft: advisory, never a violation.
+- **The body** — one `body: |` literal block scalar, by convention the
+  last field: free-form depth prose (markdown welcome), as long as the
+  node needs. The body NEVER compiles into the graph. It is the document
+  the vertex's automatic `document` edge delivers: an agent standing on
+  the node in the injected graph pulls that edge to the source file and
+  reads the depth on demand.
+
+```yaml
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/risk-example"
+"@type": "https://yeetz.dev/bedrock/ontology/Risk"
+label: "Example: list-after-write can lie"
+statement: >
+  Read the body before touching pointer moves. It names the failure
+  window and the fencing rule that closes it.
+body: |
+  ## The failure window
+  Depth: headings, lists, code fences — whatever the node needs.
+```
+
+Use `|` (literal) for bodies — it preserves line structure; `>` (folded)
+joins lines and suits single-paragraph statements. Editing only a body
+never changes the compiled graph: the artifact stays byte-identical while
+every pulled thread reads the new depth. Shared depth (playbooks, this
+reference) stays in `references/`, linked by a `source` or `references`
+edge — `body` is for node-local depth.
+
 ## Archetype rule
 
 Every vertex carries AT LEAST ONE base @type; repo-specific archetypes ride
@@ -101,13 +139,18 @@ Profile rules are enforced by `bedrock check` (C2–C5/C7–C9):
 
 ## Authoring loop
 
-1. Write a vertex at `situation/<ns>/<local-name>.yamlld`.
+1. Write a vertex at `situation/<ns>/<local-name>.yamlld`: the face on
+   top (identity, edges, a statement that says when to read on), depth
+   in `body:` below.
 2. Run `bedrock check` — failures are named and line-cited
-   (`RULE path:line message`); fix and rerun.
-3. Run `bedrock build` — compiles `situation/graph.trig` and regenerates
-   the root `AGENTS.md`.
+   (`RULE path:line message`); the size report prints total artifact
+   bytes and a SOFT line per face over the soft budget. Fix hard
+   failures; trim soft ones.
+3. Run `bedrock build` — compiles the root `AGENTS.md`: the complete
+   TriG graph.
 4. Commit the source vertex AND the generated output together.
-5. Open a PR; a human merges.
+5. Open a PR scoped to the situation change; CI dry-runs the same
+   check + report; a human merges.
 
 ## Execution-graph primitives
 
@@ -133,8 +176,8 @@ A Decision is a named collapse of the possibility space at design level:
 the record of a fork that was closed — what was chosen, what was rejected,
 and the conditions under which the choice flips. Decisions live in record/.
 They are write-once and immutable at birth (floor invariant 15: supersede,
-never edit), and they never render in the register — they are walked to,
-not listed.
+never edit), and they ride in the compiled graph like any vertex —
+liveness is read from the `supersedes` chain, never from a status field.
 
 Write one when a fork you close would be plausibly re-opened by a reader
 with zero context — at the moment of collapse, never reconstructed later.
@@ -158,7 +201,7 @@ reason and its flip conditions.
 following:
 
 - no new top-level directories or namespaces under `situation/`;
-- no hand-editing of `AGENTS.md`, `situation/graph.trig`, the base schemas
+- no hand-editing of `AGENTS.md` (the compiled graph), the base schemas
   in `seed/schemas/`, `seed/context.yamlld`, or this reference;
 - no writing anything outside `situation/` (and the installed base files)
   — except the root `AGENTS.md`, which `build` regenerates;
@@ -177,6 +220,6 @@ Routing law when one needs changing:
 
 ## Re-situate
 
-`bedrock build` regenerates `AGENTS.md` from `situation/`. After work that
-changes reality, re-run it and commit the emitted register — knowledge, not
-rules.
+`bedrock build` regenerates `AGENTS.md` — the compiled graph — from
+`situation/`. After work that changes reality, re-run it and commit the
+emitted graph: knowledge, not rules.

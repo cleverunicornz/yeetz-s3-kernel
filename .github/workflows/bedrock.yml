@@ -1,9 +1,20 @@
-# Installed by bedrock v0.2.1 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
+# Installed by bedrock v0.5.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
 # Bedrock CI template — installable by copy into `.github/workflows/`.
 #
-# Runs `bedrock check` + `bedrock build` whenever situation/ changes and
-# fails if the regenerated output (AGENTS.md, situation/graph.trig) differs
-# from what is committed. Fork pull requests never run the job.
+# The dry run: every PR touching situation/ (or the generated AGENTS.md)
+# recompiles bedrock, runs `bedrock check` (hard rules C1–C10, including
+# the C1 byte-drift gate: the committed AGENTS.md must match regeneration),
+# and surfaces the size report — total artifact bytes plus SOFT lines for
+# any compiled face over the 4096-char soft budget (advisory, never
+# failing). The agent reviews the report and the AGENTS.md diff in the PR
+# itself; a human merges; main never carries a stale graph. Fork pull
+# requests never run the job.
+#
+# Deviation from the 0.5.0 template (one, deliberate): the install step is
+# pinned to crates.io 0.5.0 instead of always-latest from the bedrock
+# default branch, because bedrock main does not carry 0.5.0 yet —
+# always-latest would compile an older protocol and fail C10 skew. Flip to
+# the template's unpinned `--git` install once bedrock main carries 0.5.0.
 
 name: bedrock
 
@@ -11,9 +22,11 @@ on:
   push:
     paths:
       - 'situation/**'
+      - 'AGENTS.md'
   pull_request:
     paths:
       - 'situation/**'
+      - 'AGENTS.md'
 
 jobs:
   bedrock:
@@ -25,9 +38,8 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
     env:
-      # Placeholder — pin the exact bedrock version this repo operates under.
-      # Set the real released version (or pinned nightly) before enabling.
-      BEDROCK_VERSION: '0.3.0'
+      # Single version knob; matches the bedrock this repo operates under.
+      BEDROCK_VERSION: '0.5.0'
 
     steps:
       - uses: actions/checkout@v4
@@ -36,22 +48,30 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install bedrock ${{ env.BEDROCK_VERSION }}
-        # Pinned install of the bedrock binary (crate yeetz-bedrock).
-        # Swap for a direct prebuilt-binary download once releases publish
-        # assets; BEDROCK_VERSION stays the single version knob.
+        # Pinned install from crates.io (see deviation note above).
         run: |
           cargo install --locked --version "$BEDROCK_VERSION" yeetz-bedrock
 
-      - name: bedrock check
-        run: bedrock check
+      - name: bedrock check (dry run + size report)
+        shell: bash
+        run: |
+          set -uo pipefail
+          status=0
+          {
+            echo '## bedrock report'
+            echo '```'
+            bedrock check || status=$?
+            echo '```'
+          } 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
       - name: bedrock build
         run: bedrock build
 
       - name: Verify generated output is committed
         run: |
-          if ! git diff --exit-code -- AGENTS.md situation/graph.trig; then
-            echo "error: AGENTS.md or situation/graph.trig is out of date." >&2
-            echo "run 'bedrock build' and commit the regenerated output." >&2
+          if ! git diff --exit-code -- AGENTS.md; then
+            echo "error: AGENTS.md (the compiled graph) is out of date." >&2
+            echo "run 'bedrock build' and commit the regenerated output with your situation/ change." >&2
             exit 1
           fi

@@ -1,7 +1,7 @@
 {
-  "$comment": "Installed by bedrock v0.3.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.",
+  "$comment": "Installed by bedrock v0.5.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://yeetz.dev/bedrock/schema/record/v3",
+  "$id": "https://yeetz.dev/bedrock/schema/record/v4",
   "title": "Bedrock record namespace vertex schema",
   "description": "Epoch records, deploy placements, reflect verdicts, and decisions (0.3.0 base protocol). DeployRecord is digest-pinned — it records what was actually placed, never a 'latest' pointer. ReflectVerdict carries subject, criteria, witnesses, findings (optional suspect: code|promise|instrument), disposition+residual. Decision is a named collapse of the possibility space: write-once, immutable at birth, no status field — liveness is derived from the supersedes chain. Validates every situation/record/*.yamlld vertex.",
   "type": "object",
@@ -42,7 +42,8 @@
     "member-of": { "$ref": "#/$defs/vertexPointer" },
     "supersedes": { "$ref": "#/$defs/vertexPointer", "$comment": "this record replaces an earlier vertex, which stays untouched (append-only — floor invariant 15)" },
     "source": { "$ref": "#/$defs/pathPointer" },
-    "path": { "$ref": "#/$defs/pathPointerList" }
+    "path": { "$ref": "#/$defs/pathPointerList" },
+    "body": { "$ref": "#/$defs/body" }
   },
   "minProperties": 3,
   "allOf": [
@@ -84,6 +85,7 @@
     "vertexId": { "type": "string", "pattern": "^https://yeetz\\.dev/bedrock/vertex/[a-z0-9][a-z0-9-]*$" },
     "label": { "type": "string", "minLength": 1, "maxLength": 120 },
     "boundedText": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "body": { "type": "string", "minLength": 1, "$comment": "0.5.0 face/body law: free-form depth prose — the vertex's own document, delivered by its `document` edge. NEVER compiled into the graph; everything above it (the face) is. No max length: depth is unbounded; the compiled face is what the soft budget measures." },
     "gitCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$" },
     "artifactDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
