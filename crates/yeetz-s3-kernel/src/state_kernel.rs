@@ -2887,6 +2887,17 @@ pub mod gateway_state_contract {
         pub sequence: u64,
         pub method: String,
         pub key: Option<String>,
+        /// Bucket-level bulk-delete POSTs only (ADR 0005): the
+        /// ordered submitted physical-key vector — method/path
+        /// observation alone cannot prove count, order, uniqueness,
+        /// or the 1,000-key ceiling (A37).
+        #[serde(default)]
+        pub delete_keys: Option<Vec<String>>,
+        /// Bucket-level bulk-delete POSTs only (A37): whether the
+        /// request body requested quiet mode (verbose is mandatory;
+        /// quiet is forbidden).
+        #[serde(default)]
+        pub quiet: Option<bool>,
         pub if_match: Option<String>,
         pub if_none_match: Option<String>,
         pub status: u16,
@@ -2933,6 +2944,40 @@ pub mod gateway_state_contract {
         /// AfterEffect is a lost response on a read (no effect to
         /// apply) — both surface as a failed read.
         LineageIncarnationRead,
+        /// One keyed member of a bucket-level bulk-delete POST
+        /// (ADR 0005, A38): matched by physical key with the
+        /// request's REAL method (POST — the request is never
+        /// re-labelled DELETE). The arm carries bounded Code/Message
+        /// for the emitted `<Error>` entry; BeforeEffect leaves the
+        /// key present while siblings receive `<Deleted>`, AfterEffect
+        /// deletes it and still reports the error.
+        KeyspaceMultiDeleteEntry,
+        /// A whole bucket-level bulk-delete POST (ADR 0005, A40):
+        /// request-scoped, occurrence-selective. BeforeEffect refuses
+        /// the entire request (no effects); AfterEffect applies every
+        /// member and drops the whole response — both surface as a
+        /// chunk without a trustworthy per-key result.
+        KeyspaceMultiDeleteRequest,
+        /// The definitive-refusal mode (ADR 0005, A42): the armed
+        /// bucket-level POST returns a configurable HTTP status
+        /// (405/501-class) plus a service-code body before effects.
+        /// Terminal capability refusal, never a mixed body verdict.
+        KeyspaceMultiDeleteRefusal,
+        /// A response-position mutation (ADR 0005, A41): effects are
+        /// applied, then one position of the verbose response is
+        /// corrupted (missing member, duplicate member,
+        /// Deleted/Error conflict, unknown key, or malformed XML).
+        KeyspaceMultiDeleteResponse,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum MultiDeleteResponseMutation {
+        MissingMember,
+        DuplicateMember,
+        DeletedErrorConflict,
+        UnknownKey,
+        MalformedXml,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2944,24 +2989,66 @@ pub mod gateway_state_contract {
 
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub struct StorageFaultObservation {
-        cut: StorageFaultCut,
-        phase: StorageFaultPhase,
-        key: String,
-        request_sequence: u64,
-        effect_applied: bool,
+        pub cut: StorageFaultCut,
+        pub phase: StorageFaultPhase,
+        pub key: String,
+        pub request_sequence: u64,
+        pub effect_applied: bool,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     struct ArmStorageFault {
         cut: StorageFaultCut,
         phase: StorageFaultPhase,
-        key: String,
+        /// Keyed target (the existing form). Absent for
+        /// request-scoped arms.
+        #[serde(default)]
+        key: Option<String>,
+        /// Request-scoped target: the Nth bucket-level bulk-delete
+        /// POST (1-based occurrence) — arms a whole request without
+        /// inventing a key for a request whose `counterpart_key` is
+        /// `None` (ADR 0005, A40/A42).
+        #[serde(default)]
+        occurrence: Option<u32>,
+        /// Bounded provider Code for KeyspaceMultiDeleteEntry arms,
+        /// or the service code for KeyspaceMultiDeleteRefusal arms.
+        #[serde(default)]
+        code: Option<String>,
+        #[serde(default)]
+        message: Option<String>,
+        /// HTTP status for KeyspaceMultiDeleteRefusal arms.
+        #[serde(default)]
+        refusal_status: Option<u16>,
+        /// The response corruption for KeyspaceMultiDeleteResponse
+        /// arms (A41).
+        #[serde(default)]
+        response_mutation: Option<MultiDeleteResponseMutation>,
     }
 
     struct ArmedStorageFault {
         cut: StorageFaultCut,
         phase: StorageFaultPhase,
-        key: String,
+        key: Option<String>,
+        occurrence: Option<u32>,
+        code: Option<String>,
+        message: Option<String>,
+        refusal_status: Option<u16>,
+        response_mutation: Option<MultiDeleteResponseMutation>,
+    }
+
+    /// Clamp one arm diagnostic field to 512 UTF-8 bytes on a char
+    /// boundary (ADR 0005: the arm carries BOUNDED Code and Message).
+    fn clamp_arm_text(value: &str) -> String {
+        const ARM_TEXT_BUDGET: usize = 512;
+        let mut owned = value.to_string();
+        if owned.len() > ARM_TEXT_BUDGET {
+            let mut end = ARM_TEXT_BUDGET;
+            while end > 0 && !owned.is_char_boundary(end) {
+                end -= 1;
+            }
+            owned.truncate(end);
+        }
+        owned
     }
 
     impl ArmedStorageFault {
@@ -2972,7 +3059,11 @@ pub mod gateway_state_contract {
             if_match: Option<&str>,
             if_none_match: Option<&str>,
         ) -> bool {
-            if self.key != key {
+            let Some(armed_key) = self.key.as_deref() else {
+                // Request-scoped arms never match a keyed take.
+                return false;
+            };
+            if armed_key != key {
                 return false;
             }
             let immutable_key = key.contains("/objects/") || key.contains("/checkpoints/");
@@ -3007,7 +3098,30 @@ pub mod gateway_state_contract {
                 StorageFaultCut::LineageIncarnationRead => {
                     *method == Method::GET && key.ends_with("/incarnation")
                 }
+                // The bulk endpoint carries no single path; the arm
+                // is matched per submitted key inside the bulk branch
+                // with the request's real method (POST).
+                StorageFaultCut::KeyspaceMultiDeleteEntry => {
+                    *method == Method::POST && key.starts_with("keyspace/")
+                }
+                // Request-scoped cuts arm a whole POST; they never
+                // match a keyed take.
+                StorageFaultCut::KeyspaceMultiDeleteRequest
+                | StorageFaultCut::KeyspaceMultiDeleteRefusal
+                | StorageFaultCut::KeyspaceMultiDeleteResponse => false,
             }
+        }
+
+        /// Request-scoped match: the Nth bucket-level bulk-delete
+        /// POST, for whole-request cuts (ADR 0005).
+        fn matches_request(&self, occurrence: u64) -> bool {
+            self.occurrence == Some(u32::try_from(occurrence).unwrap_or(u32::MAX))
+                && matches!(
+                    self.cut,
+                    StorageFaultCut::KeyspaceMultiDeleteRequest
+                        | StorageFaultCut::KeyspaceMultiDeleteRefusal
+                        | StorageFaultCut::KeyspaceMultiDeleteResponse
+                )
         }
     }
 
@@ -3047,7 +3161,15 @@ pub mod gateway_state_contract {
         requests: Arc<tokio::sync::Mutex<Vec<LoopbackRequestObservation>>>,
         faults: Arc<tokio::sync::Mutex<Vec<StorageFaultObservation>>>,
         next_request_sequence: Arc<AtomicU64>,
+        /// 1-based occurrence counter for bucket-level bulk-delete
+        /// POSTs (ADR 0005): makes request-scoped fault arms
+        /// occurrence-selective.
+        multi_delete_occurrence: Arc<AtomicU64>,
         conditional_head_barrier: Arc<tokio::sync::Mutex<Option<ConditionalHeadBarrier>>>,
+        /// Per-entry bulk-delete arms (ADR 0005): a list, so one call
+        /// can carry several distinct per-key errors (A38/A39) while
+        /// every other cut keeps the single-arm take semantics.
+        multi_delete_entry_faults: Arc<tokio::sync::Mutex<Vec<ArmedStorageFault>>>,
         storage_fault: Arc<tokio::sync::Mutex<Option<ArmedStorageFault>>>,
         /// A frozen LIST snapshot (prefix, keys visible at arm time):
         /// LISTs under the prefix serve the stale snapshot —
@@ -3070,6 +3192,12 @@ pub mod gateway_state_contract {
                 requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
                 faults: Arc::new(tokio::sync::Mutex::new(Vec::new())),
                 next_request_sequence: Arc::new(AtomicU64::new(1)),
+                multi_delete_occurrence: Arc::new(AtomicU64::new(0)),
+                // Per-entry bulk-delete arms (ADR 0005): a list, so
+                // one call can carry several distinct per-key errors
+                // (A38/A39) while every other cut keeps the
+                // single-arm take semantics.
+                multi_delete_entry_faults: Arc::new(tokio::sync::Mutex::new(Vec::new())),
                 conditional_head_barrier: Arc::new(tokio::sync::Mutex::new(None)),
                 storage_fault: Arc::new(tokio::sync::Mutex::new(None)),
                 frozen_list: Arc::new(tokio::sync::Mutex::new(None)),
@@ -3124,13 +3252,42 @@ pub mod gateway_state_contract {
         async fn record(&self, observation: LoopbackRequestObservation) {
             self.requests.lock().await.push(observation);
         }
-
         async fn arm_storage_fault(&self, command: ArmStorageFault) {
+            if command.cut == StorageFaultCut::KeyspaceMultiDeleteEntry {
+                self.multi_delete_entry_faults
+                    .lock()
+                    .await
+                    .push(ArmedStorageFault {
+                        cut: command.cut,
+                        phase: command.phase,
+                        key: command.key,
+                        occurrence: command.occurrence,
+                        code: command.code.map(|code| clamp_arm_text(&code)),
+                        message: command.message.map(|message| clamp_arm_text(&message)),
+                        refusal_status: command.refusal_status,
+                        response_mutation: command.response_mutation,
+                    });
+                return;
+            }
             *self.storage_fault.lock().await = Some(ArmedStorageFault {
                 cut: command.cut,
                 phase: command.phase,
                 key: command.key,
+                occurrence: command.occurrence,
+                code: command.code.map(|code| clamp_arm_text(&code)),
+                message: command.message.map(|message| clamp_arm_text(&message)),
+                refusal_status: command.refusal_status,
+                response_mutation: command.response_mutation,
             });
+        }
+
+        /// Take one per-entry bulk-delete arm for `key`, if armed.
+        async fn take_entry_fault(&self, key: &str) -> Option<ArmedStorageFault> {
+            let mut arms = self.multi_delete_entry_faults.lock().await;
+            let position = arms
+                .iter()
+                .position(|arm| arm.key.as_deref() == Some(key))?;
+            Some(arms.remove(position))
         }
 
         async fn take_storage_fault(
@@ -3144,6 +3301,20 @@ pub mod gateway_state_contract {
             if fault
                 .as_ref()
                 .is_some_and(|fault| fault.matches(method, key, if_match, if_none_match))
+            {
+                fault.take()
+            } else {
+                None
+            }
+        }
+
+        /// Take a request-scoped fault for the Nth bucket-level
+        /// bulk-delete POST (ADR 0005 whole-request cuts).
+        async fn take_request_storage_fault(&self, occurrence: u64) -> Option<ArmedStorageFault> {
+            let mut fault = self.storage_fault.lock().await;
+            if fault
+                .as_ref()
+                .is_some_and(|fault| fault.matches_request(occurrence))
             {
                 fault.take()
             } else {
@@ -3240,6 +3411,67 @@ pub mod gateway_state_contract {
             .skip(1)
             .filter_map(|rest| rest.split_once("</Key>").map(|(key, _)| key.to_string()))
             .collect()
+    }
+
+    /// Corrupt one position of a verbose DeleteResult body (A41):
+    /// effects are already applied; the response must fail the exact
+    /// bijection. Every mutation keeps well-formed XML except
+    /// MalformedXml, which truncates the body.
+    fn apply_multi_delete_response_mutation(
+        xml: &mut String,
+        mutation: MultiDeleteResponseMutation,
+        occurrence: u64,
+    ) {
+        let member = |tag: &str| format!("<{tag}>");
+        let end_tag = |tag: &str| format!("</{tag}>");
+        match mutation {
+            MultiDeleteResponseMutation::MissingMember => {
+                let removed = ["Deleted", "Error"].iter().any(|tag| {
+                    if let Some(start) = xml.find(&member(tag))
+                        && let Some(rel) = xml[start..].find(&end_tag(tag))
+                    {
+                        xml.replace_range(start..start + rel + end_tag(tag).len(), "");
+                        return true;
+                    }
+                    false
+                });
+                debug_assert!(removed, "MissingMember needs at least one response member");
+            }
+            MultiDeleteResponseMutation::DuplicateMember => {
+                if let Some(start) = xml.find(&member("Deleted"))
+                    && let Some(rel) = xml[start..].find(&end_tag("Deleted"))
+                {
+                    let block = xml[start..start + rel + end_tag("Deleted").len()].to_string();
+                    xml.insert_str(start, &block);
+                }
+            }
+            MultiDeleteResponseMutation::DeletedErrorConflict => {
+                if let Some(start) = xml.find(&member("Deleted")) {
+                    let key_start = start + member("Deleted").len();
+                    let key = xml[key_start..]
+                        .split('<')
+                        .next()
+                        .unwrap_or_default()
+                        .to_string();
+                    xml.insert_str(
+                        xml.len() - end_tag("DeleteResult").len(),
+                        &format!(
+                            "<Error><Key>{key}</Key><Code>InternalError</Code>\
+                             <Message>conflict</Message></Error>"
+                        ),
+                    );
+                }
+            }
+            MultiDeleteResponseMutation::UnknownKey => {
+                xml.insert_str(
+                    xml.len() - end_tag("DeleteResult").len(),
+                    &format!("<Deleted><Key>unrequested-ghost-{occurrence}</Key></Deleted>"),
+                );
+            }
+            MultiDeleteResponseMutation::MalformedXml => {
+                xml.truncate(xml.find(&member("Deleted")).unwrap_or(xml.len()));
+            }
+        }
     }
 
     fn percent_decode(value: &str) -> String {
@@ -3345,6 +3577,8 @@ pub mod gateway_state_contract {
                         sequence,
                         method: method.to_string(),
                         key,
+                        delete_keys: None,
+                        quiet: None,
                         if_match,
                         if_none_match,
                         status: StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
@@ -3370,7 +3604,7 @@ pub mod gateway_state_contract {
             let observation = StorageFaultObservation {
                 cut: fault.cut,
                 phase: fault.phase,
-                key: fault.key.clone(),
+                key: fault.key.clone().unwrap_or_default(),
                 request_sequence: sequence,
                 effect_applied: false,
             };
@@ -3380,6 +3614,8 @@ pub mod gateway_state_contract {
                     sequence,
                     method: method.to_string(),
                     key,
+                    delete_keys: None,
+                    quiet: None,
                     if_match,
                     if_none_match,
                     status: T002_FAULT_STATUS.as_u16(),
@@ -3389,55 +3625,188 @@ pub mod gateway_state_contract {
             return counterpart_response(T002_FAULT_STATUS, None, Vec::new());
         }
 
+        let mut observation_delete_keys: Option<Vec<String>> = None;
+        let mut observation_quiet: Option<bool> = None;
         let (mut status, mut etag, mut response_body) = if bulk_delete_request {
+            // ADR 0005: the one authoritative bulk-delete model. The
+            // occurrence counter makes request-scoped arms (whole-request
+            // cuts, the definitive 405/501 refusal mode, and A41 response
+            // mutations) occurrence-selective; the submitted key vector
+            // and quiet flag are observed for A37's partition oracle.
+            let occurrence = state.multi_delete_occurrence.fetch_add(1, Ordering::SeqCst) + 1;
+            let submitted = extract_delete_keys(&bytes);
+            let quiet = String::from_utf8_lossy(&bytes).contains("<Quiet>true");
+            observation_delete_keys = Some(submitted.clone());
+            observation_quiet = Some(quiet);
+            let observation_key = format!("@bulk-delete/{occurrence}");
+            let request_fault = state.take_request_storage_fault(occurrence).await;
+
+            // Whole-request refusal before effects: the fault status,
+            // or the definitive 405/501 refusal mode with its service
+            // code body (A42).
+            if let Some(fault) = request_fault.as_ref().filter(|fault| {
+                fault.phase == StorageFaultPhase::BeforeEffect
+                    && fault.cut != StorageFaultCut::KeyspaceMultiDeleteResponse
+            }) {
+                let (status, body) = match fault.cut {
+                    StorageFaultCut::KeyspaceMultiDeleteRefusal => {
+                        let status = StatusCode::from_u16(fault.refusal_status.unwrap_or(405))
+                            .unwrap_or(StatusCode::METHOD_NOT_ALLOWED);
+                        (
+                            status,
+                            s3_error_xml(
+                                fault.code.as_deref().unwrap_or("MethodNotAllowed"),
+                                fault
+                                    .message
+                                    .as_deref()
+                                    .unwrap_or("DeleteObjects is definitively refused"),
+                            ),
+                        )
+                    }
+                    _ => (T002_FAULT_STATUS, Vec::new()),
+                };
+                let observation = StorageFaultObservation {
+                    cut: fault.cut,
+                    phase: fault.phase,
+                    key: observation_key,
+                    request_sequence: sequence,
+                    effect_applied: false,
+                };
+                state.record_fault(observation.clone()).await;
+                state
+                    .record(LoopbackRequestObservation {
+                        sequence,
+                        method: method.to_string(),
+                        key: None,
+                        delete_keys: Some(submitted),
+                        quiet: Some(quiet),
+                        if_match,
+                        if_none_match,
+                        status: status.as_u16(),
+                        fault: Some(observation),
+                    })
+                    .await;
+                return counterpart_response(status, None, body);
+            }
+
             let mut objects = state.objects.lock().await;
-            let mut deleted = Vec::new();
-            let mut errored = Vec::new();
-            for key in extract_delete_keys(&bytes) {
-                // The bulk endpoint carries no single path, so the
-                // armed fault is taken per key here (matches() already
-                // filters cut/method/prefix).
-                let armed = state
+            let mut deleted: Vec<String> = Vec::new();
+            let mut errored: Vec<(String, String, String)> = Vec::new();
+            for key in submitted {
+                // The new per-entry cut matches by physical key from
+                // the entry-arm list (several distinct per-key errors
+                // can ride one call — A38/A39).
+                let entry = state.take_entry_fault(&key).await;
+                // The legacy arm keeps its method-DELETE label and its
+                // G117 conflation (applied-but-lost reports
+                // InternalError); it stays reachable from a multi-key
+                // POST exactly as before.
+                let legacy = state
                     .take_storage_fault(&Method::DELETE, &key, None, None)
-                    .await
-                    .map(|fault| fault.phase);
-                if let Some(phase) = armed {
+                    .await;
+                if let Some(fault) = entry {
+                    let phase = fault.phase;
+                    let code = fault
+                        .code
+                        .clone()
+                        .unwrap_or_else(|| "InternalError".to_string());
+                    let message = fault
+                        .message
+                        .clone()
+                        .unwrap_or_else(|| "multi-delete entry fault".to_string());
                     if phase == StorageFaultPhase::AfterEffect {
-                        // Applied server-side; the response is lost —
-                        // surfaces to the caller as a failed entry (the
-                        // G117 lost-response shape).
                         objects.remove(&key);
-                        errored.push(key.clone());
-                    } else {
-                        // Refused entirely.
-                        errored.push(key.clone());
                     }
                     state
                         .record_fault(StorageFaultObservation {
-                            cut: StorageFaultCut::KeyspaceDelete,
+                            cut: StorageFaultCut::KeyspaceMultiDeleteEntry,
                             phase,
                             key: key.clone(),
                             request_sequence: sequence,
                             effect_applied: phase == StorageFaultPhase::AfterEffect,
                         })
                         .await;
+                    errored.push((key, code, message));
+                } else if let Some(fault) = legacy {
+                    if fault.phase == StorageFaultPhase::AfterEffect {
+                        // Applied server-side; the response is lost —
+                        // surfaces to the caller as a failed entry (the
+                        // G117 lost-response shape).
+                        objects.remove(&key);
+                    }
+                    state
+                        .record_fault(StorageFaultObservation {
+                            cut: StorageFaultCut::KeyspaceDelete,
+                            phase: fault.phase,
+                            key: key.clone(),
+                            request_sequence: sequence,
+                            effect_applied: fault.phase == StorageFaultPhase::AfterEffect,
+                        })
+                        .await;
+                    errored.push((
+                        key,
+                        "InternalError".to_string(),
+                        "lost response".to_string(),
+                    ));
                 } else {
                     objects.remove(&key);
                     deleted.push(key);
                 }
             }
+            drop(objects);
+            let mut status = StatusCode::OK;
             let mut xml =
                 String::from("<DeleteResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">");
             for key in &deleted {
                 xml.push_str(&format!("<Deleted><Key>{key}</Key></Deleted>"));
             }
-            for key in &errored {
+            for (key, code, message) in &errored {
                 xml.push_str(&format!(
-                    "<Error><Key>{key}</Key><Code>InternalError</Code><Message>lost response</Message></Error>"
+                    "<Error><Key>{key}</Key><Code>{code}</Code><Message>{message}</Message></Error>"
                 ));
             }
             xml.push_str("</DeleteResult>");
-            (StatusCode::OK, None, xml.into_bytes())
+            // A41 response mutations: effects already applied, one
+            // response position corrupted. Never a success default.
+            if let Some(fault) = request_fault
+                .as_ref()
+                .filter(|fault| fault.cut == StorageFaultCut::KeyspaceMultiDeleteResponse)
+            {
+                apply_multi_delete_response_mutation(
+                    &mut xml,
+                    fault
+                        .response_mutation
+                        .unwrap_or(MultiDeleteResponseMutation::MalformedXml),
+                    occurrence,
+                );
+                state
+                    .record_fault(StorageFaultObservation {
+                        cut: fault.cut,
+                        phase: fault.phase,
+                        key: observation_key,
+                        request_sequence: sequence,
+                        effect_applied: true,
+                    })
+                    .await;
+            } else if let Some(fault) = request_fault
+                .as_ref()
+                .filter(|fault| fault.phase == StorageFaultPhase::AfterEffect)
+            {
+                // Whole-request cut, AfterEffect: every member
+                // applied, the entire response dropped (A40).
+                status = T002_FAULT_STATUS;
+                xml.clear();
+                state
+                    .record_fault(StorageFaultObservation {
+                        cut: fault.cut,
+                        phase: fault.phase,
+                        key: observation_key,
+                        request_sequence: sequence,
+                        effect_applied: true,
+                    })
+                    .await;
+            }
+            (status, None, xml.into_bytes())
         } else if list_request {
             // LIST (ListObjectsV2 subset): prefix filter, exclusive
             // start-after, bounded by max-keys; strictly ordered (the
@@ -3569,7 +3938,7 @@ pub mod gateway_state_contract {
             if fault.phase == StorageFaultPhase::AfterEffect && effect_applied {
                 match fault.cut {
                     StorageFaultCut::ImmutableChecksum => {
-                        state.corrupt_object(&fault.key).await;
+                        state.corrupt_object(fault.key.as_deref().unwrap_or_default()).await;
                     }
                     StorageFaultCut::ImmutableReadback => {
                         response_body = b"corrupt immutable readback".to_vec();
@@ -3592,12 +3961,20 @@ pub mod gateway_state_contract {
                         etag = None;
                         response_body.clear();
                     }
+                    // ADR 0005 bulk-delete cuts never reach this
+                    // keyed shared path: request-scoped cuts are taken
+                    // inside the bulk branch, and the per-entry cut is
+                    // consumed per submitted key there.
+                    StorageFaultCut::KeyspaceMultiDeleteEntry
+                    | StorageFaultCut::KeyspaceMultiDeleteRequest
+                    | StorageFaultCut::KeyspaceMultiDeleteRefusal
+                    | StorageFaultCut::KeyspaceMultiDeleteResponse => {}
                 }
             }
             let observation = StorageFaultObservation {
                 cut: fault.cut,
                 phase: fault.phase,
-                key: fault.key,
+                key: fault.key.clone().unwrap_or_default(),
                 request_sequence: sequence,
                 effect_applied,
             };
@@ -3611,6 +3988,8 @@ pub mod gateway_state_contract {
                 sequence,
                 method: method.to_string(),
                 key,
+                delete_keys: observation_delete_keys,
+                quiet: observation_quiet,
                 if_match,
                 if_none_match,
                 status: status.as_u16(),
@@ -3927,13 +4306,108 @@ pub mod gateway_state_contract {
             phase: StorageFaultPhase,
             key: &str,
         ) {
+            self.post_fault(ArmStorageFault {
+                cut,
+                phase,
+                key: Some(key.to_owned()),
+                occurrence: None,
+                code: None,
+                message: None,
+                refusal_status: None,
+                response_mutation: None,
+            })
+            .await;
+        }
+
+        /// Arm the per-entry bulk-delete cut for one physical key with
+        /// bounded provider Code/Message (ADR 0005, A38).
+        pub async fn arm_multi_delete_entry_fault(
+            &self,
+            key: &str,
+            phase: StorageFaultPhase,
+            code: &str,
+            message: &str,
+        ) {
+            self.post_fault(ArmStorageFault {
+                cut: StorageFaultCut::KeyspaceMultiDeleteEntry,
+                phase,
+                key: Some(key.to_owned()),
+                occurrence: None,
+                code: Some(code.to_owned()),
+                message: Some(message.to_owned()),
+                refusal_status: None,
+                response_mutation: None,
+            })
+            .await;
+        }
+
+        /// Arm the whole-request bulk-delete cut on the Nth (1-based)
+        /// bucket-level POST (ADR 0005, A40).
+        pub async fn arm_multi_delete_request_fault(
+            &self,
+            phase: StorageFaultPhase,
+            occurrence: u32,
+        ) {
+            self.post_fault(ArmStorageFault {
+                cut: StorageFaultCut::KeyspaceMultiDeleteRequest,
+                phase,
+                key: None,
+                occurrence: Some(occurrence),
+                code: None,
+                message: None,
+                refusal_status: None,
+                response_mutation: None,
+            })
+            .await;
+        }
+
+        /// Arm the definitive-refusal mode: the Nth bucket-level POST
+        /// returns `status` with a service-code body before effects
+        /// (ADR 0005, A42).
+        pub async fn arm_multi_delete_refusal(
+            &self,
+            occurrence: u32,
+            status: u16,
+            code: &str,
+            message: &str,
+        ) {
+            self.post_fault(ArmStorageFault {
+                cut: StorageFaultCut::KeyspaceMultiDeleteRefusal,
+                phase: StorageFaultPhase::BeforeEffect,
+                key: None,
+                occurrence: Some(occurrence),
+                code: Some(code.to_owned()),
+                message: Some(message.to_owned()),
+                refusal_status: Some(status),
+                response_mutation: None,
+            })
+            .await;
+        }
+
+        /// Arm a response-position mutation on the Nth bucket-level
+        /// POST (ADR 0005, A41).
+        pub async fn arm_multi_delete_response_mutation(
+            &self,
+            occurrence: u32,
+            mutation: MultiDeleteResponseMutation,
+        ) {
+            self.post_fault(ArmStorageFault {
+                cut: StorageFaultCut::KeyspaceMultiDeleteResponse,
+                phase: StorageFaultPhase::AfterEffect,
+                key: None,
+                occurrence: Some(occurrence),
+                code: None,
+                message: None,
+                refusal_status: None,
+                response_mutation: Some(mutation),
+            })
+            .await;
+        }
+
+        async fn post_fault(&self, command: ArmStorageFault) {
             self.control
                 .post(format!("{}/__t001__/fault", self.endpoint))
-                .json(&ArmStorageFault {
-                    cut,
-                    phase,
-                    key: key.to_owned(),
-                })
+                .json(&command)
                 .send()
                 .await
                 .expect("arm loopback storage fault")
@@ -4463,7 +4937,13 @@ pub mod gateway_state_contract {
             | (StorageFaultCut::KeyspaceConditionalPut, StorageFaultPhase::AfterEffect)
             | (StorageFaultCut::ChunkPut, StorageFaultPhase::AfterEffect)
             | (StorageFaultCut::KeyspaceControlRead, StorageFaultPhase::AfterEffect)
-            | (StorageFaultCut::LineageIncarnationRead, StorageFaultPhase::AfterEffect) => {
+            | (StorageFaultCut::LineageIncarnationRead, StorageFaultPhase::AfterEffect)
+            // ADR 0005 bulk-delete cuts are keyspace-contract only;
+            // no lineage case arms them.
+            | (StorageFaultCut::KeyspaceMultiDeleteEntry, StorageFaultPhase::AfterEffect)
+            | (StorageFaultCut::KeyspaceMultiDeleteRequest, StorageFaultPhase::AfterEffect)
+            | (StorageFaultCut::KeyspaceMultiDeleteRefusal, StorageFaultPhase::AfterEffect)
+            | (StorageFaultCut::KeyspaceMultiDeleteResponse, StorageFaultPhase::AfterEffect) => {
                 T002_FAULT_STATUS.as_u16()
             }
             (StorageFaultCut::ImmutableChecksum, StorageFaultPhase::AfterEffect)
@@ -4650,7 +5130,12 @@ pub mod gateway_state_contract {
             | StorageFaultCut::KeyspaceConditionalPut
             | StorageFaultCut::ChunkPut
             | StorageFaultCut::KeyspaceControlRead
-            | StorageFaultCut::LineageIncarnationRead => {
+            | StorageFaultCut::LineageIncarnationRead
+            // ADR 0005 bulk-delete cuts are keyspace-contract only.
+            | StorageFaultCut::KeyspaceMultiDeleteEntry
+            | StorageFaultCut::KeyspaceMultiDeleteRequest
+            | StorageFaultCut::KeyspaceMultiDeleteRefusal
+            | StorageFaultCut::KeyspaceMultiDeleteResponse => {
                 unreachable!("specialized keyspace/lifecycle cuts have no lineage receipt")
             }
         }

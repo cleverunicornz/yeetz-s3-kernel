@@ -21,6 +21,13 @@ pub use atomic_keyspace::{
     AtomicKeyspace, DeleteBelowReport, DeleteOutcome, KEYSPACE_ROOT, KeyState, KeyspaceError,
     TrimState,
 };
+pub use atomic_keyspace::{
+    DELETE_OBJECTS_MAX_DIAGNOSTIC_BYTES, DELETE_OBJECTS_MAX_INPUT, DELETE_OBJECTS_MAX_KEYS,
+    DeleteObjectsDiagnostic, DeleteObjectsFailure, DeleteObjectsInputError, DeleteObjectsOutcome,
+    DeleteObjectsUnconfirmedReason,
+};
+#[cfg(test)]
+mod deletion_contract;
 pub use state_kernel::{KernelHandle, KernelInitError};
 pub use terminal_read::{LineageHeadState, TerminalRecordRead};
 pub use tombstone::Tombstone;

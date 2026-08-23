@@ -54,6 +54,8 @@ pub async fn run_real_s3_aba_probe(config: &S3Config) -> Result<Vec<String>, Str
     let streaming_namespace = format!("aba-probe/{run_id}-streaming");
     let streaming_prefix = format!("{KEYSPACE_ROOT}/{streaming_namespace}/");
     let streaming_chunk_prefix = format!("keyspace-chunks/v1/{streaming_namespace}/");
+    let deletion_namespace = format!("aba-probe/{run_id}-deletion");
+    let deletion_prefix = format!("{KEYSPACE_ROOT}/{deletion_namespace}/");
     let lineage_name = format!("aba-probe/{run_id}-lineage");
     let lineage_prefix = format!("{lineage_name}/");
     let mut created: Vec<String> = Vec::new();
@@ -78,6 +80,7 @@ pub async fn run_real_s3_aba_probe(config: &S3Config) -> Result<Vec<String>, Str
         )
         .await?;
         streaming_battery(Arc::clone(&client), &streaming_namespace, &mut verdicts).await?;
+        deletion_battery(Arc::clone(&client), &deletion_namespace, &mut verdicts).await?;
         lineage_battery(
             Arc::clone(&client),
             &lineage_name,
@@ -128,6 +131,7 @@ pub async fn run_real_s3_aba_probe(config: &S3Config) -> Result<Vec<String>, Str
         &module_prefix,
         &streaming_prefix,
         &streaming_chunk_prefix,
+        &deletion_prefix,
         &lineage_prefix,
     ] {
         let leftover = client
@@ -947,6 +951,93 @@ async fn streaming_battery(
 /// Module-level companion to the raw backend battery. The raw probe is
 /// allowed to observe content-etag ABA; this leg must close it through
 /// AtomicKeyspace's versioned envelope.
+/// The ADR 0005 multi-object deletion leg: 1,001 unique keys (30
+/// present controls, 971 never-created) must confirm idempotently in
+/// exact input order through exactly ceil(1001/1000) = 2 logical
+/// verbose DeleteObjects operations — proving on the live backend
+/// that the checksum construction is accepted, that both responses
+/// carry the exact bijection, and that present + absent keys confirm
+/// alike. Cleanup exact-reads every created control. (The 2-operation
+/// chunking itself is witnessed on the loopback rig, A37; the
+/// provider-side fact is that both operations were accepted and each
+/// returned its complete verbose response.)
+async fn deletion_battery(
+    client: Arc<ObjectStoreClient>,
+    namespace: &str,
+    verdicts: &mut Vec<String>,
+) -> Result<(), String> {
+    let keyspace = AtomicKeyspace::new(client, namespace)
+        .map_err(|error| format!("deletion keyspace: {error}"))?;
+    const TOTAL: usize = 1_001;
+    const PRESENT: usize = 30;
+    let keys: Vec<String> = (0..TOTAL).map(|index| format!("cell-{index:04}")).collect();
+    for key in keys.iter().take(PRESENT) {
+        keyspace
+            .create(key, Bytes::from_static(b"delete-objects-leg"))
+            .await
+            .map_err(|error| format!("deletion leg create {key}: {error}"))?;
+    }
+    let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+    let outcomes = keyspace
+        .delete_objects(&refs)
+        .await
+        .map_err(|error| format!("deletion leg admission: {error}"))?;
+    if outcomes.len() != TOTAL {
+        return Err(format!(
+            "deletion leg outcome vector length {} for {TOTAL} keys",
+            outcomes.len()
+        ));
+    }
+    for (outcome, key) in outcomes.iter().zip(&keys) {
+        if outcome.key != *key {
+            return Err(format!(
+                "deletion leg order mismatch: {} after {}",
+                outcome.key, key
+            ));
+        }
+        if let Err(failure) = outcome.result.as_ref() {
+            return Err(format!("deletion leg key {key} not confirmed: {failure:?}"));
+        }
+    }
+    note(
+        verdicts,
+        format!(
+            "delete_objects: {TOTAL}/{} unique keys confirmed Ok in exact input order \
+             (present + absent idempotent; verbose bijection exact)",
+            TOTAL
+        ),
+    );
+    note(
+        verdicts,
+        "delete_objects: 2 logical DeleteObjects operations (ceil(1001/1000); the live \
+         backend accepted the CRC32 checksum construction and returned both complete \
+         verbose responses)"
+            .to_string(),
+    );
+    // Cleanup exact-reads empty: every created control is confirmed
+    // absent by an exact GET (integrity failure is never absence — a
+    // non-NotFound error fails the leg).
+    for key in keys.iter().take(PRESENT) {
+        match keyspace.get(key).await {
+            Ok(None) => {}
+            Ok(Some(bytes)) => {
+                return Err(format!(
+                    "deletion leg cleanup: {key} still present ({} bytes)",
+                    bytes.len()
+                ));
+            }
+            Err(error) => {
+                return Err(format!("deletion leg cleanup exact-read {key}: {error}"));
+            }
+        }
+    }
+    note(
+        verdicts,
+        format!("delete_objects cleanup: {PRESENT} created controls exact-read absent"),
+    );
+    Ok(())
+}
+
 async fn module_battery(
     client: Arc<ObjectStoreClient>,
     namespace: &str,

@@ -27,7 +27,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use yeetz_sdk_s3::{ObjectStoreClient, ObjectStoreError};
+use yeetz_sdk_s3::{DeleteObjectsRequestError, ObjectStoreClient, ObjectStoreError};
 
 use crate::tombstone::Tombstone;
 
@@ -311,6 +311,168 @@ impl DeleteOutcome {
             .filter(|outcome| !outcome.deleted)
             .map(|outcome| outcome.key.clone())
             .collect()
+    }
+}
+
+// --- Multi-object deletion (ADR 0005) ------------------------------------
+
+/// Physical keys per DeleteObjects transport chunk. Sequential: at
+/// most one operation is active from one call, and one ambiguous
+/// chunk has one deterministic untouched tail.
+pub const DELETE_OBJECTS_MAX_KEYS: usize = 1_000;
+
+/// Single-call admission ceiling on unique input keys. Larger
+/// witnessed inventories page and checkpoint outside the kernel.
+pub const DELETE_OBJECTS_MAX_INPUT: usize = 100_000;
+
+/// Combined UTF-8 byte budget for provider code+message in one
+/// diagnostic. Mirrors the SDK seam's bound (the twin is asserted by
+/// A38); request-level diagnostics are shared by `Arc`, never
+/// cloned per key.
+pub const DELETE_OBJECTS_MAX_DIAGNOSTIC_BYTES: usize = 512;
+
+/// One outcome per accepted input key, in input order (ADR 0005).
+/// `Ok(())` is an explicit confirmation from a valid response — the
+/// target control object is confirmed gone (an already-absent key is
+/// still `Ok(())`: that is S3's idempotent unconditional-delete
+/// contract, and it is not a claim that prior bucket versions were
+/// reclaimed). Every `Err` is unresolved remainder, not necessarily
+/// retryable, and never a proof that the key remains present.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteObjectsOutcome {
+    pub key: String,
+    /// `Ok(())` is an explicit confirmation; `Err` is unresolved
+    /// remainder, not necessarily a retryable failure.
+    pub result: Result<(), DeleteObjectsFailure>,
+}
+
+impl DeleteObjectsOutcome {
+    /// Serialize unresolved key identity for a durable checkpoint.
+    /// Classification is intentionally discarded; policy-driven
+    /// callers inspect `outcomes` directly.
+    #[must_use]
+    pub fn remaining(outcomes: &[Self]) -> Vec<String> {
+        outcomes
+            .iter()
+            .filter(|outcome| outcome.result.is_err())
+            .map(|outcome| outcome.key.clone())
+            .collect()
+    }
+}
+
+/// A bounded provider diagnostic carried by every
+/// [`DeleteObjectsFailure`] classification: code plus message fit the
+/// combined budget, truncated at char boundaries when the provider
+/// exceeded it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteObjectsDiagnostic {
+    pub code: Option<String>,
+    pub message: String,
+    /// Either provider field was cut to fit the combined budget.
+    pub truncated: bool,
+}
+
+/// The typed per-key failure algebra of
+/// [`AtomicKeyspace::delete_objects`]. No variant is a presence
+/// proof.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum DeleteObjectsFailure {
+    /// The valid DeleteResult contained an `<Error>` entry for this
+    /// exact key. It is not a proof that the key remains present.
+    #[error("multi-object delete rejected: {diagnostic:?}")]
+    Rejected {
+        diagnostic: Arc<DeleteObjectsDiagnostic>,
+    },
+    /// The chunk had no trustworthy per-key response. The untouched
+    /// tail beyond an `Unconfirmed` stop is [`Self::NotAttempted`].
+    #[error("multi-object delete outcome unconfirmed ({reason:?}): {diagnostic:?}")]
+    Unconfirmed {
+        reason: DeleteObjectsUnconfirmedReason,
+        diagnostic: Arc<DeleteObjectsDiagnostic>,
+    },
+    /// The client lacks the wire capability or the service
+    /// definitively refuses DeleteObjects. Terminal until backend
+    /// qualification changes; no per-key fallback was attempted. A
+    /// definitive mid-call refusal labels both its current chunk and
+    /// the untouched tail `Unsupported` — the terminal cause is
+    /// already known.
+    #[error("multi-object delete unsupported: {diagnostic:?}")]
+    Unsupported {
+        diagnostic: Arc<DeleteObjectsDiagnostic>,
+    },
+    /// This tail key was not sent because an earlier chunk was
+    /// `Unconfirmed`.
+    #[error("multi-object delete was not attempted")]
+    NotAttempted,
+}
+
+/// Why a chunk had no trustworthy per-key response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DeleteObjectsUnconfirmedReason {
+    /// The request failed before a usable response (transport,
+    /// timeout, or a non-refusal service error).
+    RequestFailed,
+    /// The response violated the exact bijection (missing, duplicate,
+    /// contradictory, unexpected members, or an undecodable body).
+    /// No omitted key defaulted to success.
+    InvalidResponse,
+}
+
+/// The admission result of [`AtomicKeyspace::delete_objects`]: the
+/// outer `Result` can fail only while checking the complete input,
+/// before any storage request. Once admitted, the method returns
+/// exactly `keys.len()` outcomes; request, service, and response
+/// failures are represented at every affected key. Deliberately not
+/// `PartialEq`/`Eq`: the `Key` variant carries [`KeyspaceError`],
+/// which implements neither.
+#[derive(Clone, Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum DeleteObjectsInputError {
+    /// The input exceeds [`DELETE_OBJECTS_MAX_INPUT`]; nothing was
+    /// scanned or deleted.
+    #[error("delete_objects input has {provided} keys; maximum is {max}")]
+    TooManyKeys { provided: usize, max: usize },
+
+    /// A member failed admission (reserved-state precedence first,
+    /// then identifier/physical-path validation), reusing the
+    /// existing taxonomy without adding a `KeyspaceError` variant.
+    #[error("delete_objects key {index} ({key:?}) is not admissible: {source}")]
+    Key {
+        index: usize,
+        key: String,
+        #[source]
+        source: KeyspaceError,
+    },
+
+    /// Duplicate namespace-relative keys make response-to-input
+    /// attribution non-bijective, so they are rejected before any
+    /// request.
+    #[error(
+        "delete_objects key {key:?} is duplicated at indexes {first_index} and {duplicate_index}"
+    )]
+    Duplicate {
+        key: String,
+        first_index: usize,
+        duplicate_index: usize,
+    },
+}
+/// Convert one SDK-seam diagnostic (already bounded to the combined
+/// budget there) into the kernel's diagnostic, preserving code,
+/// message, and the truncation flag.
+fn kernel_delete_diagnostic(
+    diagnostic: &yeetz_sdk_s3::ObjectDeleteDiagnostic,
+) -> DeleteObjectsDiagnostic {
+    debug_assert!(
+        diagnostic.code.as_deref().map_or(0, str::len) + diagnostic.message.len()
+            <= DELETE_OBJECTS_MAX_DIAGNOSTIC_BYTES,
+        "the SDK seam bounds diagnostics to the combined budget"
+    );
+    DeleteObjectsDiagnostic {
+        code: diagnostic.code.clone(),
+        message: diagnostic.message.clone(),
+        truncated: diagnostic.truncated,
     }
 }
 
@@ -1038,6 +1200,218 @@ impl AtomicKeyspace {
                     });
                 }
                 Err(err) => return Err(err),
+            }
+        }
+        Ok(outcomes)
+    }
+
+    /// Unconditional transport-batched multi-object deletion over S3
+    /// DeleteObjects (ADR 0005): the additive sibling of
+    /// [`Self::delete_many`], which stays frozen and unwrapped beside
+    /// it. Deletes exactly the caller-supplied keys — no LIST
+    /// authority, no inventory, no namespace-completeness claim.
+    ///
+    /// Admission is bounded, complete, and effect-free before the
+    /// first request: `keys.len() > [`DELETE_OBJECTS_MAX_INPUT`]`
+    /// is [`DeleteObjectsInputError::TooManyKeys`]; then each member,
+    /// in input order, passes [`Self::ensure_not_reserved_key`]
+    /// **before** identifier/physical-path validation (matching
+    /// `delete`/`delete_many`), then duplicate detection at the
+    /// second input index. The first error by input index is
+    /// deterministic; any admission error means zero delete requests
+    /// and zero effects. Empty input returns `Ok(Vec::new())`.
+    ///
+    /// Accepted keys are processed in input order as sequential chunks
+    /// of at most [`DELETE_OBJECTS_MAX_KEYS`] physical keys — provider
+    /// paths are constructed and dropped one chunk at a time, never
+    /// retained at input scale. Each chunk is one verbose DeleteObjects
+    /// operation reconciled by exact key with an exact response
+    /// bijection; an omitted member never defaults to success.
+    ///
+    /// Transport, never transaction: no cross-key atomicity,
+    /// compensation, or rollback exists or ever will; no batched
+    /// conditional delete exists — [`Self::delete_if_match`] stays
+    /// per-key, permanently. The unconditional request may remove a
+    /// value a concurrent writer published; establishing the semantic
+    /// precondition (or choosing the conditional primitive) is the
+    /// caller's.
+    ///
+    /// Layer: the unconditional sibling of `delete`/`delete_if_match`,
+    /// below lifecycle machinery — no tombstone, no incarnation bump,
+    /// no fence read, no trim-certificate or chunk mutation. ADR 0004
+    /// quiescence stays the caller's operational assertion: invoking
+    /// this while a chunk-GC sweep holds `fences/gc` is a violated
+    /// precondition, and because incarnation is untouched,
+    /// byte-identical recreate can re-materialize the exact chunk
+    /// paths a sweep classified as orphaned (the named residual).
+    pub async fn delete_objects(
+        &self,
+        keys: &[&str],
+    ) -> Result<Vec<DeleteObjectsOutcome>, DeleteObjectsInputError> {
+        if keys.len() > DELETE_OBJECTS_MAX_INPUT {
+            return Err(DeleteObjectsInputError::TooManyKeys {
+                provided: keys.len(),
+                max: DELETE_OBJECTS_MAX_INPUT,
+            });
+        }
+
+        // Admission: complete and effect-free. Reserved-state
+        // precedence precedes identifier/path validation within a
+        // member; duplicates reject at their second input index.
+        let mut seen: std::collections::HashSet<&str> =
+            std::collections::HashSet::with_capacity(keys.len());
+        for (index, key) in keys.iter().enumerate() {
+            let inadmissible = |source| DeleteObjectsInputError::Key {
+                index,
+                key: (*key).to_string(),
+                source,
+            };
+            Self::ensure_not_reserved_key(key).map_err(inadmissible)?;
+            self.object_key(key).map_err(inadmissible)?;
+            if !seen.insert(key) {
+                let first_index = keys
+                    .iter()
+                    .position(|candidate| candidate == key)
+                    .expect("a duplicate implies an earlier equal member");
+                return Err(DeleteObjectsInputError::Duplicate {
+                    key: (*key).to_string(),
+                    first_index,
+                    duplicate_index: index,
+                });
+            }
+        }
+
+        let namespace_prefix = format!("{KEYSPACE_ROOT}/{}/", self.namespace);
+        // The admitted input owns its full outcome vector up front:
+        // once admitted, the method returns exactly `keys.len()`
+        // outcomes no matter where a chunk stops.
+        let mut outcomes: Vec<DeleteObjectsOutcome> = keys
+            .iter()
+            .map(|key| DeleteObjectsOutcome {
+                key: (*key).to_string(),
+                result: Ok(()),
+            })
+            .collect();
+        for (chunk_index, chunk) in keys.chunks(DELETE_OBJECTS_MAX_KEYS).enumerate() {
+            // Chunk-local provider paths: constructed here, dropped at
+            // the end of the iteration — bounded staging, never an
+            // N-sized second copy.
+            let paths: Vec<String> = chunk
+                .iter()
+                .map(|key| format!("{namespace_prefix}{key}"))
+                .collect();
+            let mut index_of: std::collections::HashMap<&str, usize> =
+                std::collections::HashMap::with_capacity(paths.len());
+            for (index, path) in paths.iter().enumerate() {
+                index_of.insert(path.as_str(), index);
+            }
+            let start = chunk_index * DELETE_OBJECTS_MAX_KEYS;
+
+            // Label the current chunk with `reason` (one shared
+            // diagnostic) and the untouched tail `NotAttempted`, then
+            // stop: one ambiguous chunk has one deterministic tail.
+            let stop_unconfirmed =
+                |outcomes: &mut Vec<DeleteObjectsOutcome>,
+                 reason: DeleteObjectsUnconfirmedReason,
+                 diagnostic: Arc<DeleteObjectsDiagnostic>| {
+                    for (offset, outcome) in outcomes[start..].iter_mut().enumerate() {
+                        if outcome.result.is_ok() {
+                            outcome.result = Err(if offset < chunk.len() {
+                                DeleteObjectsFailure::Unconfirmed {
+                                    reason,
+                                    diagnostic: Arc::clone(&diagnostic),
+                                }
+                            } else {
+                                DeleteObjectsFailure::NotAttempted
+                            });
+                        }
+                    }
+                };
+
+            match self.store.delete_objects(&paths).await {
+                Ok(entries) => {
+                    // The SDK reconciled the response to one member per
+                    // path; restore input order by exact physical key.
+                    // Any disagreement here fails the whole chunk
+                    // closed — never a fabricated success.
+                    let mut filled = vec![false; chunk.len()];
+                    let mut bijective = entries.len() == chunk.len();
+                    for entry in &entries {
+                        let Some(local) = index_of.get(entry.path.as_str()) else {
+                            bijective = false;
+                            break;
+                        };
+                        if filled[*local] {
+                            bijective = false;
+                            break;
+                        }
+                        filled[*local] = true;
+                        outcomes[start + *local].result = entry.result.clone().map_err(|failure| {
+                            DeleteObjectsFailure::Rejected {
+                                diagnostic: Arc::new(kernel_delete_diagnostic(&failure.diagnostic)),
+                            }
+                        });
+                    }
+                    if bijective {
+                        bijective = filled.iter().all(|&slot| slot);
+                    }
+                    if !bijective {
+                        stop_unconfirmed(
+                            &mut outcomes,
+                            DeleteObjectsUnconfirmedReason::InvalidResponse,
+                            Arc::new(DeleteObjectsDiagnostic {
+                                code: Some("InvalidResponse".to_string()),
+                                message: "chunk response did not reconcile to exactly \
+                                          one member per requested key"
+                                    .to_string(),
+                                truncated: false,
+                            }),
+                        );
+                        return Ok(outcomes);
+                    }
+                }
+                // A definitive refusal is terminal for the current
+                // chunk AND the untouched tail — the known cause
+                // applies to every unsent key. No per-key fallback.
+                Err(DeleteObjectsRequestError::Unsupported { diagnostic }) => {
+                    let shared = Arc::new(kernel_delete_diagnostic(&diagnostic));
+                    for outcome in &mut outcomes[start..] {
+                        outcome.result = Err(DeleteObjectsFailure::Unsupported {
+                            diagnostic: Arc::clone(&shared),
+                        });
+                    }
+                    return Ok(outcomes);
+                }
+                Err(DeleteObjectsRequestError::Request { diagnostic }) => {
+                    stop_unconfirmed(
+                        &mut outcomes,
+                        DeleteObjectsUnconfirmedReason::RequestFailed,
+                        Arc::new(kernel_delete_diagnostic(&diagnostic)),
+                    );
+                    return Ok(outcomes);
+                }
+                Err(DeleteObjectsRequestError::InvalidResponse { diagnostic }) => {
+                    stop_unconfirmed(
+                        &mut outcomes,
+                        DeleteObjectsUnconfirmedReason::InvalidResponse,
+                        Arc::new(kernel_delete_diagnostic(&diagnostic)),
+                    );
+                    return Ok(outcomes);
+                }
+                // The SDK seam is non_exhaustive; an unclassified
+                // request failure is still unconfirmed, never success.
+                Err(unclassified) => {
+                    stop_unconfirmed(
+                        &mut outcomes,
+                        DeleteObjectsUnconfirmedReason::RequestFailed,
+                        Arc::new(DeleteObjectsDiagnostic {
+                            code: None,
+                            message: format!("unclassified request failure: {unclassified}"),
+                            truncated: false,
+                        }),
+                    );
+                    return Ok(outcomes);
+                }
             }
         }
         Ok(outcomes)
