@@ -1,0 +1,40 @@
+# Registers docs/decisions/0001-atomic-keyspace.md (renumbered from yeetz
+# ADR 0016 at extraction, content carried verbatim; extended by ruled
+# batches 2-9 as addenda) as a Decision vertex. The ADR file is immutable
+# (floor invariant 15) and is the depth document delivered by `source`.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/decision-0001-atomic-keyspace"
+"@type": "https://yeetz.dev/bedrock/ontology/Decision"
+label: "ADR 0001: AtomicKeyspace, O(1) terminal reads, absent/incomplete taxonomy"
+timestamp: "2026-08-21T10:51:16"
+source: "https://yeetz.dev/bedrock/path/docs/decisions/0001-atomic-keyspace.md"
+references:
+  - "https://yeetz.dev/bedrock/vertex/invariant-kernel-extension"
+  - "https://yeetz.dev/bedrock/vertex/invariant-13-state"
+  - "https://yeetz.dev/bedrock/vertex/invariant-08-dependency-boundary"
+statement: >
+  The kernel's keyed-I/O law, extended by human-ruled batches 1-9.
+  Chosen: AtomicKeyspace with NO unconditional write anywhere on the
+  module surface (create is put-if-absent, compare_exchange always
+  carries If-Match, delete_if_match is the conditional delete-side
+  dual); values live in envelope v2 {incarnation, version, payload} so
+  CAS discriminates values AND eras structurally — tombstones witness
+  deliberate destruction, incarnation counters fence cross-deletion
+  ABA, certified trim certificates are the immutable retention floor,
+  and lineage heads carry their own era stamp with conditional
+  deletion tails (L9/L10/L14). O(1) terminal reads are two GETs with
+  chain linkage below the terminal deliberately unverified; Absent,
+  Destroyed, and StateHistoryIncomplete are distinct truths, never
+  conflated. The application boundary is structural, not lexical:
+  application crates cannot reach the adapter at all (KernelHandle +
+  dependency floor) because a source token scan cannot prove
+  capability absence. Rejected: any unconditional overwrite (reopens
+  ABA), yeetz-sdk-core placement (dissolves the one-place assured
+  contract boundary), lexical-only enforcement (three bypass classes
+  compile clean), caller-discipline-only ABA safety. Measured fact
+  (real-S3 probe, run 32423582844): Exoscale SOS etags are content
+  hashes — the ABA case is REAL at the raw backend; the
+  versioned/incarnated envelope is what closes it. Flips if: a backend
+  changes etag semantics (the real-s3 probe rig re-measures and fails
+  loudly), or a human rules the era model must move — a new ruling is
+  a superseding vertex, never an edit here.

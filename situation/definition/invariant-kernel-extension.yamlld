@@ -13,3 +13,6 @@ statement: >
   lives. Downstream breakage breaks definitively; repairs are separately
   orchestrated afterward. Do not bump the assured dependency pins
   casually (root Cargo.toml) — the kernel is assured at those versions.
+
+references:
+  - "https://yeetz.dev/bedrock/vertex/decision-0001-atomic-keyspace"
