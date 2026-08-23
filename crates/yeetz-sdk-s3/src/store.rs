@@ -3,10 +3,14 @@
 use aws_sdk_s3::Client as AwsS3Client;
 use aws_sdk_s3::config::{Credentials as AwsCredentials, Region};
 use aws_sdk_s3::error::ProvideErrorMetadata;
+use aws_sdk_s3::error::SdkError;
+use aws_sdk_s3::operation::delete_objects::DeleteObjectsError;
 use aws_sdk_s3::presigning::PresigningConfig;
 #[cfg(feature = "test-support")]
 use aws_sdk_s3::primitives::ByteStream;
-use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
+use aws_sdk_s3::types::{ChecksumAlgorithm, CompletedMultipartUpload, CompletedPart};
+use aws_sdk_s3::types::Delete as S3Delete;
+use aws_sdk_s3::types::{DeletedObject, Error as S3ErrorEntry, ObjectIdentifier};
 use bytes::Bytes;
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
@@ -17,6 +21,7 @@ use object_store::{
     Attribute, Attributes, GetOptions, ObjectStore, PutMode, PutMultipartOptions, PutOptions,
     PutPayload, UpdateVersion,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -114,6 +119,238 @@ pub struct ObjectHead {
     pub content_length: usize,
     /// The declared content type, if the store reported one.
     pub content_type: Option<String>,
+}
+
+// --- Multi-object delete (ADR 0005) --------------------------------------
+
+/// Combined UTF-8 byte budget for provider `code` + `message` in one
+/// multi-object delete diagnostic. Mirrors the kernel's public
+/// `DELETE_OBJECTS_MAX_DIAGNOSTIC_BYTES` (the SDK cannot import the
+/// kernel without inverting the dependency); the twin values are
+/// asserted by the kernel's contract suite (A38).
+const DELETE_OBJECTS_DIAGNOSTIC_BUDGET: usize = 512;
+
+/// One member of a [`ObjectStoreClient::delete_objects`] response: the
+/// requested path plus its typed per-key result. `Ok(())` is an
+/// explicit confirmation from a valid response; `Err` is unresolved
+/// remainder, never a presence proof.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectDeleteOutcome {
+    pub path: String,
+    pub result: Result<(), ObjectDeleteFailure>,
+}
+
+/// A bounded provider diagnostic for multi-object deletion: `code`
+/// plus `message` fit the combined budget, truncated at char
+/// boundaries when the provider exceeded it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectDeleteDiagnostic {
+    pub code: Option<String>,
+    pub message: String,
+    /// Either provider field was cut to fit the combined budget.
+    pub truncated: bool,
+}
+
+/// Per-key failure carried in an [`ObjectDeleteOutcome`]: the valid
+/// response contained an `<Error>` entry naming this exact path. It
+/// is not a proof that the object remains present.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectDeleteFailure {
+    pub diagnostic: ObjectDeleteDiagnostic,
+}
+
+/// Whole-request failure of one [`ObjectStoreClient::delete_objects`]
+/// operation. The kernel expands one of these to every affected key
+/// instead of collapsing a partial batch into a wholesale error.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum DeleteObjectsRequestError {
+    /// The client lacks the wire capability or the service
+    /// definitively refuses DeleteObjects (HTTP 405/501, or service
+    /// codes `MethodNotAllowed`/`NotImplemented`). Terminal until
+    /// backend qualification changes; no per-key fallback runs.
+    #[error("multi-object delete unsupported: {}", diagnostic.message)]
+    Unsupported {
+        diagnostic: ObjectDeleteDiagnostic,
+    },
+    /// The request failed without a trustworthy per-key response
+    /// (transport failure, timeout, or a non-refusal service error).
+    #[error("multi-object delete request failed: {}", diagnostic.message)]
+    Request {
+        diagnostic: ObjectDeleteDiagnostic,
+    },
+    /// The response violated the exact bijection: a missing,
+    /// duplicate, contradictory, or unexpected member, or a body that
+    /// did not decode. No omitted key defaults to success.
+    #[error("multi-object delete response invalid: {}", diagnostic.message)]
+    InvalidResponse {
+        diagnostic: ObjectDeleteDiagnostic,
+    },
+}
+
+/// Truncate `value` to at most `max` UTF-8 bytes on a char boundary.
+fn truncate_utf8(value: &mut String, max: usize) {
+    if value.len() <= max {
+        return;
+    }
+    let mut end = max.min(value.len());
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
+}
+
+/// Bound provider code+message to the combined diagnostic budget:
+/// the code is policy-bearing and kept first; the message is truncated
+/// to the remainder; a code alone over budget is itself truncated.
+fn bounded_delete_diagnostic(
+    code: Option<String>,
+    message: String,
+) -> ObjectDeleteDiagnostic {
+    let mut code = code.unwrap_or_default();
+    let mut message = message;
+    if code.len() + message.len() > DELETE_OBJECTS_DIAGNOSTIC_BUDGET {
+        truncate_utf8(&mut code, DELETE_OBJECTS_DIAGNOSTIC_BUDGET);
+        let remainder = DELETE_OBJECTS_DIAGNOSTIC_BUDGET - code.len();
+        truncate_utf8(&mut message, remainder);
+        return ObjectDeleteDiagnostic {
+            code: (!code.is_empty()).then_some(code),
+            message,
+            truncated: true,
+        };
+    }
+    ObjectDeleteDiagnostic {
+        code: (!code.is_empty()).then_some(code),
+        message,
+        truncated: false,
+    }
+}
+
+/// A bijection-violation report for one DeleteObjects response.
+fn delete_objects_invalid_response(reason: String) -> DeleteObjectsRequestError {
+    DeleteObjectsRequestError::InvalidResponse {
+        diagnostic: bounded_delete_diagnostic(Some("InvalidResponse".to_string()), reason),
+    }
+}
+
+/// Reconcile a verbose DeleteResult into exactly one outcome per
+/// requested path, keyed by exact path regardless of response order.
+/// A missing requested member, a duplicate member, a Deleted/Error
+/// conflict, or a member naming an unrequested key is
+/// [`DeleteObjectsRequestError::InvalidResponse`] — never success,
+/// never a panic (the legacy `object_store` path's counterexample).
+fn reconcile_delete_objects(
+    paths: &[String],
+    deleted: &[DeletedObject],
+    errors: &[S3ErrorEntry],
+) -> Result<Vec<ObjectDeleteOutcome>, DeleteObjectsRequestError> {
+    let mut index_of: HashMap<&str, usize> = HashMap::with_capacity(paths.len());
+    for (index, path) in paths.iter().enumerate() {
+        if index_of.insert(path.as_str(), index).is_some() {
+            return Err(delete_objects_invalid_response(format!(
+                "request contains a duplicate path: {path}"
+            )));
+        }
+    }
+    let mut slots: Vec<Option<Result<(), ObjectDeleteFailure>>> = vec![None; paths.len()];
+    for entry in deleted {
+        let Some(key) = entry.key() else {
+            return Err(delete_objects_invalid_response(
+                "Deleted member without a key".to_string(),
+            ));
+        };
+        match index_of.get(key) {
+            Some(&index) if slots[index].is_none() => slots[index] = Some(Ok(())),
+            _ => {
+                return Err(delete_objects_invalid_response(format!(
+                    "Deleted member for an unrequested or already-reported key: {key}"
+                )));
+            }
+        }
+    }
+    for entry in errors {
+        let Some(key) = entry.key() else {
+            return Err(delete_objects_invalid_response(
+                "Error member without a key".to_string(),
+            ));
+        };
+        match index_of.get(key) {
+            Some(&index) if slots[index].is_none() => {
+                slots[index] = Some(Err(ObjectDeleteFailure {
+                    diagnostic: bounded_delete_diagnostic(
+                        entry.code().map(str::to_string),
+                        entry.message().unwrap_or_default().to_string(),
+                    ),
+                }));
+            }
+            _ => {
+                return Err(delete_objects_invalid_response(format!(
+                    "Error member for an unrequested or already-reported key: {key}"
+                )));
+            }
+        }
+    }
+    if slots.iter().any(Option::is_none) {
+        return Err(delete_objects_invalid_response(
+            "response omitted a requested key".to_string(),
+        ));
+    }
+    Ok(paths
+        .iter()
+        .zip(slots)
+        .map(|(path, slot)| ObjectDeleteOutcome {
+            path: path.clone(),
+            result: slot.expect("every slot filled above"),
+        })
+        .collect())
+}
+
+/// Classify one DeleteObjects request failure. HTTP status precedes
+/// body parsing: 405/501 (or the equivalent service codes) is a
+/// definitive `Unsupported`; any other service error (403 included)
+/// stays `Request` with its provider code so policy can tell it from
+/// a transport reset (which carries no code); a response that never
+/// decoded is `InvalidResponse`.
+fn map_delete_objects_error(
+    error: &SdkError<DeleteObjectsError>,
+) -> DeleteObjectsRequestError {
+    match error {
+        SdkError::ServiceError(service) => {
+            let diagnostic = bounded_delete_diagnostic(
+                service.err().code().map(str::to_string),
+                service.err().message().unwrap_or_default().to_string(),
+            );
+            let status = service.raw().status().as_u16();
+            let refused = status == 405
+                || status == 501
+                || matches!(
+                    service.err().code(),
+                    Some("MethodNotAllowed") | Some("NotImplemented")
+                );
+            if refused {
+                DeleteObjectsRequestError::Unsupported { diagnostic }
+            } else {
+                DeleteObjectsRequestError::Request { diagnostic }
+            }
+        }
+        // An HTTP response arrived but never became a typed
+        // DeleteObjects output (malformed body): fail closed.
+        SdkError::ResponseError(response) => {
+            DeleteObjectsRequestError::InvalidResponse {
+                diagnostic: bounded_delete_diagnostic(
+                    None,
+                    format!(
+                        "response did not decode ({}): {}",
+                        response.raw().status().as_u16(),
+                        provider_error_text(error)
+                    ),
+                ),
+            }
+        }
+        _ => DeleteObjectsRequestError::Request {
+            diagnostic: bounded_delete_diagnostic(None, provider_error_text(error)),
+        },
+    }
 }
 
 /// Strip surrounding double-quotes from an S3 etag.
@@ -839,6 +1076,84 @@ impl ObjectStoreClient {
                 },
                 None => ObjectStoreError::DeleteFailed(provider_error_text(&error)),
             })
+    }
+
+    /// Exactly one verbose S3 DeleteObjects operation for 1..=1000
+    /// unique paths (ADR 0005 — the kernel-closure composition seam;
+    /// not a public storage bypass).
+    ///
+    /// Neither chunks nor retries: the kernel owns chunk sequencing
+    /// and bounded policy. Every provider diagnostic is normalized to
+    /// the combined 512-byte code/message budget. In-memory test
+    /// backends have no DeleteObjects wire and fail closed as
+    /// [`DeleteObjectsRequestError::Unsupported`] — there is no
+    /// sequential emulation and no per-key fallback.
+    ///
+    /// A valid response may contain both `<Deleted>` and `<Error>`
+    /// entries; both are recorded, one outcome per requested path,
+    /// reconciled by exact path regardless of response order. A
+    /// response that omits, duplicates, contradicts, or over-reports
+    /// a requested path — or fails to decode — is
+    /// [`DeleteObjectsRequestError::InvalidResponse`]; an omitted key
+    /// never defaults to success.
+    pub async fn delete_objects(
+        &self,
+        paths: &[String],
+    ) -> Result<Vec<ObjectDeleteOutcome>, DeleteObjectsRequestError> {
+        debug_assert!(
+            !paths.is_empty() && paths.len() <= 1_000,
+            "delete_objects sends 1..=1000 paths per operation (kernel chunking contract)"
+        );
+        let Some(client) = self.multipart_client.as_ref() else {
+            return Err(DeleteObjectsRequestError::Unsupported {
+                diagnostic: ObjectDeleteDiagnostic {
+                    code: None,
+                    message: "DeleteObjects requires an S3 endpoint backend; \
+                              in-memory stores have no multi-object delete wire"
+                        .to_string(),
+                    truncated: false,
+                },
+            });
+        };
+
+        fn construction_failure(error: impl std::fmt::Display) -> DeleteObjectsRequestError {
+            DeleteObjectsRequestError::Request {
+                diagnostic: ObjectDeleteDiagnostic {
+                    code: None,
+                    message: error.to_string(),
+                    truncated: false,
+                },
+            }
+        }
+        let identifiers: Vec<_> = paths
+            .iter()
+            .map(|path| ObjectIdentifier::builder().key(path.clone()).build())
+            .collect::<Result<_, _>>()
+            .map_err(construction_failure)?;
+        let delete = S3Delete::builder()
+            .set_objects(Some(identifiers))
+            // Verbose mode is load-bearing: quiet=false (the default)
+            // keeps explicit per-key confirmation on the wire.
+            .build()
+            .map_err(construction_failure)?;
+
+        debug!(bucket = %self.bucket, count = paths.len(), "DeleteObjects (verbose)");
+        match client
+            .delete_objects()
+            .bucket(&self.bucket)
+            .delete(delete)
+            // S3 requires a payload checksum on multi-object delete.
+            // The loopback ignores headers, so only the real-S3 leg
+            // witnesses this construction being accepted (ADR 0005).
+            .checksum_algorithm(ChecksumAlgorithm::Crc32)
+            .send()
+            .await
+        {
+            Ok(output) => {
+                reconcile_delete_objects(paths, output.deleted(), output.errors())
+            }
+            Err(error) => Err(map_delete_objects_error(&error)),
+        }
     }
 
     /// Check if an object exists.
