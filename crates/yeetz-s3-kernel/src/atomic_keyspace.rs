@@ -1283,8 +1283,17 @@ impl AtomicKeyspace {
         }
 
         let namespace_prefix = format!("{KEYSPACE_ROOT}/{}/", self.namespace);
-        let mut outcomes: Vec<DeleteObjectsOutcome> = Vec::with_capacity(keys.len());
-        for chunk in keys.chunks(DELETE_OBJECTS_MAX_KEYS) {
+        // The admitted input owns its full outcome vector up front:
+        // once admitted, the method returns exactly `keys.len()`
+        // outcomes no matter where a chunk stops.
+        let mut outcomes: Vec<DeleteObjectsOutcome> = keys
+            .iter()
+            .map(|key| DeleteObjectsOutcome {
+                key: (*key).to_string(),
+                result: Ok(()),
+            })
+            .collect();
+        for (chunk_index, chunk) in keys.chunks(DELETE_OBJECTS_MAX_KEYS).enumerate() {
             // Chunk-local provider paths: constructed here, dropped at
             // the end of the iteration — bounded staging, never an
             // N-sized second copy.
@@ -1297,13 +1306,7 @@ impl AtomicKeyspace {
             for (index, path) in paths.iter().enumerate() {
                 index_of.insert(path.as_str(), index);
             }
-            let start = outcomes.len();
-            outcomes.extend(
-                chunk.iter().map(|key| DeleteObjectsOutcome {
-                    key: (*key).to_string(),
-                    result: Ok(()),
-                }),
-            );
+            let start = chunk_index * DELETE_OBJECTS_MAX_KEYS;
 
             // Label the current chunk with `reason` (one shared
             // diagnostic) and the untouched tail `NotAttempted`, then

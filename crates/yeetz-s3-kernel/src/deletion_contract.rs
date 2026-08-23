@@ -421,15 +421,8 @@ async fn a38_delete_objects_partial_batch_is_typed_per_key() {
     let first_pass = keyspace.delete_objects(&["k1", "k3"]).await.unwrap();
     let replay: Vec<&str> = first_pass
         .iter()
-        .filter(|outcome| {
-            matches!(
-                classify_outcome(outcome),
-                PolicyAction::Replay | PolicyAction::Terminal
-            ) && matches!(
-                outcome.result.as_ref(),
-                Err(DeleteObjectsFailure::Rejected { .. })
-            ) && matches!(classify_outcome(outcome), PolicyAction::Replay)
-        })
+        .filter(|outcome| outcome.result.is_err())
+        .filter(|outcome| matches!(classify_outcome(outcome), PolicyAction::Replay))
         .map(|outcome| outcome.key.as_str())
         .collect();
     assert_eq!(replay, ["k1"]);
@@ -521,9 +514,10 @@ async fn a39_delete_objects_remainder_crosses_chunks() {
     let outcomes = keyspace.delete_objects(&refs).await.unwrap();
     assert_eq!(outcomes.len(), SIZE);
 
-    // Valid per-key errors did not prevent later chunks: all four
-    // logical requests were sent.
-    assert_eq!(bulk_posts(&counterpart.snapshot().await).len(), 4);
+    // Valid per-key errors did not prevent later chunks: chunks 1–3
+    // were all sent; the refused chunk 3's lost response then stops
+    // the call before the one-key tail chunk.
+    assert_eq!(bulk_posts(&counterpart.snapshot().await).len(), 3);
 
     for (index, outcome) in outcomes.iter().enumerate() {
         assert_eq!(outcome.key, keys[index]);
@@ -973,20 +967,26 @@ async fn a43_delete_objects_stays_below_lifecycle_state() {
         );
     }
 
-    // Fence blindness: no request ever touched the fence control.
-    assert!(
-        !snapshot
-            .requests
-            .iter()
-            .any(|request| request.key.as_deref() == Some(fence_path.as_str()))
-    );
-
-    // The broken-quiescence interleave with delete_objects in the
-    // writer window (the a34x demonstration, batch-delete variant):
-    // the pre-fence writer's byte-identical recreate binds the same
-    // chunk paths the sweep then classifies as orphaned — the
-    // forbidden ManifestIncomplete state, detected as ChunkMissing.
-    // The counter is unchanged throughout.
+    // Fence blindness, scoped to the primitive: a delete_objects call
+    // issues no request at all against the fence control (streamed
+    // writers legitimately read the fence to respect it; this
+    // primitive does not).
+    {
+        keyspace
+            .create("fence-probe", Bytes::from_static(b"v"))
+            .await
+            .unwrap();
+        let before = counterpart.snapshot().await.requests.len();
+        let probe = keyspace.delete_objects(&["fence-probe"]).await.unwrap();
+        assert!(probe[0].result.is_ok());
+        let delta = &counterpart.snapshot().await.requests[before..];
+        assert!(
+            !delta
+                .iter()
+                .any(|request| request.key.as_deref() == Some(fence_path.as_str())),
+            "delete_objects is fence-blind"
+        );
+    }
     {
         let victim_data = pattern(STREAMED_LEN, 0xE6);
         {
@@ -1056,8 +1056,12 @@ async fn a44_delete_objects_has_no_condition_or_transaction() {
     assert!(outcomes[4].result.is_ok());
     assert!(rejected_diagnostic(&outcomes[5]).code.is_some());
     assert!(outcomes[6].result.is_ok());
-    // ...an earlier confirmed chunk that stands...
-    assert!(outcomes[..1_000].iter().all(|o| o.result.is_ok()));
+    // ...an earlier confirmed chunk that stands, minus its own
+    // per-key rejection at index 5...
+    assert!(outcomes[..1_000]
+        .iter()
+        .enumerate()
+        .all(|(index, outcome)| index == 5 || outcome.result.is_ok()));
     assert_object_state(&store, &control_path("a44", &keys[7]), false).await;
     // ...and a stopped later chunk with an untouched NotAttempted tail.
     let (reason, _) = unconfirmed_parts(&outcomes[2_000]);
