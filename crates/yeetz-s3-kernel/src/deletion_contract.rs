@@ -557,7 +557,7 @@ async fn a39_delete_objects_remainder_crosses_chunks() {
         .chain(2000..SIZE)
         .map(|index| keys[index].clone())
         .collect();
-    debug_assert_eq!(expected_remaining.len(), 1_002);
+    debug_assert_eq!(expected_remaining.len(), 1_003);
     assert_eq!(DeleteObjectsOutcome::remaining(&outcomes), expected_remaining);
 
     // The bounded replay converges with no side effects on the
@@ -1027,7 +1027,7 @@ async fn a44_delete_objects_has_no_condition_or_transaction() {
 
     // Mixed success plus an earlier-chunk success and a later stop:
     // partial state is recorded and earlier deletions stand.
-    const SIZE: usize = 2_501;
+    const SIZE: usize = 3_001;
     let keys: Vec<String> = (0..SIZE).map(|index| format!("p{index}")).collect();
     for index in [7usize, 1_507] {
         keyspace
@@ -1062,7 +1062,7 @@ async fn a44_delete_objects_has_no_condition_or_transaction() {
     // ...and a stopped later chunk with an untouched NotAttempted tail.
     let (reason, _) = unconfirmed_parts(&outcomes[2_000]);
     assert_eq!(reason, DeleteObjectsUnconfirmedReason::RequestFailed);
-    assert_not_attempted(&outcomes[2_500]);
+    assert_not_attempted(&outcomes[3_000]);
     assert_object_state(&store, &control_path("a44", &keys[1_507]), false).await;
 
     // The request may delete a concurrent replacement: an unconditional
