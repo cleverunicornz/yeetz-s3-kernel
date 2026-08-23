@@ -1,0 +1,50 @@
+# Registers docs/decisions/0004-streaming-value-io-v2.md as a Decision
+# vertex. Supersedes decision-0003-streaming-value-io; ADR 0003 stays
+# immutable. Implementation is authorized as its own firewalled kernel
+# batch (invariant-kernel-extension) — not yet landed at registration.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/decision-0004-streaming-value-io-v2"
+"@type": "https://yeetz.dev/bedrock/ontology/Decision"
+label: "ADR 0004: streaming-value I/O v2 — manifest commit, bounded chunks"
+timestamp: "2026-08-22T20:43:22"
+source: "https://yeetz.dev/bedrock/path/docs/decisions/0004-streaming-value-io-v2.md"
+supersedes: "https://yeetz.dev/bedrock/vertex/decision-0003-streaming-value-io"
+requires: "https://yeetz.dev/bedrock/vertex/decision-0001-atomic-keyspace"
+references:
+  - "https://yeetz.dev/bedrock/vertex/invariant-kernel-extension"
+  - "https://yeetz.dev/bedrock/vertex/invariant-13-state"
+statement: >
+  Accepted 2026-08-22 via human-delegated synthesis ("adopt the best
+  solution derivable from both reviewers; reserve only physics-class
+  forks for me"). Supersedes ADR 0003, keeping its manifest/chunk
+  architecture under ten review amendments (SHIP WITH AMENDMENTS ->
+  SHIP, 10/10 fidelity, evidence verified). Synthesis-adopted rulings:
+  (1) representation = manifest/chunks — the live Exoscale probe (run
+  32592980637, PARTIAL MULTIPART WITNESS) proved conditional
+  completion works but part-addressed reads are measured absent, so
+  the portable-correctness floor stands and any backend fast path is
+  a future, capability-probed, feature-flagged addition; (2)
+  CHUNK_BYTES = 16 MiB, INLINE_MAX = 64 MiB, chunk_count >= 2, 2x
+  key-encoding bound, 892 B max key, and a 16 MiB encoded
+  streams-envelope bound so streams-stay-inline is structural;
+  (3) chunk GC is quiesced-only v1 with a cheap fence at a
+  kernel-reserved key, the broken-quiescence data-loss race documented
+  and demonstrated in the rig, and delete-free online orphan metering
+  — quiescence is an operational assertion the kernel cannot prove;
+  (4) per-key chunk scoping, global refcounted dedup rejected;
+  (5) 64 MiB adapter guard on git whole-read paths, with
+  object_exists()/FindHeader::try_header() as mandatory downstream
+  migration sites; (6) key-late writes use a bounded ephemeral spool
+  under the same guard, durable prepared-upload rejected. Hard edges:
+  reserved-root guard rejects lineages naming keyspace or
+  keyspace-chunks; stale-era eviction is conditional, never
+  read-check-unconditional; the third lost-response outcome is
+  Unavailable/ambiguous, never a fabricated conflict. Proof plan:
+  A24-A35 on loopback + real-S3 legs. Rejected: native multipart at
+  the logical key (no portable part reads), mutable LIST-discovered
+  chunks (no atomic multi-object replacement; reopens ABA per chunk),
+  temp-object + conditional copy (double bandwidth), global
+  content-addressed dedup (crash-safe refcounting). Flip condition: a
+  full witness of portable part-addressed/integrity reads would
+  remove the manifest design's largest permanent liability (chunk GC)
+  and reopen manifest-vs-native-multipart for a human ruling.

@@ -1,0 +1,28 @@
+# Registers docs/decisions/0003-streaming-value-io.md as a Decision
+# vertex. Superseded at birth's adjudication by ADR 0004 — this vertex
+# exists so the supersedes chain is walkable (the protocol: the
+# alternative a reader is about to propose may already be recorded,
+# with its reason). Liveness is read from the incoming supersedes edge
+# on decision-0004-streaming-value-io-v2, never from this statement.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/decision-0003-streaming-value-io"
+"@type": "https://yeetz.dev/bedrock/ontology/Decision"
+label: "ADR 0003: streaming-value I/O for AtomicKeyspace (superseded)"
+timestamp: "2026-08-22T20:43:22"
+source: "https://yeetz.dev/bedrock/path/docs/decisions/0003-streaming-value-io.md"
+references:
+  - "https://yeetz.dev/bedrock/vertex/invariant-kernel-extension"
+statement: >
+  The proposed v1 design for streaming large values through
+  AtomicKeyspace: two representations behind one logical value API —
+  inline v2 envelope up to 16 MiB; larger values as a v3 manifest in
+  the key object plus immutable fixed-size SHA-256-addressed chunks in
+  a kernel-private root; the manifest's conditional PUT the only
+  commit point; readers always fetch and validate the control object
+  first. Status at birth: PROPOSED / DRAFT — documentation only, no
+  implementation authorized. Adjudication did not amend in place: the
+  independent adversarial review (SHIP WITH AMENDMENTS) moved to a
+  successor record. Superseded by ADR 0004
+  (decision-0004-streaming-value-io-v2), which kept the manifest/chunk
+  architecture and amended it — this vertex is chain history, not
+  live law; read the successor for what stands.

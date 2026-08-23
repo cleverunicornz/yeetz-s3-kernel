@@ -1,0 +1,43 @@
+# Registers docs/decisions/0002-streams.md (renumbered from yeetz ADR 0017
+# at extraction; extended by ruled addenda) as a Decision vertex. The ADR
+# file is immutable (floor invariant 15) and is the depth document
+# delivered by `source`.
+"@context": "https://yeetz.dev/bedrock/context/v1"
+"@id": "https://yeetz.dev/bedrock/vertex/decision-0002-streams"
+"@type": "https://yeetz.dev/bedrock/ontology/Decision"
+label: "ADR 0002: streams — append-only event logs on AtomicKeyspace"
+timestamp: "2026-08-21T10:51:16"
+source: "https://yeetz.dev/bedrock/path/docs/decisions/0002-streams.md"
+requires: "https://yeetz.dev/bedrock/vertex/decision-0001-atomic-keyspace"
+references:
+  - "https://yeetz.dev/bedrock/vertex/invariant-kernel-extension"
+  - "https://yeetz.dev/bedrock/vertex/invariant-13-state"
+statement: >
+  The streams crate: per-stream append-only event logs as immutable,
+  individually addressable objects at streams/v1/<id>/log/<seq:020>
+  under the kernel keyspace root. Chosen: the event object's
+  conditional create IS the seq allocation — no counter, no head CAS;
+  byte-identical retries are idempotent only inside the bounded
+  pre-scan window (beyond it, same-stable-id re-appends land as new
+  events: at-least-once, consumers dedupe by event id; in-window
+  payload/schema change is a typed IdempotencyConflict, never a
+  silent second landing); complete=true requires BOTH a verified tail
+  hint (a computed-key GET witness a frozen LIST cannot hide) AND an
+  empty ordered probe — a LIST alone never certifies (G130); reads
+  are typed and loud (Corrupt names missing seqs, decode failure is
+  an error never a skip, OffsetExpired is the typed trim boundary),
+  and a backend failing the strong-LIST contract yields
+  BackendUnqualified rather than false completeness. Certified trim
+  (batch 5): immutable trims/ certificates are the floor, GC deletes
+  only below it, trim-to-end is logically empty with appends landing
+  AT the floor (finding D). Quiesced migration from the ADR-0011
+  layout preserves seqs/payloads and seals each migrated stream —
+  the seal is the tail-erasure witness. Rejected: the ADR-0011
+  single-lineage event stream (all repos serialize through one head
+  CAS, O(history) replay, lineage-wide damage); unfenced trim
+  (unblocked only by 0001's versioned values); mode-A/mode-B fencing
+  designs (reserved, not shipped); per-event tombstones; and for the
+  crate itself, delivery/push/bus, forge types, and name registries —
+  pull-only, opaque ids, the application maps names at its boundary.
+  Flips if: retention needs grow past certified trim (a future
+  fenced-retirement decision) or 0001's era model is superseded.
