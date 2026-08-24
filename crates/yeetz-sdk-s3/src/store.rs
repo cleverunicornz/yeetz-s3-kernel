@@ -1065,9 +1065,13 @@ impl ObjectStoreClient {
             })
     }
 
-    /// Exactly one verbose S3 DeleteObjects operation for 1..=1000
-    /// unique paths (ADR 0005 — the kernel-closure composition seam;
-    /// not a public storage bypass).
+    /// Domain contract (ADR 0005 — the kernel-closure composition
+    /// seam; not a public storage bypass): `0` paths short-circuit to
+    /// `Ok(vec![])` with **no request issued**; `1..=1000` unique
+    /// paths issue exactly one verbose S3 DeleteObjects operation;
+    /// more than 1,000 is a contract violation caught by the
+    /// `debug_assert` below — the kernel owns chunking, the seam does
+    /// not. The seam is total for `0..=1000`.
     ///
     /// Neither chunks nor retries: the kernel owns chunk sequencing
     /// and bounded policy. Every provider diagnostic is normalized to
@@ -1087,8 +1091,11 @@ impl ObjectStoreClient {
         &self,
         paths: &[String],
     ) -> Result<Vec<ObjectDeleteOutcome>, DeleteObjectsRequestError> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
         debug_assert!(
-            !paths.is_empty() && paths.len() <= 1_000,
+            paths.len() <= 1_000,
             "delete_objects sends 1..=1000 paths per operation (kernel chunking contract)"
         );
         let Some(client) = self.multipart_client.as_ref() else {
@@ -1545,6 +1552,17 @@ mod tests {
             let _bytes: Bytes = r.data;
             let _etag: Option<String> = r.etag;
         }
+    }
+
+    /// PR #35 declared-choice #8 reconciliation: the seam is total
+    /// for 0..=1000. Empty input short-circuits to an empty result
+    /// with no request issued — witnessed here because the in-memory
+    /// backend answers any real request with `Unsupported`.
+    #[tokio::test]
+    async fn delete_objects_empty_input_issues_no_request() {
+        let client = ObjectStoreClient::in_memory("empty-input");
+        let outcomes = client.delete_objects(&[]).await;
+        assert_eq!(outcomes.expect("empty input short-circuits"), Vec::new());
     }
 
     #[test]
