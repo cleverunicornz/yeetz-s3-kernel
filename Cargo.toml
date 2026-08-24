@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/cleverunicornz/yeetz-s3-kernel"
@@ -17,9 +17,9 @@ rust-version = "1.96"
 
 [workspace.dependencies]
 # Internal
-yeetz-sdk-core = { path = "crates/yeetz-sdk-core", version = "0.4.1" }
-yeetz-sdk-s3 = { path = "crates/yeetz-sdk-s3", version = "0.4.1" }
-yeetz-s3-kernel = { path = "crates/yeetz-s3-kernel", version = "0.4.1" }
+yeetz-sdk-core = { path = "crates/yeetz-sdk-core", version = "0.4.2" }
+yeetz-sdk-s3 = { path = "crates/yeetz-sdk-s3", version = "0.4.2" }
+yeetz-s3-kernel = { path = "crates/yeetz-s3-kernel", version = "0.4.2" }
 yeetz-s3-streams = { path = "crates/yeetz-s3-streams" }
 
 # Kernel closure (pins carried from the parent yeetz repo — the kernel
