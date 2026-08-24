@@ -2,7 +2,7 @@
 # Bedrock CI template — installable by copy into `.github/workflows/`.
 #
 # The dry run: every PR touching situation/ (or the generated AGENTS.md)
-# recompiles bedrock, runs `bedrock check` (hard rules C1–C10, including
+# recompiles bedrock, runs `bedrock check` (hard rules C1–C11, including
 # the C1 byte-drift gate: the committed AGENTS.md must match regeneration),
 # and surfaces the size report — total artifact bytes plus SOFT lines for
 # any compiled face over the 4096-char soft budget (advisory, never
@@ -10,11 +10,12 @@
 # itself; a human merges; main never carries a stale graph. Fork pull
 # requests never run the job.
 #
-# Deviation from the 0.5.0 template (one, deliberate): the install step is
-# pinned to crates.io 0.5.0 instead of always-latest from the bedrock
-# default branch, because bedrock main does not carry 0.5.0 yet —
-# always-latest would compile an older protocol and fail C10 skew. Flip to
-# the template's unpinned `--git` install once bedrock main carries 0.5.0.
+# Deviation from the 0.6.0 template (one, deliberate): the install step is
+# pinned to crates.io 0.6.0 rather than the template's unpinned
+# always-latest `--git` install. bedrock main does carry 0.6.0, so the
+# original 0.5.0-era reason (main lagging the pinned version) is gone;
+# the pin stays because a floating install would reintroduce C10 skew
+# every time bedrock main moves ahead of this repo's protocol version.
 
 name: bedrock
 
@@ -39,7 +40,7 @@ jobs:
 
     env:
       # Single version knob; matches the bedrock this repo operates under.
-      BEDROCK_VERSION: '0.5.0'
+      BEDROCK_VERSION: '0.6.0'
 
     steps:
       - uses: actions/checkout@v4

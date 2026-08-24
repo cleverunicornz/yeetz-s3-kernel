@@ -15,8 +15,12 @@ requires: "https://yeetz.dev/bedrock/vertex/decision-0001-atomic-keyspace"
 references:
   - "https://yeetz.dev/bedrock/vertex/invariant-kernel-extension"
   - "https://yeetz.dev/bedrock/vertex/structure-kernel"
-  - "https://yeetz.dev/bedrock/vertex/plan-batched-deletion-primitive"
   - "https://yeetz.dev/bedrock/vertex/decision-0004-streaming-value-io-v2"
+# C11 (bedrock 0.6.0): the plan went cold at disposition done, and the
+# record schema's `references` admits only vertex IRIs — so history
+# rides `consumes` as a repo-path pointer to the same vertex file.
+consumes:
+  - "https://yeetz.dev/bedrock/path/situation/plan/batched-deletion-primitive.yamlld"
 statement: >
   Accepted 2026-08-23 by human merge of PR #33 (merge commit
   60cb5c35) after a two-round independent adversarial review — both
