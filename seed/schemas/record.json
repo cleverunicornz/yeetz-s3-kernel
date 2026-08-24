@@ -1,5 +1,5 @@
 {
-  "$comment": "Installed by bedrock v0.5.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.",
+  "$comment": "Installed by bedrock v0.6.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://yeetz.dev/bedrock/schema/record/v4",
   "title": "Bedrock record namespace vertex schema",
@@ -85,7 +85,7 @@
     "vertexId": { "type": "string", "pattern": "^https://yeetz\\.dev/bedrock/vertex/[a-z0-9][a-z0-9-]*$" },
     "label": { "type": "string", "minLength": 1, "maxLength": 120 },
     "boundedText": { "type": "string", "minLength": 1, "maxLength": 4096 },
-    "body": { "type": "string", "minLength": 1, "$comment": "0.5.0 face/body law: free-form depth prose — the vertex's own document, delivered by its `document` edge. NEVER compiled into the graph; everything above it (the face) is. No max length: depth is unbounded; the compiled face is what the soft budget measures." },
+    "body": { "type": "string", "minLength": 1, "$comment": "Unbounded node-local depth; always cold. Decisions project their compact face; episodic record types remain cold." },
     "gitCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$" },
     "artifactDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },

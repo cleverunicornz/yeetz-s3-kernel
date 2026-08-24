@@ -1,4 +1,4 @@
-# Installed by bedrock v0.5.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
+# Installed by bedrock v0.6.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
 # Bedrock repo-local @context — the single serviceable context for every
 # situation/<ns>/ vertex (SPINE §4 C3: one @context, no remote loading).
 # W1 embeds this exact map and serves it for the IRI
@@ -75,6 +75,8 @@
   disposition:
     "@id": "https://yeetz.dev/bedrock/disposition"
     "@type": "@json"
+  state:
+    "@id": "https://yeetz.dev/bedrock/state"
   subject:
     "@id": "https://yeetz.dev/bedrock/subject"
     "@type": "@id"

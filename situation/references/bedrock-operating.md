@@ -1,4 +1,4 @@
-# Installed by bedrock v0.5.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
+# Installed by bedrock v0.6.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
 # Bedrock operating reference — the base protocol
 
 This is the standardized minimum every bedrock repo builds on, plus the
@@ -57,43 +57,55 @@ excuse to mint a new edge.
 - `supersedes` — a vertex replaces an earlier vertex, which stays untouched
   (append-only — floor invariant 15).
 
-## Vertex anatomy — face and body
+## Resident working set
 
-A vertex file is ONE YAML-LD document with two zones:
+`situation/` is the complete canonical store. Every YAML-LD source is
+parsed, schema-validated, and edge-validated. Root `AGENTS.md` is the
+deterministic resident projection — current operational knowledge, never
+the execution archive:
 
-- **The face** — everything except `body`: `@id`, `@type`, `label`, the
-  edges, and a `statement`/`gate` whose job is routing — enough for a
-  reader of the injected graph to know what this node is, what it touches,
-  and when to pull the thread. The face compiles into the graph; every
-  agent context pays for it on every task. Target 500–1000 tokens;
-  `bedrock check`/`build` print a SOFT line when a compiled face exceeds
-  4096 chars (≈1k tokens). Soft means soft: advisory, never a violation.
-- **The body** — one `body: |` literal block scalar, by convention the
-  last field: free-form depth prose (markdown welcome), as long as the
-  node needs. The body NEVER compiles into the graph. It is the document
-  the vertex's automatic `document` edge delivers: an agent standing on
-  the node in the injected graph pulls that edge to the source file and
-  reads the depth on demand.
+| source | residency |
+|---|---|
+| definition/, architecture/, current risk/ | compact face resident |
+| Plan `active` | routing face resident |
+| Plan `draft`, `done`, `abandoned` | cold |
+| Decision | resident; complete `supersedes` chain walkable |
+| EpochRecord, DeployRecord, ReflectVerdict | cold |
+| references/, every `body` | cold |
 
-```yaml
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/risk-example"
-"@type": "https://yeetz.dev/bedrock/ontology/Risk"
-label: "Example: list-after-write can lie"
-statement: >
-  Read the body before touching pointer moves. It names the failure
-  window and the fencing rule that closes it.
-body: |
-  ## The failure window
-  Depth: headings, lists, code fences — whatever the node needs.
-```
+Cold does not mean hidden or discarded. The resident
+SituationStructure vertex discloses every namespace path. A task that needs
+history walks `situation/plan/`, `record/`, or `references/`; routine work
+does not pay to enumerate it.
 
-Use `|` (literal) for bodies — it preserves line structure; `>` (folded)
-joins lines and suits single-paragraph statements. Editing only a body
-never changes the compiled graph: the artifact stays byte-identical while
-every pulled thread reads the new depth. Shared depth (playbooks, this
-reference) stays in `references/`, linked by a `source` or `references`
-edge — `body` is for node-local depth.
+Projection closure is hard rule C11: a resident vertex may not point by
+vertex IRI at a cold source — that would expose an edge with no target in
+the injected graph. Use a repo-path pointer for historical evidence, or
+promote the target into resident knowledge.
+
+## Vertex anatomy — face and depth
+
+A vertex file is ONE YAML-LD document. For ordinary resident knowledge:
+
+- **face** — identity, routing statement/gate, and relationships; resident;
+- **body** — one final `body: |` literal block scalar of unbounded node-local
+  depth; never resident.
+
+An active Plan is stricter. Its resident routing allowlist is @type, label,
+intent, consumes/requires/references/produces/member-of/oracle/source/path,
+synthesized state `active`, and its automatic document edge. Structured
+execution payload — acceptanceCriteria, tasks, witnesses, reflectDepth,
+residual, statement, body — remains validated but cold in that same file.
+
+`bedrock check`/`build` report exact artifact bytes, resident/cold counts,
+and a SOFT line when any resident face exceeds 4096 chars (≈1k tokens).
+Target 500–1000 tokens. Soft is advisory, never a violation.
+
+Use `|` (literal) for bodies — it preserves headings, lists, and code.
+Use `>` (folded) for compact single-paragraph routing prose. Editing only
+cold content leaves AGENTS.md byte-identical; following the resident
+`document` edge reads the complete current source on demand. Shared depth
+stays in `references/`, linked by a path.
 
 ## Archetype rule
 
@@ -128,47 +140,51 @@ statement: >
   its author meant. Work is collapsing possibilities to defined behavior.
 ```
 
-Profile rules are enforced by `bedrock check` (C2–C5/C7–C9):
+Profile and projection rules are enforced by `bedrock check`
+(C2–C5/C7–C11):
 
-- one `@context` — the embedded repo-local context or the exact bedrock
-  context IRI; remote context loading is always disabled;
-- `@id` and `@type` are absolute IRIs; no blank nodes anywhere;
-- no anchors, aliases, or merge keys — in any file;
-- no blank nodes — an object value missing an absolute `@id` produces one;
-- comments are welcome; they never survive to the compiled graph.
+- one served `@context`; remote loading disabled;
+- absolute `@id`/`@type`; no blank nodes;
+- no anchors, aliases, or merge keys;
+- every source edge resolves;
+- every Plan declares draft|active|done|abandoned;
+- every resident vertex edge resolves to another resident or a repo path;
+- comments, bodies, and cold execution payload never reach the projection.
 
 ## Authoring loop
 
-1. Write a vertex at `situation/<ns>/<local-name>.yamlld`: the face on
-   top (identity, edges, a statement that says when to read on), depth
-   in `body:` below.
-2. Run `bedrock check` — failures are named and line-cited
-   (`RULE path:line message`); the size report prints total artifact
-   bytes and a SOFT line per face over the soft budget. Fix hard
-   failures; trim soft ones.
-3. Run `bedrock build` — compiles the root `AGENTS.md`: the complete
-   TriG graph.
-4. Commit the source vertex AND the generated output together.
-5. Open a PR scoped to the situation change; CI dry-runs the same
-   check + report; a human merges.
+1. Write `situation/<ns>/<local-name>.yamlld`. Keep the routing face lean;
+   put node-local depth in `body: |`.
+2. Plans declare `disposition.state` from birth. Set `active` only when
+   execution should be discoverable in every agent's resident graph.
+3. Run `bedrock check`: fix hard `RULE path:line` failures; use the
+   projection report to trim SOFT resident faces.
+4. Run `bedrock build`: regenerate root AGENTS.md, the resident TriG.
+5. Commit source AND generated output; open a scoped PR; a human merges.
 
-## Execution-graph primitives
+## Execution-graph primitives and lifecycle
 
-A plan carries exactly these seven fields:
+A Plan source carries the seven execution primitives:
 
-- `intent` — the promise, stated as behavior.
-- `acceptanceCriteria` — the oracle, inline; required.
-- `consumes` — the vertices and paths the plan draws on.
-- `tasks` — the ordered work that makes the promise real.
-- `witnesses` — retained CI-run-URL observations; required before `done`.
-- `reflectDepth` — how deep the follow-up reflection must go.
-- `disposition` + `residual` — the closing state and what was not assured;
-  both land at close, not at authoring.
+- `intent` — promise and resident read-trigger while active;
+- `acceptanceCriteria` — inline oracle, required, cold;
+- `consumes` — resident routing relationships while active;
+- `tasks` — ordered execution payload, cold;
+- `witnesses` — retained CI-run URLs, required before `done`, cold;
+- `reflectDepth` — follow-up depth, cold;
+- `disposition.state` — required from birth:
+  draft|active|done|abandoned; `residual` declares what close did not assure.
 
-Deliberately excluded, permanently: no custody choreography, no per-actor
-openings or closures, no round ordinals, no confirmation passes. This is a
-thin transaction log with measured ceremony — those four mechanisms are not
-coming back.
+Lifecycle: draft is source-only; active projects one compact routing face;
+done/abandoned return entirely to cold source. Invocation names the Plan IRI
+or source path; the agent sees intent and edges, then follows `document` for
+the complete file. Reflection closes state, retains witnesses/findings, and
+promotes only durable consequences into definition, architecture, current
+risk, or a Decision. Historical Plans remain under situation/plan without
+taxing future contexts.
+
+No custody choreography, per-actor openings/closures, round ordinals, or
+confirmation passes. This is a thin transaction log with measured ceremony.
 
 ## Decisions
 
@@ -176,8 +192,8 @@ A Decision is a named collapse of the possibility space at design level:
 the record of a fork that was closed — what was chosen, what was rejected,
 and the conditions under which the choice flips. Decisions live in record/.
 They are write-once and immutable at birth (floor invariant 15: supersede,
-never edit), and they ride in the compiled graph like any vertex —
-liveness is read from the `supersedes` chain, never from a status field.
+never edit), and every Decision stays resident so the complete
+`supersedes` chain remains walkable.
 
 Write one when a fork you close would be plausibly re-opened by a reader
 with zero context — at the moment of collapse, never reconstructed later.
@@ -201,10 +217,10 @@ reason and its flip conditions.
 following:
 
 - no new top-level directories or namespaces under `situation/`;
-- no hand-editing of `AGENTS.md` (the compiled graph), the base schemas
-  in `seed/schemas/`, `seed/context.yamlld`, or this reference;
-- no writing anything outside `situation/` (and the installed base files)
-  — except the root `AGENTS.md`, which `build` regenerates;
+- no hand-editing of AGENTS.md (the resident projection), base schemas,
+  seed/context.yamlld, or this reference;
+- no writing outside `situation/` and installed base files except root
+  AGENTS.md, which build regenerates;
 - `update` never touches repo-authored vertices, extension schemas, or the
   workflow template once a consumer copy exists.
 
@@ -220,6 +236,7 @@ Routing law when one needs changing:
 
 ## Re-situate
 
-`bedrock build` regenerates `AGENTS.md` — the compiled graph — from
-`situation/`. After work that changes reality, re-run it and commit the
-emitted graph: knowledge, not rules.
+`bedrock build` validates the complete situation and regenerates AGENTS.md
+from its resident working set. After work changes reality, reflect: close
+episodic state, promote durable consequences, rebuild, and commit the
+projection — current knowledge, not accumulated history.

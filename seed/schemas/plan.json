@@ -1,12 +1,12 @@
 {
-  "$comment": "Installed by bedrock v0.5.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.",
+  "$comment": "Installed by bedrock v0.6.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://yeetz.dev/bedrock/schema/plan/v3",
+  "$id": "https://yeetz.dev/bedrock/schema/plan/v4",
   "title": "Bedrock plan namespace vertex schema",
-  "description": "Execution plans (0.2.0 base protocol): the seven execution-graph primitives — intent, acceptanceCriteria, consumes, tasks, witnesses, reflectDepth, disposition+residual. No custody choreography: no transitions, openings, or closures. Validates every situation/plan/*.yamlld vertex.",
+  "description": "Execution plans (0.6.0 resident projection): every Plan declares disposition.state (draft|active|done|abandoned). All source fields validate; only an active Plan's compact routing face is resident in AGENTS.md. The execution payload — acceptanceCriteria, tasks, witnesses, reflectDepth, residual, statement, body — stays cold in the source document. Validates every situation/plan/*.yamlld vertex.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["@context", "@id", "@type", "intent", "acceptanceCriteria", "consumes", "tasks"],
+  "required": ["@context", "@id", "@type", "intent", "acceptanceCriteria", "consumes", "tasks", "disposition"],
   "properties": {
     "@context": { "const": "https://yeetz.dev/bedrock/context/v1" },
     "@id": { "$ref": "#/$defs/vertexId" },
@@ -28,12 +28,12 @@
     "disposition": {
       "type": "object",
       "properties": {
-        "state": { "enum": ["draft", "active", "done", "abandoned"] },
+        "state": { "enum": ["draft", "active", "done", "abandoned"], "$comment": "Only active projects a compact routing face into AGENTS.md; draft/done/abandoned stay cold but fully validated." },
         "residual": { "$ref": "#/$defs/boundedText" }
       },
       "required": ["state"],
       "additionalProperties": false,
-      "$comment": "state done claims the promise held; without a witness it is a C8 violation"
+      "$comment": "Lifecycle is explicit from birth. State done claims the promise held; without a witness it is a C8 violation."
     },
     "references": { "$ref": "#/$defs/vertexPointerList" },
     "requires": { "$ref": "#/$defs/vertexPointer" },
@@ -50,7 +50,7 @@
     "vertexId": { "type": "string", "pattern": "^https://yeetz\\.dev/bedrock/vertex/[a-z0-9][a-z0-9-]*$" },
     "label": { "type": "string", "minLength": 1, "maxLength": 120 },
     "boundedText": { "type": "string", "minLength": 1, "maxLength": 4096 },
-    "body": { "type": "string", "minLength": 1, "$comment": "0.5.0 face/body law: free-form depth prose — the vertex's own document, delivered by its `document` edge. NEVER compiled into the graph; everything above it (the face) is. No max length: depth is unbounded; the compiled face is what the soft budget measures." },
+    "body": { "type": "string", "minLength": 1, "$comment": "Unbounded node-local depth; always cold. Active Plans project only the routing allowlist; all execution payload stays in this source document." },
     "criterion": { "type": "string", "minLength": 1, "maxLength": 600 },
     "witness": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^https://[^\\s]+$", "$comment": "CI-run-URL class, never a local attestation" },
     "pathPointer": { "type": "string", "pattern": "^https://yeetz\\.dev/bedrock/path/[A-Za-z0-9._/\\-]+$" },
