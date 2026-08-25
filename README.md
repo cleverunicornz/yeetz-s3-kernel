@@ -48,9 +48,10 @@ The laws the closure enforces:
 - `rigs/` — durable verification rigs: executable witnesses proving
   kernel claims against real backends (streams contracts, live-S3 ABA
   probe); indexed in `rigs/INDEX.md`
-- `docs/decisions/` — ADRs: [0001 AtomicKeyspace](./docs/decisions/0001-atomic-keyspace.md),
-  [0002 Streams](./docs/decisions/0002-streams.md),
-  [0003/0004 Streaming value I/O](./docs/decisions/0004-streaming-value-io-v2.md)
+- `situation/record/` — the ADRs as Decision vertices (text verbatim in
+  each `body`): [0001 AtomicKeyspace](./situation/record/decision-0001-atomic-keyspace.yamlld),
+  [0002 Streams](./situation/record/decision-0002-streams.yamlld),
+  [0003/0004 Streaming value I/O](./situation/record/decision-0004-streaming-value-io-v2.yamlld)
 - `tools/` — storage-boundary and dependency-floor enforcement (CI gates)
 
 ## Verification

@@ -25,7 +25,7 @@ Design boundaries, on purpose:
 
 [`yeetz-s3-streams`]: https://docs.rs/yeetz-s3-streams/latest/yeetz_s3_streams/
 [`yeetz-s3-kernel`]: https://crates.io/crates/yeetz-s3-kernel
-[ADR 0002]: https://github.com/cleverunicornz/yeetz-s3-kernel/blob/main/docs/decisions/0002-streams.md
+[ADR 0002]: https://github.com/cleverunicornz/yeetz-s3-kernel/blob/main/situation/record/decision-0002-streams.yamlld
 
 ## Example
 

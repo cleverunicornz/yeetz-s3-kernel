@@ -1,71 +1,336 @@
 {
-  "$comment": "Installed by bedrock v0.6.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.",
+  "$comment": "Installed by bedrock v0.7.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://yeetz.dev/bedrock/schema/architecture/v2",
+  "$id": "urn:bedrock:schema/architecture/v3",
   "title": "Bedrock architecture namespace vertex schema",
-  "description": "What this repo is / intends (SPINE §4 C4 minimum-vertex rule). Validates every situation/architecture/*.yamlld vertex.",
+  "description": "Resident repository identity and structure plus generic ExpansionMount registrations. Expansion-specific fields remain outside Bedrock.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["@context", "@id", "@type"],
+  "required": [
+    "@context",
+    "@id",
+    "@type"
+  ],
   "properties": {
-    "@context": { "const": "https://yeetz.dev/bedrock/context/v1" },
-    "@id": { "$ref": "#/$defs/vertexId" },
-    "@type": { "$ref": "#/$defs/type" },
-    "label": { "$ref": "#/$defs/label" },
-    "statement": { "$ref": "#/$defs/boundedText" },
-    "role": { "type": "string", "minLength": 1, "maxLength": 60 },
-    "requires": { "$ref": "#/$defs/vertexPointer" },
-    "references": { "$ref": "#/$defs/vertexPointerList" },
-    "consumes": { "$ref": "#/$defs/pointerList" },
-    "produces": { "$ref": "#/$defs/pathPointerList" },
-    "member-of": { "$ref": "#/$defs/vertexPointer" },
-    "source": { "$ref": "#/$defs/pathPointer" },
-    "path": { "$ref": "#/$defs/pathPointerList" },
-    "body": { "$ref": "#/$defs/body" }
+    "@context": {
+      "enum": [
+        "urn:bedrock:context/v1",
+        "https://yeetz.dev/bedrock/context/v1"
+      ]
+    },
+    "@id": {
+      "$ref": "#/$defs/vertexId"
+    },
+    "@type": {
+      "$ref": "#/$defs/type"
+    },
+    "label": {
+      "$ref": "#/$defs/label"
+    },
+    "statement": {
+      "$ref": "#/$defs/boundedText"
+    },
+    "role": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60
+    },
+    "requires": {
+      "$ref": "#/$defs/vertexPointer"
+    },
+    "references": {
+      "$ref": "#/$defs/vertexPointerList"
+    },
+    "consumes": {
+      "$ref": "#/$defs/pointerList"
+    },
+    "produces": {
+      "$ref": "#/$defs/pathPointerList"
+    },
+    "member-of": {
+      "$ref": "#/$defs/vertexPointer"
+    },
+    "source": {
+      "$ref": "#/$defs/pathPointer"
+    },
+    "path": {
+      "$ref": "#/$defs/pathPointerList"
+    },
+    "body": {
+      "$ref": "#/$defs/body"
+    },
+    "mount_contract_version": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "mount_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "maxLength": 80
+    },
+    "mount_path": {
+      "$ref": "#/$defs/pathPointer"
+    },
+    "checker_identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\r\\n]+$"
+    },
+    "checker_arguments": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+    "init_path": {
+      "$ref": "#/$defs/pathPointer"
+    },
+    "init_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "graph_manifest_path": {
+      "$ref": "#/$defs/pathPointer"
+    },
+    "graph_manifest_sha256": {
+      "$ref": "#/$defs/sha256"
+    }
   },
   "minProperties": 3,
   "allOf": [
     {
-      "if": { "anyOf": [
-        { "properties": { "@type": { "const": "https://yeetz.dev/bedrock/ontology/Identity" } } },
-        { "properties": { "@type": { "type": "array", "contains": { "const": "https://yeetz.dev/bedrock/ontology/Identity" } } } }
-      ], "required": ["@type"] },
-      "then": { "required": ["statement", "role"] }
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "@type": {
+                "enum": [
+                  "urn:bedrock:ontology/Identity",
+                  "https://yeetz.dev/bedrock/ontology/Identity"
+                ]
+              }
+            }
+          },
+          {
+            "properties": {
+              "@type": {
+                "type": "array",
+                "contains": {
+                  "enum": [
+                    "urn:bedrock:ontology/Identity",
+                    "https://yeetz.dev/bedrock/ontology/Identity"
+                  ]
+                }
+              }
+            }
+          }
+        ],
+        "required": [
+          "@type"
+        ]
+      },
+      "then": {
+        "required": [
+          "statement",
+          "role"
+        ]
+      }
     },
     {
-      "if": { "anyOf": [
-        { "properties": { "@type": { "const": "https://yeetz.dev/bedrock/ontology/SituationStructure" } } },
-        { "properties": { "@type": { "type": "array", "contains": { "const": "https://yeetz.dev/bedrock/ontology/SituationStructure" } } } }
-      ], "required": ["@type"] },
-      "then": { "required": ["statement"] }
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "@type": {
+                "enum": [
+                  "urn:bedrock:ontology/SituationStructure",
+                  "https://yeetz.dev/bedrock/ontology/SituationStructure"
+                ]
+              }
+            }
+          },
+          {
+            "properties": {
+              "@type": {
+                "type": "array",
+                "contains": {
+                  "enum": [
+                    "urn:bedrock:ontology/SituationStructure",
+                    "https://yeetz.dev/bedrock/ontology/SituationStructure"
+                  ]
+                }
+              }
+            }
+          }
+        ],
+        "required": [
+          "@type"
+        ]
+      },
+      "then": {
+        "required": [
+          "statement"
+        ]
+      }
+    },
+    {
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "@type": {
+                "enum": [
+                  "urn:bedrock:ontology/ExpansionMount",
+                  "https://yeetz.dev/bedrock/ontology/ExpansionMount"
+                ]
+              }
+            },
+            "required": [
+              "@type"
+            ]
+          },
+          {
+            "properties": {
+              "@type": {
+                "type": "array",
+                "contains": {
+                  "enum": [
+                    "urn:bedrock:ontology/ExpansionMount",
+                    "https://yeetz.dev/bedrock/ontology/ExpansionMount"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "@type"
+            ]
+          }
+        ]
+      },
+      "then": {
+        "required": [
+          "mount_contract_version",
+          "mount_name",
+          "mount_path",
+          "checker_identity",
+          "checker_arguments",
+          "init_path",
+          "init_sha256",
+          "graph_manifest_path",
+          "graph_manifest_sha256"
+        ]
+      }
     }
   ],
-  "anyOf": [{ "required": ["label"] }, { "required": ["statement"] }],
+  "anyOf": [
+    {
+      "required": [
+        "label"
+      ]
+    },
+    {
+      "required": [
+        "statement"
+      ]
+    }
+  ],
   "$defs": {
-    "vertexId": { "type": "string", "pattern": "^https://yeetz\\.dev/bedrock/vertex/[a-z0-9][a-z0-9-]*$" },
-    "label": { "type": "string", "minLength": 1, "maxLength": 120 },
-    "boundedText": { "type": "string", "minLength": 1, "maxLength": 4096 },
-    "body": { "type": "string", "minLength": 1, "$comment": "Unbounded node-local depth; always cold, delivered through the resident vertex's document edge." },
-    "pathPointer": { "type": "string", "pattern": "^https://yeetz\\.dev/bedrock/path/[A-Za-z0-9._/\\-]+$" },
-    "vertexPointer": { "type": "string", "pattern": "^https://yeetz\\.dev/bedrock/vertex/[a-z0-9][a-z0-9-]*$" },
-    "vertexPointerList": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/vertexPointer" } },
-    "pointer": { "type": "string", "pattern": "^https://yeetz\\.dev/bedrock/(vertex|path)/[A-Za-z0-9._/\\-]+$" },
-    "pointerList": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/pointer" } },
-    "pathPointerList": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/pathPointer" } },
+    "vertexId": {
+      "type": "string",
+      "pattern": "^(?:urn:bedrock:vertex/|https://yeetz\\.dev/bedrock/vertex/)[a-z0-9][a-z0-9-]*$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "boundedText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "body": {
+      "type": "string",
+      "minLength": 1,
+      "$comment": "Unbounded node-local depth; always cold, delivered through the resident vertex's document edge."
+    },
+    "pathPointer": {
+      "type": "string",
+      "pattern": "^(?:urn:bedrock:path/|https://yeetz\\.dev/bedrock/path/)[A-Za-z0-9._/\\-]+$"
+    },
+    "vertexPointer": {
+      "type": "string",
+      "pattern": "^(?:urn:bedrock:vertex/|https://yeetz\\.dev/bedrock/vertex/)[a-z0-9][a-z0-9-]*$"
+    },
+    "vertexPointerList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/vertexPointer"
+      }
+    },
+    "pointer": {
+      "type": "string",
+      "pattern": "^(?:urn:bedrock:|https://yeetz\\.dev/bedrock/)(?:vertex|path)/[A-Za-z0-9._/\\-]+$"
+    },
+    "pointerList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/pointer"
+      }
+    },
+    "pathPointerList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/pathPointer"
+      }
+    },
     "type": {
       "description": "one base type scalar, or an array with at least one base type (repo archetypes ride alongside; rule C9)",
       "oneOf": [
-        { "type": "string", "enum": [
-          "https://yeetz.dev/bedrock/ontology/Identity",
-          "https://yeetz.dev/bedrock/ontology/SituationStructure"
-        ] },
-        { "type": "array", "minItems": 1, "uniqueItems": true,
-          "items": { "type": "string", "pattern": "^https://[^\\s]+$" },
-          "contains": { "enum": [
+        {
+          "type": "string",
+          "enum": [
+            "urn:bedrock:ontology/Identity",
             "https://yeetz.dev/bedrock/ontology/Identity",
-            "https://yeetz.dev/bedrock/ontology/SituationStructure"
-          ] } }
+            "urn:bedrock:ontology/SituationStructure",
+            "https://yeetz.dev/bedrock/ontology/SituationStructure",
+            "urn:bedrock:ontology/ExpansionMount",
+            "https://yeetz.dev/bedrock/ontology/ExpansionMount"
+          ]
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s]+$"
+          },
+          "contains": {
+            "enum": [
+              "urn:bedrock:ontology/Identity",
+              "https://yeetz.dev/bedrock/ontology/Identity",
+              "urn:bedrock:ontology/SituationStructure",
+              "https://yeetz.dev/bedrock/ontology/SituationStructure",
+              "urn:bedrock:ontology/ExpansionMount",
+              "https://yeetz.dev/bedrock/ontology/ExpansionMount"
+            ]
+          }
+        }
       ]
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     }
   }
 }

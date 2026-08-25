@@ -3,7 +3,7 @@
 "@type": "https://yeetz.dev/bedrock/ontology/SituationStructure"
 label: "ADRs (atomic keyspace, streams, streaming-value I/O, batched deletion)"
 statement: >
-  docs/decisions/ — ADR 0001 (atomic keyspace), 0002 (streams), 0003
+  situation/record/ — ADR 0001 (atomic keyspace), 0002 (streams), 0003
   (streaming-value I/O, proposed draft), 0004 (streaming-value I/O v2,
   supersedes 0003), 0005 (batched deletion, accepted 2026-08-23).
   Append-only; supersede, never edit. Each is registered as a Decision
@@ -12,4 +12,4 @@ statement: >
   live, 0003 is superseded by 0004. Walk the chain before relitigating
   any of these choices.
 path:
-  - "https://yeetz.dev/bedrock/path/docs/decisions"
+  - "https://yeetz.dev/bedrock/path/situation/record"

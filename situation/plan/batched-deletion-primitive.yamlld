@@ -28,7 +28,7 @@ consumes:
   - "https://yeetz.dev/bedrock/vertex/decision-0001-atomic-keyspace"
   - "https://yeetz.dev/bedrock/vertex/decision-0002-streams"
   - "https://yeetz.dev/bedrock/vertex/decision-0004-streaming-value-io-v2"
-  - "https://yeetz.dev/bedrock/path/docs/decisions/0005-batched-deletion.md"
+  - "https://yeetz.dev/bedrock/vertex/decision-0005-batched-deletion"
   - "https://yeetz.dev/bedrock/path/crates/yeetz-s3-kernel"
   - "https://yeetz.dev/bedrock/path/crates/yeetz-sdk-s3"
 tasks:
@@ -43,7 +43,7 @@ witnesses:
   - "https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/32665465723"
   - "https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/32736208926"
 reflectDepth: 2
-oracle: "https://yeetz.dev/bedrock/path/docs/decisions/0005-batched-deletion.md"
+oracle: "https://yeetz.dev/bedrock/vertex/decision-0005-batched-deletion"
 disposition:
   state: done
   residual: >
@@ -56,12 +56,12 @@ disposition:
     deletion, certified trim, chunk GC) stays each consumer's own
     orchestration; the standing kernel residuals live with the ADR
     and its Decision vertex.
-source: "https://yeetz.dev/bedrock/path/docs/decisions/0005-batched-deletion.md"
 body: |
   ## Proposal depth
 
   The complete semantics, Rust API sketches, alternatives, release plan, and
-  A36-A45 oracle are in `docs/decisions/0005-batched-deletion.md`. This vertex
+  A36-A45 oracle are carried verbatim in the body of Decision vertex
+  decision-0005-batched-deletion. This vertex
   routes that proposal through the execution graph; it does not close the fork
   and does not authorize implementation.
 
