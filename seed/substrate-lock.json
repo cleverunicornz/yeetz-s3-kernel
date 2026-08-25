@@ -1,0 +1,9 @@
+{
+  "$comment": "Installed by bedrock v0.7.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.",
+  "contract": "bedrock-expansion-mount/v1",
+  "checker": {
+    "package": "yeetz-bedrock",
+    "ref": "0.7.0"
+  },
+  "supported_mount_contract_versions": [1]
+}

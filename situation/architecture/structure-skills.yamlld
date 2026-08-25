@@ -1,9 +1,9 @@
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/structure-skills"
-"@type": "https://yeetz.dev/bedrock/ontology/SituationStructure"
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/structure-skills"
+"@type": "urn:bedrock:ontology/SituationStructure"
 label: "Process surface (state-kernel, ci)"
 statement: >
   .agents/skills/ — the process surface: state-kernel (the kernel's
   usage law) and ci (the remote verification plane).
 path:
-  - "https://yeetz.dev/bedrock/path/.agents/skills"
+  - "urn:bedrock:path/.agents/skills"

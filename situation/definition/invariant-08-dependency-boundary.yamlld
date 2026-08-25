@@ -2,9 +2,9 @@
 # Floor invariant 8 of 16 (spec/floor-v2.md §4). Layer: floor.
 # §4 item 8 reads "The dependency boundary is the assurance boundary. (§3
 # verbatim.)" — the statement below is the §3 text, verbatim.
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/invariant-08-dependency-boundary"
-"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/invariant-08-dependency-boundary"
+"@type": "urn:bedrock:ontology/Invariant"
 label: "The dependency boundary is the assurance boundary"
 layer: "floor"
 statement: >

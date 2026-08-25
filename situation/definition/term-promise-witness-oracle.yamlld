@@ -1,9 +1,9 @@
 # seeded by bedrock v0.2.1
 # Floor term (0.2.0 base protocol): THE CHAIN that anchors every plan.
 # Statement is the chain paragraph condensed to three sentences.
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/term-promise-witness-oracle"
-"@type": "https://yeetz.dev/bedrock/ontology/Term"
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/term-promise-witness-oracle"
+"@type": "urn:bedrock:ontology/Term"
 label: "promise, oracle, witness, residual"
 layer: "floor"
 statement: >

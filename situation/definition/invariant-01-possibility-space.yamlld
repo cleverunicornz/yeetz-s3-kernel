@@ -1,9 +1,9 @@
 # seeded by bedrock v0.2.1
 # Floor invariant 1 of 16 (spec/floor-v2.md §4). Layer: floor.
 # Statement carries the floor prose verbatim.
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/invariant-01-possibility-space"
-"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/invariant-01-possibility-space"
+"@type": "urn:bedrock:ontology/Invariant"
 label: "Code is a possibility space"
 layer: "floor"
 statement: >

@@ -1,7 +1,7 @@
 # The repo's identity: names the register title and anchors the closure.
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/identity-yeetz-s3-kernel"
-"@type": "https://yeetz.dev/bedrock/ontology/Identity"
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/identity-yeetz-s3-kernel"
+"@type": "urn:bedrock:ontology/Identity"
 label: "yeetz-s3-kernel"
 role: "identity"
 statement: >

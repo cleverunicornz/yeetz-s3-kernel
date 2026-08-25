@@ -1,9 +1,9 @@
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/structure-sdk-core"
-"@type": "https://yeetz.dev/bedrock/ontology/SituationStructure"
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/structure-sdk-core"
+"@type": "urn:bedrock:ontology/SituationStructure"
 label: "Provider-neutral, request-scoped SDK primitives"
 statement: >
   crates/yeetz-sdk-core — provider-neutral, request-scoped SDK primitives
   composed by yeetz-sdk-s3; closure of the state kernel.
 path:
-  - "https://yeetz.dev/bedrock/path/crates/yeetz-sdk-core"
+  - "urn:bedrock:path/crates/yeetz-sdk-core"

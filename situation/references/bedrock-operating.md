@@ -1,242 +1,213 @@
-# Installed by bedrock v0.6.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
-# Bedrock operating reference — the base protocol
+# Installed by bedrock v0.7.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
+# Bedrock operating reference — resident protocol and Mount Contract v1
 
-This is the standardized minimum every bedrock repo builds on, plus the
-contract of the `update` verb. bedrock ships this text compiled into the
-binary and installs it at `situation/references/bedrock-operating.md` on
-`init`, `adopt`, and `update`. Every installed base file carries a
-provenance stamp naming the generating bedrock version — machine-owned,
-never edited locally. Rule C10 (digest-skew) fails a repo whose installed
-copy differs from this binary's canonical stamped form (embedded template +
-provenance stamp for the current version) and names `bedrock update` as the
-fix. Repo law layers on top of this protocol; it never rewrites it.
+This is the machine-owned minimum installed by init, adopt, and update. C10
+compares it with the current binary's canonical stamped copy. Local law layers
+on top and never edits it.
 
-## THE CHAIN: promise, oracle, witness, residual
+## Version and identity
 
-A promise states behavior; an oracle judges promise against actual; a
-witness is the retained observation of one run and proves existence, never
-exclusivity; residual is what was deliberately not assured, declared so
-everyone sees the line of demarcation — we assure the positive space only;
-the negative space is infinite.
+Init/adopt query crates.io before writing. Current or newer proceeds; stale or
+unverifiable refuses. `--offline` deliberately bypasses lookup and stamps the
+local version. Check/build/update/migrate never use the network.
 
-### Field mapping
+Canonical coordinates:
 
-| chain role | vertex field | meaning |
+- `urn:bedrock:context/v1`;
+- `urn:bedrock:ontology/<Term>`;
+- `urn:bedrock:vertex/<slug>`;
+- `urn:bedrock:path/<repo-relative>`;
+- `urn:bedrock:<predicate>`;
+- `urn:bedrock:graph/<namespace>`.
+
+New authoring emits URNs only. Reads remain compatible with former
+`https://yeetz.dev/bedrock/...` source and `https://yeetz.dev/graph/...` named
+graphs. `bedrock update` never rewrites authored vertices;
+`bedrock migrate-iris` is the explicit source migration and never enters
+registered mounts.
+
+## THE CHAIN
+
+A promise states behavior; an oracle judges it against actual; a witness is a
+retained completed CI observation and proves existence, never exclusivity;
+residual declares what was deliberately not assured. A Plan or ReflectVerdict
+cannot be `done` without at least one HTTPS witness (C8).
+
+## Six base namespaces plus registered opaque mounts
+
+| base namespace | canonical graph | allowed base types |
 |---|---|---|
-| promise | `intent` (plans), `statement` (invariants, terms, records) | the behavior claimed |
-| oracle | `acceptanceCriteria` — inline and required — plus an optional `oracle` ref | the standing comparator that judges the promise against actual |
-| witness | `witnesses` — CI-run-URL class, never a local attestation | the retained observation of one run |
-| residual | `disposition.residual` | what was deliberately not assured, declared out loud |
+| definition | `urn:bedrock:graph/definition` | Invariant, Breadcrumb, Term |
+| architecture | `urn:bedrock:graph/architecture` | Identity, SituationStructure, ExpansionMount |
+| risk | `urn:bedrock:graph/risk` | Risk |
+| plan | `urn:bedrock:graph/plan` | Plan |
+| record | `urn:bedrock:graph/record` | EpochRecord, DeployRecord, ReflectVerdict, Decision |
+| references | none | nested cold depth |
 
-Hard rule: `disposition.state: done` with zero `witnesses` is a `bedrock
-check` violation (rule C8) — no witness, no done.
+The base set has twelve types. Repo/expansion archetypes may ride alongside one
+base type and never stand alone. A mount is not a seventh namespace and owns no
+Bedrock graph. Unregistered direct children of `situation/` fail C1.
 
-## Base ontology
+## One artifact and resident working set
 
-| namespace | named graph | allowed base @types |
-|---|---|---|
-| definition/ | `https://yeetz.dev/graph/definition` | Invariant, Breadcrumb, Term |
-| architecture/ | `https://yeetz.dev/graph/architecture` | Identity, SituationStructure |
-| risk/ | `https://yeetz.dev/graph/risk` | Risk |
-| plan/ | `https://yeetz.dev/graph/plan` | Plan |
-| record/ | `https://yeetz.dev/graph/record` | EpochRecord, DeployRecord, ReflectVerdict, Decision |
+`situation/` is the complete validated store. Root AGENTS.md is the one
+generated artifact and the resident TriG graph injected into every agent.
+There is no Bedrock `situation/graph.trig`.
 
-Base @types are the bedrock vocabulary; consumers never add to it.
+- definition, architecture, current risks: resident faces;
+- ExpansionMount registrations and generated pointer linkage: resident;
+- active Plan: compact routing face resident; payload cold;
+- draft/done/abandoned Plan: cold;
+- Decision: resident, complete `supersedes` chain walkable;
+- Epoch/Deploy/Reflect, references, every body: cold.
 
-## Edge vocabulary
+A vertex is one YAML-LD file. Its face is structured resident/routing data;
+optional final `body: |` is unbounded node-local depth, stripped before
+expansion and read through the automatic `document` edge. Editing cold-only
+content leaves AGENTS.md byte-identical. C11 requires resident vertex edges to
+close over resident vertices or paths.
 
-The set is closed. It grows only when a new relationship cannot be
-expressed faithfully with what exists — a rename or a collapse is never an
-excuse to mint a new edge.
+The projection report is advisory: exact AGENTS bytes, source/resident counts,
+Plan lifecycle, record residency, and SOFT resident faces over 4096 chars.
 
-- `requires` — a vertex depends on another vertex being true.
-- `references` — a vertex points at a depth document or related vertex.
-- `consumes` — a vertex draws on a listed vertex or repo path as input.
-- `produces` — a vertex yields a listed repo path as output.
-- `member-of` — a vertex belongs to another vertex's set.
-- `supersedes` — a vertex replaces an earlier vertex, which stays untouched
-  (append-only — floor invariant 15).
+## ExpansionMount registration v1
 
-## Resident working set
-
-`situation/` is the complete canonical store. Every YAML-LD source is
-parsed, schema-validated, and edge-validated. Root `AGENTS.md` is the
-deterministic resident projection — current operational knowledge, never
-the execution archive:
-
-| source | residency |
-|---|---|
-| definition/, architecture/, current risk/ | compact face resident |
-| Plan `active` | routing face resident |
-| Plan `draft`, `done`, `abandoned` | cold |
-| Decision | resident; complete `supersedes` chain walkable |
-| EpochRecord, DeployRecord, ReflectVerdict | cold |
-| references/, every `body` | cold |
-
-Cold does not mean hidden or discarded. The resident
-SituationStructure vertex discloses every namespace path. A task that needs
-history walks `situation/plan/`, `record/`, or `references/`; routine work
-does not pay to enumerate it.
-
-Projection closure is hard rule C11: a resident vertex may not point by
-vertex IRI at a cold source — that would expose an edge with no target in
-the injected graph. Use a repo-path pointer for historical evidence, or
-promote the target into resident knowledge.
-
-## Vertex anatomy — face and depth
-
-A vertex file is ONE YAML-LD document. For ordinary resident knowledge:
-
-- **face** — identity, routing statement/gate, and relationships; resident;
-- **body** — one final `body: |` literal block scalar of unbounded node-local
-  depth; never resident.
-
-An active Plan is stricter. Its resident routing allowlist is @type, label,
-intent, consumes/requires/references/produces/member-of/oracle/source/path,
-synthesized state `active`, and its automatic document edge. Structured
-execution payload — acceptanceCriteria, tasks, witnesses, reflectDepth,
-residual, statement, body — remains validated but cold in that same file.
-
-`bedrock check`/`build` report exact artifact bytes, resident/cold counts,
-and a SOFT line when any resident face exceeds 4096 chars (≈1k tokens).
-Target 500–1000 tokens. Soft is advisory, never a violation.
-
-Use `|` (literal) for bodies — it preserves headings, lists, and code.
-Use `>` (folded) for compact single-paragraph routing prose. Editing only
-cold content leaves AGENTS.md byte-identical; following the resident
-`document` edge reads the complete current source on demand. Shared depth
-stays in `references/`, linked by a path.
-
-## Archetype rule
-
-Every vertex carries AT LEAST ONE base @type; repo-specific archetypes ride
-alongside it in the `@type` array, under the repo's own IRI base, in
-separate extension schema files:
+One consumer-authored registration lives at
+`situation/architecture/mount-<slug>.yamlld`:
 
 ```yaml
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/mount-example-expansion"
 "@type":
-  - "https://yeetz.dev/<repo>/ADR"
-  - "https://yeetz.dev/bedrock/ontology/Term"
+  - "urn:example:ontology/ExampleMount"
+  - "urn:bedrock:ontology/ExpansionMount"
+label: "example-expansion"
+mount_contract_version: 1
+mount_name: example-expansion
+mount_path: "urn:bedrock:path/situation/example-expansion"
+checker_identity: "urn:example:checker/v1"
+checker_arguments:
+  - check
+init_path: "urn:bedrock:path/situation/example-expansion/example-init.yaml"
+init_sha256: "<64 lowercase hex digits>"
+graph_manifest_path: "urn:bedrock:path/situation/example-expansion/graph-manifest.yaml"
+graph_manifest_sha256: "<64 lowercase hex digits>"
 ```
 
-Extension schemas live outside `seed/schemas/` (the base schemas are
-bedrock-owned). Extensions never redefine or shadow a base term: if a base
-term already says it, reference it; do not re-state it under a new name.
+Checker identity/arguments are non-executable data. Roots are unique real
+non-symlink direct children of `situation/`. Unsupported versions fail with an
+explicit registration-migration instruction; Bedrock never rewrites them.
 
-## A worked vertex
-
-This real installed floor vertex is the canonical example of profile
-conformance (every floor vertex in `situation/definition/` is canonical):
+The mount owns one stable manifest:
 
 ```yaml
-# Floor invariant 1 of 16 (spec/floor-v2.md §4). Layer: floor.
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/invariant-01-possibility-space"
-"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
-label: "Code is a possibility space"
-layer: "floor"
-statement: >
-  Code is a possibility space. A surface does everything it *can* do, not what
-  its author meant. Work is collapsing possibilities to defined behavior.
+artifacts:
+  - path: situation/example-expansion/runs/run-1/graph.trig
+    sha256: "<64 lowercase hex digits>"
 ```
 
-Profile and projection rules are enforced by `bedrock check`
-(C2–C5/C7–C11):
+Entries are strictly sorted normalized repo-relative paths. `artifacts: []` is
+the valid empty adoption.
 
-- one served `@context`; remote loading disabled;
-- absolute `@id`/`@type`; no blank nodes;
-- no anchors, aliases, or merge keys;
-- every source edge resolves;
-- every Plan declares draft|active|done|abandoned;
-- every resident vertex edge resolves to another resident or a repo path;
-- comments, bodies, and cold execution payload never reach the projection.
+## C12 opaque boundary
 
-## Authoring loop
+Bedrock never compiles or base-schema-validates mount contents. It performs
+only:
 
-1. Write `situation/<ns>/<local-name>.yamlld`. Keep the routing face lean;
-   put node-local depth in `body: |`.
-2. Plans declare `disposition.state` from birth. Set `active` only when
-   execution should be discoverable in every agent's resident graph.
-3. Run `bedrock check`: fix hard `RULE path:line` failures; use the
-   projection report to trim SOFT resident faces.
-4. Run `bedrock build`: regenerate root AGENTS.md, the resident TriG.
-5. Commit source AND generated output; open a scoped PR; a human merges.
+1. registration/root/version/unique-path checks;
+2. duplicate/overlap and nested-AGENTS rejection;
+3. structured LD inspection only for Bedrock context/base-type claims;
+4. registered RDF parsing only to reject Bedrock-owned subject, predicate,
+   object, or graph IRIs, canonical or legacy;
+5. containment, regular-file, and SHA-256 verification for init/pin, manifest,
+   and every manifest-listed graph.
 
-## Execution-graph primitives and lifecycle
+Interior symlinks are never followed. Other mount content is opaque. Supported
+registered RDF syntax: `.trig`, `.nq`, `.ttl`, `.nt`; unknown syntax refuses.
+Expansion tooling writes only inside its mount.
 
-A Plan source carries the seven execution primitives:
+## Pointer linkage in AGENTS.md
 
-- `intent` — promise and resident read-trigger while active;
-- `acceptanceCriteria` — inline oracle, required, cold;
-- `consumes` — resident routing relationships while active;
-- `tasks` — ordered execution payload, cold;
-- `witnesses` — retained CI-run URLs, required before `done`, cold;
-- `reflectDepth` — follow-up depth, cold;
-- `disposition.state` — required from birth:
-  draft|active|done|abandoned; `residual` declares what close did not assure.
+Bedrock's one artifact carries these resident architecture quads:
 
-Lifecycle: draft is source-only; active projects one compact routing face;
-done/abandoned return entirely to cold source. Invocation names the Plan IRI
-or source path; the agent sees intent and edges, then follows `document` for
-the complete file. Reflection closes state, retains witnesses/findings, and
-promotes only durable consequences into definition, architecture, current
-risk, or a Decision. Historical Plans remain under situation/plan without
-taxing future contexts.
+```text
+registration --references------> manifest path
+mount path   --produces---------> manifest path
+manifest path --artifact-digest-> exact manifest SHA-256
+```
 
-No custody choreography, per-actor openings/closures, round ordinals, or
-confirmation passes. This is a thin transaction log with measured ceremony.
+AGENTS.md also has a deterministic comment-preamble section named
+`Mounted expansions`, one line per registration with name, path, checker.
+Zero expansion graph quads enter AGENTS.md. Mount-owned per-run graph files
+remain under the mount and are only validated through C12.
 
-## Decisions
+This is Mount Contract v1 adapted to the post-0.4 one-artifact substrate:
+“build emits” means linkage lands in AGENTS.md's resident TriG body. No separate
+Bedrock graph artifact is reintroduced.
 
-A Decision is a named collapse of the possibility space at design level:
-the record of a fork that was closed — what was chosen, what was rejected,
-and the conditions under which the choice flips. Decisions live in record/.
-They are write-once and immutable at birth (floor invariant 15: supersede,
-never edit), and every Decision stays resident so the complete
-`supersedes` chain remains walkable.
+## ReflectVerdict mounted subject
 
-Write one when a fork you close would be plausibly re-opened by a reader
-with zero context — at the moment of collapse, never reconstructed later.
-Most choices need no vertex; when in doubt, do not write one.
+A ReflectVerdict subject may be an existing base vertex or an existing path
+canonically contained by a registered mount. The verdict remains episodic and
+cold, but its complete source validates. Campaign close carries criteria,
+completed two-checker CI URL, findings/residual, and exact relevant digest.
+Promotion uses existing source/path/consumes edges and never rewrites mount
+history.
 
-Fields: `statement` carries the choice, the rejected alternatives, and the
-revisit conditions in bounded prose — no template, no status field, and the
-schema rejects `disposition` and `witnesses`: a decision is not CI-judged.
-`timestamp` orders the log. `references` links the invariants and risks the
-decision touches — an invariant pointing at a decision carries its reason,
-not just its rule.
+## Decisions and Plans remain unchanged
 
-Reading: a decision with no incoming `supersedes` edge is live. Before
-proposing to change a settled choice, walk the chain first — the
-alternative you are about to propose may already be recorded, with its
-reason and its flip conditions.
+Decision is resident, timestamped, write-once, and append-only through
+`supersedes`; it has no disposition or witnesses. Read the chain before
+reopening a fork.
+
+Every Plan declares draft|active|done|abandoned. Only active routing fields
+project: type, label, intent, consumes/requires/references/produces/member-of/
+oracle/source/path, synthesized active state, document edge. Criteria, tasks,
+witnesses, reflection depth, residual, statement, and body remain cold.
+
+## Bedrock lock and workflow migration
+
+`seed/substrate-lock.json` is C10-owned and pins exact checker package/ref plus
+supported Mount Contract versions. The seed workflow retains the resident
+projection dry-run report and AGENTS-only drift gate, but installs Bedrock only
+from this lock under runner temp, outside the target checkout.
+
+Update never changes existing workflow bytes. Consumers migrate once:
+
+- unmounted repositories replace always-latest source install with lock
+  resolution;
+- mounted repositories replace the standalone job with the expansion-owned
+  combined witness job;
+- fixed order: Bedrock check, expansion check, expansion build, expansion
+  graph/manifest no-diff, AGENTS.md no-diff;
+- Linux/platform-neutral work uses `org-ci-linux-x64`; fork code is rejected
+  before runner assignment.
+
+Expansion checker pins remain independent. Neither derives the other.
+
+## Update and authoring lanes
+
+Update owns only schemas, context, substrate lock, this reference, and a
+missing workflow; then it regenerates AGENTS.md. It never mutates authored
+vertices, registrations, mounts, extension schemas, or present workflows.
+
+Authoring loop:
+
+1. write base source; keep resident faces lean and depth in body;
+2. expansion check/build when mounted;
+3. `bedrock check`, then `bedrock build`;
+4. verify expansion artifacts/manifest and AGENTS.md unchanged;
+5. commit source plus AGENTS.md; open a PR; a human merges.
 
 ## Refusals
 
-`bedrock` (init, adopt, update, check, build) never does any of the
-following:
+- no hand editing AGENTS.md;
+- no separate Bedrock graph artifact;
+- no seventh base namespace or unregistered mount;
+- no nested AGENTS.md;
+- no automatic IRI or registration migration;
+- no execution of registration checker data;
+- no expansion-specific concepts or expansion graph quads;
+- no workflow rewrite during update.
 
-- no new top-level directories or namespaces under `situation/`;
-- no hand-editing of AGENTS.md (the resident projection), base schemas,
-  seed/context.yamlld, or this reference;
-- no writing outside `situation/` and installed base files except root
-  AGENTS.md, which build regenerates;
-- `update` never touches repo-authored vertices, extension schemas, or the
-  workflow template once a consumer copy exists.
-
-Installed base files are machine-owned (their provenance stamp says so).
-Routing law when one needs changing:
-
-- never patch an installed base file locally — the next refresh erases your
-  edits;
-- base defects and friction are issues/PRs at the bedrock repo
-  (https://github.com/cleverunicornz/bedrock) — agents are encouraged to
-  file them;
-- `bedrock update` is the only local refresh.
-
-## Re-situate
-
-`bedrock build` validates the complete situation and regenerates AGENTS.md
-from its resident working set. After work changes reality, reflect: close
-episodic state, promote durable consequences, rebuild, and commit the
-projection — current knowledge, not accumulated history.
+Base defects route to https://github.com/cleverunicornz/bedrock.

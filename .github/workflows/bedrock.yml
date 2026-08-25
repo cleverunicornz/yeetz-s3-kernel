@@ -1,21 +1,12 @@
-# Installed by bedrock v0.5.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
+# Installed by bedrock v0.7.0 — DO NOT EDIT. This file is owned by the tool. Base changes: file an issue or PR at https://github.com/cleverunicornz/bedrock. Local refresh: bedrock update.
 # Bedrock CI template — installable by copy into `.github/workflows/`.
 #
-# The dry run: every PR touching situation/ (or the generated AGENTS.md)
-# recompiles bedrock, runs `bedrock check` (hard rules C1–C11, including
-# the C1 byte-drift gate: the committed AGENTS.md must match regeneration),
-# and surfaces the size report — total artifact bytes plus SOFT lines for
-# any compiled face over the 4096-char soft budget (advisory, never
-# failing). The agent reviews the report and the AGENTS.md diff in the PR
-# itself; a human merges; main never carries a stale graph. Fork pull
-# requests never run the job.
-#
-# Deviation from the 0.6.0 template (one, deliberate): the install step is
-# pinned to crates.io 0.6.0 rather than the template's unpinned
-# always-latest `--git` install. bedrock main does carry 0.6.0, so the
-# original 0.5.0-era reason (main lagging the pinned version) is gone;
-# the pin stays because a floating install would reintroduce C10 skew
-# every time bedrock main moves ahead of this repo's protocol version.
+# Preserves the 0.6 resident-projection dry run/report and one-artifact gate,
+# but Mount Contract v1 resolves the substrate checker only from the
+# Bedrock-owned seed/substrate-lock.json. Tool source/build state lives under
+# runner temp, outside the target checkout. Mount consumers replace this job
+# once with their expansion-owned combined witness job; bedrock update never
+# rewrites an existing consumer workflow.
 
 name: bedrock
 
@@ -23,37 +14,54 @@ on:
   push:
     paths:
       - 'situation/**'
+      - 'seed/**'
       - 'AGENTS.md'
   pull_request:
     paths:
       - 'situation/**'
+      - 'seed/**'
       - 'AGENTS.md'
 
 jobs:
   bedrock:
     runs-on: org-ci-linux-x64
-
-    # Fork-PR guard: run only when the PR head is this repository. A fork's
-    # situation/ is untrusted and its diff is meaningless against this repo's
-    # committed graph, so skip fork PRs entirely.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-
-    env:
-      # Single version knob; matches the bedrock this repo operates under.
-      BEDROCK_VERSION: '0.6.0'
+    # Deviation from the verbatim 0.7.0 seed template (one, forced):
+    # the template sets CARGO_HOME/CARGO_TARGET_DIR from runner.temp at
+    # job level, where GitHub does not make the `runner` context
+    # available (workflow-load error, zero jobs). The same values are
+    # set at step level below — intent preserved: tool state under
+    # runner temp, outside the checkout.
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read Bedrock substrate lock
+        id: substrate
+        shell: bash
+        run: |
+          package="$(jq -er '.checker.package | select(type == "string" and length > 0)' seed/substrate-lock.json)"
+          ref="$(jq -er '.checker.ref | select(type == "string" and length > 0)' seed/substrate-lock.json)"
+          jq -e '.contract == "bedrock-expansion-mount/v1" and (.supported_mount_contract_versions | index(1) != null)' seed/substrate-lock.json >/dev/null
+          test "$package" = 'yeetz-bedrock'
+          printf 'package=%s\nref=%s\n' "$package" "$ref" >> "$GITHUB_OUTPUT"
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install bedrock ${{ env.BEDROCK_VERSION }}
-        # Pinned install from crates.io (see deviation note above).
+      - name: Install locked Bedrock checker outside checkout
+        shell: bash
+        env:
+          CARGO_HOME: ${{ runner.temp }}/bedrock-cargo
+          CARGO_TARGET_DIR: ${{ runner.temp }}/bedrock-target
         run: |
-          cargo install --locked --version "$BEDROCK_VERSION" yeetz-bedrock
+          cargo install --locked \
+            --root "$RUNNER_TEMP/bedrock-tool" \
+            --version '${{ steps.substrate.outputs.ref }}' \
+            '${{ steps.substrate.outputs.package }}'
+          echo "$RUNNER_TEMP/bedrock-tool/bin" >> "$GITHUB_PATH"
 
-      - name: bedrock check (dry run + size report)
+      - name: bedrock check (dry run + projection report)
         shell: bash
         run: |
           set -uo pipefail
@@ -69,10 +77,11 @@ jobs:
       - name: bedrock build
         run: bedrock build
 
-      - name: Verify generated output is committed
+      - name: Verify resident projection is committed
+        shell: bash
         run: |
           if ! git diff --exit-code -- AGENTS.md; then
-            echo "error: AGENTS.md (the compiled graph) is out of date." >&2
-            echo "run 'bedrock build' and commit the regenerated output with your situation/ change." >&2
+            echo "error: AGENTS.md (the resident projection) is out of date." >&2
+            echo "run 'bedrock build' and commit the regenerated output." >&2
             exit 1
           fi
