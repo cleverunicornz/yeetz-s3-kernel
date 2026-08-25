@@ -2,15 +2,15 @@
 # ADR 0016 at extraction, content carried verbatim; extended by ruled
 # batches 2-9 as addenda) as a Decision vertex. The ADR text is immutable
 # (floor invariant 15) and is carried verbatim in `body`.
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/decision-0001-atomic-keyspace"
-"@type": "https://yeetz.dev/bedrock/ontology/Decision"
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/decision-0001-atomic-keyspace"
+"@type": "urn:bedrock:ontology/Decision"
 label: "ADR 0001: AtomicKeyspace, O(1) terminal reads, absent/incomplete taxonomy"
 timestamp: "2026-08-21T10:51:16"
 references:
-  - "https://yeetz.dev/bedrock/vertex/invariant-kernel-extension"
-  - "https://yeetz.dev/bedrock/vertex/invariant-13-state"
-  - "https://yeetz.dev/bedrock/vertex/invariant-08-dependency-boundary"
+  - "urn:bedrock:vertex/invariant-kernel-extension"
+  - "urn:bedrock:vertex/invariant-13-state"
+  - "urn:bedrock:vertex/invariant-08-dependency-boundary"
 statement: >
   The kernel's keyed-I/O law, extended by human-ruled batches 1-9.
   Chosen: AtomicKeyspace with NO unconditional write anywhere on the

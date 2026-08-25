@@ -2,15 +2,15 @@
 # at extraction; extended by ruled addenda) as a Decision vertex. The ADR
 # file is immutable (floor invariant 15) and is the depth document
 # delivered by `source`.
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/decision-0002-streams"
-"@type": "https://yeetz.dev/bedrock/ontology/Decision"
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/decision-0002-streams"
+"@type": "urn:bedrock:ontology/Decision"
 label: "ADR 0002: streams — append-only event logs on AtomicKeyspace"
 timestamp: "2026-08-21T10:51:16"
-requires: "https://yeetz.dev/bedrock/vertex/decision-0001-atomic-keyspace"
+requires: "urn:bedrock:vertex/decision-0001-atomic-keyspace"
 references:
-  - "https://yeetz.dev/bedrock/vertex/invariant-kernel-extension"
-  - "https://yeetz.dev/bedrock/vertex/invariant-13-state"
+  - "urn:bedrock:vertex/invariant-kernel-extension"
+  - "urn:bedrock:vertex/invariant-13-state"
 statement: >
   The streams crate: per-stream append-only event logs as immutable,
   individually addressable objects at streams/v1/<id>/log/<seq:020>

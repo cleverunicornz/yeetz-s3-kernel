@@ -1,7 +1,7 @@
 # Migrated from the hand-written root AGENTS.md TEMP-WORK LAW.
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/invariant-temp-work"
-"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/invariant-temp-work"
+"@type": "urn:bedrock:ontology/Invariant"
 label: "Temp work lives under /Volumes/code/temp"
 layer: "situated"
 statement: >

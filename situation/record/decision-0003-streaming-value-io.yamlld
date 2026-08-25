@@ -4,13 +4,13 @@
 # alternative a reader is about to propose may already be recorded,
 # with its reason). Liveness is read from the incoming supersedes edge
 # on decision-0004-streaming-value-io-v2, never from this statement.
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/decision-0003-streaming-value-io"
-"@type": "https://yeetz.dev/bedrock/ontology/Decision"
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/decision-0003-streaming-value-io"
+"@type": "urn:bedrock:ontology/Decision"
 label: "ADR 0003: streaming-value I/O for AtomicKeyspace (superseded)"
 timestamp: "2026-08-22T20:43:22"
 references:
-  - "https://yeetz.dev/bedrock/vertex/invariant-kernel-extension"
+  - "urn:bedrock:vertex/invariant-kernel-extension"
 statement: >
   The proposed v1 design for streaming large values through
   AtomicKeyspace: two representations behind one logical value API —

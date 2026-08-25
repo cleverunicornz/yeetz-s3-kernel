@@ -1,6 +1,6 @@
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/structure-decisions"
-"@type": "https://yeetz.dev/bedrock/ontology/SituationStructure"
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/structure-decisions"
+"@type": "urn:bedrock:ontology/SituationStructure"
 label: "ADRs (atomic keyspace, streams, streaming-value I/O, batched deletion)"
 statement: >
   situation/record/ — ADR 0001 (atomic keyspace), 0002 (streams), 0003
@@ -12,4 +12,4 @@ statement: >
   live, 0003 is superseded by 0004. Walk the chain before relitigating
   any of these choices.
 path:
-  - "https://yeetz.dev/bedrock/path/situation/record"
+  - "urn:bedrock:path/situation/record"

@@ -5,21 +5,21 @@
 # file is the depth document delivered by `source`. Implementation
 # is a separately authorized kernel-extension batch
 # (invariant-kernel-extension) — not yet authorized at registration.
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/decision-0005-batched-deletion"
-"@type": "https://yeetz.dev/bedrock/ontology/Decision"
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/decision-0005-batched-deletion"
+"@type": "urn:bedrock:ontology/Decision"
 label: "ADR 0005: unconditional S3 multi-object deletion — typed outcomes, bounded chunks"
 timestamp: "2026-08-23T22:27:03"
-requires: "https://yeetz.dev/bedrock/vertex/decision-0001-atomic-keyspace"
+requires: "urn:bedrock:vertex/decision-0001-atomic-keyspace"
 references:
-  - "https://yeetz.dev/bedrock/vertex/invariant-kernel-extension"
-  - "https://yeetz.dev/bedrock/vertex/structure-kernel"
-  - "https://yeetz.dev/bedrock/vertex/decision-0004-streaming-value-io-v2"
+  - "urn:bedrock:vertex/invariant-kernel-extension"
+  - "urn:bedrock:vertex/structure-kernel"
+  - "urn:bedrock:vertex/decision-0004-streaming-value-io-v2"
 # C11 (bedrock 0.6.0): the plan went cold at disposition done, and the
 # record schema's `references` admits only vertex IRIs — so history
 # rides `consumes` as a repo-path pointer to the same vertex file.
 consumes:
-  - "https://yeetz.dev/bedrock/path/situation/plan/batched-deletion-primitive.yamlld"
+  - "urn:bedrock:path/situation/plan/batched-deletion-primitive.yamlld"
 statement: >
   Accepted 2026-08-23 by human merge of PR #33 (merge commit
   60cb5c35) after a two-round independent adversarial review — both

@@ -1,10 +1,10 @@
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/structure-tools"
-"@type": "https://yeetz.dev/bedrock/ontology/SituationStructure"
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/structure-tools"
+"@type": "urn:bedrock:ontology/SituationStructure"
 label: "Storage-boundary + dependency-floor CI gates"
 statement: >
   tools/ — storage-boundary and dependency-floor enforcement; the
   boundary is mechanically enforced here (adapter calls outside the
   sanctioned crates fail the build, with a ratchet allowlist).
 path:
-  - "https://yeetz.dev/bedrock/path/tools"
+  - "urn:bedrock:path/tools"

@@ -1,9 +1,9 @@
 # seeded by bedrock v0.2.1
 # Floor invariant 11 of 16 (spec/floor-v2.md §4). Layer: floor.
 # Statement carries the floor prose verbatim.
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/invariant-11-ci-rules"
-"@type": "https://yeetz.dev/bedrock/ontology/Invariant"
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/invariant-11-ci-rules"
+"@type": "urn:bedrock:ontology/Invariant"
 label: "CI: one runner posture, the real suite"
 layer: "floor"
 statement: >

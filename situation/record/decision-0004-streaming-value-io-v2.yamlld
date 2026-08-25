@@ -2,16 +2,16 @@
 # vertex. Supersedes decision-0003-streaming-value-io; ADR 0003 stays
 # immutable. Implementation is authorized as its own firewalled kernel
 # batch (invariant-kernel-extension) — not yet landed at registration.
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/decision-0004-streaming-value-io-v2"
-"@type": "https://yeetz.dev/bedrock/ontology/Decision"
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/decision-0004-streaming-value-io-v2"
+"@type": "urn:bedrock:ontology/Decision"
 label: "ADR 0004: streaming-value I/O v2 — manifest commit, bounded chunks"
 timestamp: "2026-08-22T20:43:22"
-supersedes: "https://yeetz.dev/bedrock/vertex/decision-0003-streaming-value-io"
-requires: "https://yeetz.dev/bedrock/vertex/decision-0001-atomic-keyspace"
+supersedes: "urn:bedrock:vertex/decision-0003-streaming-value-io"
+requires: "urn:bedrock:vertex/decision-0001-atomic-keyspace"
 references:
-  - "https://yeetz.dev/bedrock/vertex/invariant-kernel-extension"
-  - "https://yeetz.dev/bedrock/vertex/invariant-13-state"
+  - "urn:bedrock:vertex/invariant-kernel-extension"
+  - "urn:bedrock:vertex/invariant-13-state"
 statement: >
   Accepted 2026-08-22 via human-delegated synthesis ("adopt the best
   solution derivable from both reviewers; reserve only physics-class

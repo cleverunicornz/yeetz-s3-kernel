@@ -2,9 +2,9 @@
 # Breadcrumb: org published-crates manifest. Spec/floor-v2.md §4 list.
 # Pointer is institutional (manifest gap, proposed home the bootstrap repo);
 # it lives in the gate prose.
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/breadcrumb-org-crate-manifest"
-"@type": "https://yeetz.dev/bedrock/ontology/Breadcrumb"
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/breadcrumb-org-crate-manifest"
+"@type": "urn:bedrock:ontology/Breadcrumb"
 label: "Org crate manifest"
 gate: >
   Check the org's published-crates manifest before reaching for a third-party or

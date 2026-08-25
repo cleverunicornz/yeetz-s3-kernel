@@ -1,8 +1,8 @@
 # Draft registration for the ADR 0005 proposal. A Decision vertex is created
 # only after human acceptance and merge, never while this plan remains draft.
-"@context": "https://yeetz.dev/bedrock/context/v1"
-"@id": "https://yeetz.dev/bedrock/vertex/plan-batched-deletion-primitive"
-"@type": "https://yeetz.dev/bedrock/ontology/Plan"
+"@context": "urn:bedrock:context/v1"
+"@id": "urn:bedrock:vertex/plan-batched-deletion-primitive"
+"@type": "urn:bedrock:ontology/Plan"
 label: "Plan: propose typed S3 multi-object deletion"
 intent: >
   Carry ADR 0005 through adversarial review and human acceptance, then — only
@@ -21,16 +21,16 @@ acceptanceCriteria:
   - "A36-A45 pass in CI and a real-S3 witness proves checksum-compatible exact response bijection; refutation blocks publication."
   - "The primitive uses caller-supplied keys only; LIST authority, durable job checkpoints, and epoch adoption remain outside it."
 consumes:
-  - "https://yeetz.dev/bedrock/vertex/invariant-kernel-extension"
-  - "https://yeetz.dev/bedrock/vertex/invariant-13-state"
-  - "https://yeetz.dev/bedrock/vertex/invariant-08-dependency-boundary"
-  - "https://yeetz.dev/bedrock/vertex/structure-kernel"
-  - "https://yeetz.dev/bedrock/vertex/decision-0001-atomic-keyspace"
-  - "https://yeetz.dev/bedrock/vertex/decision-0002-streams"
-  - "https://yeetz.dev/bedrock/vertex/decision-0004-streaming-value-io-v2"
-  - "https://yeetz.dev/bedrock/vertex/decision-0005-batched-deletion"
-  - "https://yeetz.dev/bedrock/path/crates/yeetz-s3-kernel"
-  - "https://yeetz.dev/bedrock/path/crates/yeetz-sdk-s3"
+  - "urn:bedrock:vertex/invariant-kernel-extension"
+  - "urn:bedrock:vertex/invariant-13-state"
+  - "urn:bedrock:vertex/invariant-08-dependency-boundary"
+  - "urn:bedrock:vertex/structure-kernel"
+  - "urn:bedrock:vertex/decision-0001-atomic-keyspace"
+  - "urn:bedrock:vertex/decision-0002-streams"
+  - "urn:bedrock:vertex/decision-0004-streaming-value-io-v2"
+  - "urn:bedrock:vertex/decision-0005-batched-deletion"
+  - "urn:bedrock:path/crates/yeetz-s3-kernel"
+  - "urn:bedrock:path/crates/yeetz-sdk-s3"
 tasks:
   - "Keep ADR 0005 explicitly proposed and register it only as this draft plan."
   - "Run the independent adversarial review and amend the proposal forward where required."
@@ -43,7 +43,7 @@ witnesses:
   - "https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/32665465723"
   - "https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/32736208926"
 reflectDepth: 2
-oracle: "https://yeetz.dev/bedrock/vertex/decision-0005-batched-deletion"
+oracle: "urn:bedrock:vertex/decision-0005-batched-deletion"
 disposition:
   state: done
   residual: >
