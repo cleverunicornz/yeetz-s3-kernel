@@ -25,7 +25,7 @@ or an application's policy after receiving a typed conflict.
 ## State evidence
 
 - `situation/oracles/O-000002-conditional-keyspace-operations.md`
-- `situation/witnesses/P-000002/W-000007-keyspace-input-identity.md`
+- `situation/witnesses/P-000002/W-000012-keyspace-gate.md`
 
 ## Residual
 
