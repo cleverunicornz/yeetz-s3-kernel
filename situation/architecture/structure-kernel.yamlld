@@ -1,9 +1,0 @@
-"@context": "urn:bedrock:context/v1"
-"@id": "urn:bedrock:vertex/structure-kernel"
-"@type": "urn:bedrock:ontology/SituationStructure"
-label: "Lineage state kernel, AtomicKeyspace, terminal reads, real-S3 ABA probe"
-statement: >
-  crates/yeetz-s3-kernel — the lineage state kernel: AtomicKeyspace,
-  terminal reads, and the real-S3 ABA probe engine.
-path:
-  - "urn:bedrock:path/crates/yeetz-s3-kernel"

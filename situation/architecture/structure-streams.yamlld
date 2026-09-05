@@ -1,8 +1,0 @@
-"@context": "urn:bedrock:context/v1"
-"@id": "urn:bedrock:vertex/structure-streams"
-"@type": "urn:bedrock:ontology/SituationStructure"
-label: "Append-only event logs (ADR 0002)"
-statement: >
-  crates/yeetz-s3-streams — append-only event logs over the kernel.
-path:
-  - "urn:bedrock:path/crates/yeetz-s3-streams"

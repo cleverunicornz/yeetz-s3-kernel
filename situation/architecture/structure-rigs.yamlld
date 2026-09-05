@@ -1,9 +1,0 @@
-"@context": "urn:bedrock:context/v1"
-"@id": "urn:bedrock:vertex/structure-rigs"
-"@type": "urn:bedrock:ontology/SituationStructure"
-label: "Durable verification rigs (index: rigs/INDEX.md)"
-statement: >
-  rigs/ — durable verification rigs (streams contracts, real-S3 ABA
-  probe); index in rigs/INDEX.md.
-path:
-  - "urn:bedrock:path/rigs/INDEX.md"

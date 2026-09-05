@@ -1,9 +1,0 @@
-"@context": "urn:bedrock:context/v1"
-"@id": "urn:bedrock:vertex/structure-sdk-s3"
-"@type": "urn:bedrock:ontology/SituationStructure"
-label: "Request-scoped S3-compatible object storage mechanics"
-statement: >
-  crates/yeetz-sdk-s3 — request-scoped S3-compatible object storage
-  mechanics; closure of the state kernel.
-path:
-  - "urn:bedrock:path/crates/yeetz-sdk-s3"

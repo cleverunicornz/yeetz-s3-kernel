@@ -1,9 +1,0 @@
-"@context": "urn:bedrock:context/v1"
-"@id": "urn:bedrock:vertex/structure-skills"
-"@type": "urn:bedrock:ontology/SituationStructure"
-label: "Process surface (state-kernel, ci)"
-statement: >
-  .agents/skills/ — the process surface: state-kernel (the kernel's
-  usage law) and ci (the remote verification plane).
-path:
-  - "urn:bedrock:path/.agents/skills"
