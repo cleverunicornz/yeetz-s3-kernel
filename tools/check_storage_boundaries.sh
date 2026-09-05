@@ -52,7 +52,7 @@ if [ -n "$violations" ]; then
   echo "STORAGE BOUNDARY VIOLATIONS (adapter access outside the kernel closure):"
   printf '  %s' "$violations"
   echo ""
-  echo "The kernel closure is the only S3 client (see .agents/skills/state-kernel)."
+  echo "The kernel closure is the only S3 client (see situation/invariants/I-000001-kernel-storage-boundary.md)."
   echo "A missing kernel capability is a BLOCKING escalation to the human —"
   echo "never a raw-adapter workaround. If this is pre-approved migration debt,"
   echo "the file must be in tools/storage-boundary-allowlist."
