@@ -72,7 +72,18 @@ block that follows.
 </bedrock-protocol>
 
 <bedrock-repository>
-Legacy repository guidance at `577dcbb1eafa865d43ea209b2db0604c10b2ad1c:AGENTS.md` is BACKPORT donor
-material, not current instruction. Repository-specific orientation will be
-authored during this closure.
+## yeetz-s3-kernel
+
+- Identity, ownership, phase, and implementation map: `situation/context.md`.
+- Canonical repository knowledge: `situation/`; behavioral records are under
+  `situation/promises/`, `situation/oracles/`, and `situation/witnesses/`;
+  collapsed choices and rules are under `situation/decisions/` and
+  `situation/invariants/`.
+- Critical invariant: all durable object-storage access owned by this repository
+  flows through the kernel closure; see
+  `situation/invariants/I-000001-kernel-storage-boundary.md`.
+- The kernel, streams, and SDK closure live under `crates/`; durable executable
+  rigs live under `rigs/`.
+- Historical graph-era material is BACKPORT donor evidence at
+  `96a05336c850895143c297fb47ffb55227b0c4fb`, not current authority.
 </bedrock-repository>
