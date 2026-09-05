@@ -26,7 +26,7 @@ or caller retry policy.
 ## State evidence
 
 - `situation/oracles/O-000005-bounded-batched-deletion.md`
-- `situation/witnesses/P-000005/W-000010-batched-deletion-input-identity.md`
+- `situation/witnesses/P-000005/W-000015-batched-deletion-gate.md`
 
 ## Residual
 
