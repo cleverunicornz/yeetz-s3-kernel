@@ -7,7 +7,7 @@
 
 **Append-only event logs on S3, without a broker.**
 [`yeetz-s3-streams`] implements durable event logs on top of the
-[`yeetz-s3-kernel`] `AtomicKeyspace` ([ADR 0002]): one immutable
+[`yeetz-s3-kernel`] `AtomicKeyspace` ([D-000002]): one immutable
 object per event at `streams/v1/<id>/log/<seq>`, where the object's
 *conditional create* **is** the sequence allocation — no counters, no
 coordination service, no leader. Concurrent writers race the create;
@@ -25,7 +25,7 @@ Design boundaries, on purpose:
 
 [`yeetz-s3-streams`]: https://docs.rs/yeetz-s3-streams/latest/yeetz_s3_streams/
 [`yeetz-s3-kernel`]: https://crates.io/crates/yeetz-s3-kernel
-[ADR 0002]: https://github.com/cleverunicornz/yeetz-s3-kernel/blob/main/situation/record/decision-0002-streams.yamlld
+[D-000002]: https://github.com/cleverunicornz/yeetz-s3-kernel/blob/main/situation/decisions/D-000002-append-only-streams.md
 
 ## Example
 
