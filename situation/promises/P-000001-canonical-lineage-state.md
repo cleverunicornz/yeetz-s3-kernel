@@ -25,7 +25,7 @@ object-store backend.
 ## State evidence
 
 - `situation/oracles/O-000001-canonical-lineage-state.md`
-- `situation/witnesses/P-000001/W-000001-canonical-lineage-state.md`
+- `situation/witnesses/P-000001/W-000006-canonical-lineage-input-identity.md`
 
 ## Residual
 
