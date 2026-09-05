@@ -115,8 +115,9 @@ match kernel.read_head_state().await? {
 5. **Integrity failures are never absence.** `StateHistoryIncomplete`
    is distinct from never-existed and from empty, always.
 
-Full rationale: [ADR 0001 — AtomicKeyspace](../../situation/record/decision-0001-atomic-keyspace.yamlld),
-[ADR 0003/0004 — streaming value I/O](../../situation/record/decision-0004-streaming-value-io-v2.yamlld).
+Full rationale: [D-000001 — AtomicKeyspace](../../situation/decisions/D-000001-atomic-keyspace.md),
+[D-000003 — initial streaming proposal](../../situation/decisions/D-000003-streaming-value-v1.md), and
+[D-000004 — selected streamed-value design](../../situation/decisions/D-000004-streaming-value-v2.md).
 
 ## Features
 
@@ -134,8 +135,9 @@ weak-cursor recovery), all run against a loopback S3 counterpart with
 injectable faults — plus `rigs/` executable witnesses replaying the
 durable legs against real backends in CI.
 
-Full rationale: [ADR 0001 — AtomicKeyspace](https://github.com/cleverunicornz/yeetz-s3-kernel/blob/main/situation/record/decision-0001-atomic-keyspace.yamlld),
-[ADR 0003/0004 — streaming value I/O](https://github.com/cleverunicornz/yeetz-s3-kernel/blob/main/situation/record/decision-0004-streaming-value-io-v2.yamlld).
+Full rationale: [D-000001 — AtomicKeyspace](https://github.com/cleverunicornz/yeetz-s3-kernel/blob/main/situation/decisions/D-000001-atomic-keyspace.md),
+[D-000003 — initial streaming proposal](https://github.com/cleverunicornz/yeetz-s3-kernel/blob/main/situation/decisions/D-000003-streaming-value-v1.md), and
+[D-000004 — selected streamed-value design](https://github.com/cleverunicornz/yeetz-s3-kernel/blob/main/situation/decisions/D-000004-streaming-value-v2.md).
 
 ## The closure
 
