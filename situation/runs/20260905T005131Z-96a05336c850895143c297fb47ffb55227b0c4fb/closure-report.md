@@ -37,8 +37,9 @@ trigger commit named above.
 - P-000001 through P-000005 and their one-to-one O-000001 through O-000005
   oracles carry bounded behavior for lineage state, conditional keyspace
   operations, streams, manifest publication, and typed batched deletion.
-  W-000006 through W-000010 are their current state evidence; W-000001 through
-  W-000005 remain immutable earlier observations.
+  Each promise links its current state evidence. W-000001 through W-000012 are
+  immutable observations; later witnesses correct provenance detail without
+  rewriting earlier evidence.
 - G-000001 records the accepted writer-quiescence limit of destructive streamed
   chunk collection. C-000001 and draft PLAN-000001 preserve the evidence-based
   reconsideration path for part-addressed streamed reads.
