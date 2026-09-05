@@ -25,7 +25,7 @@ collection during arbitrary concurrent writes.
 ## State evidence
 
 - `situation/oracles/O-000004-manifest-committed-streamed-values.md`
-- `situation/witnesses/P-000004/W-000004-manifest-committed-streamed-values.md`
+- `situation/witnesses/P-000004/W-000009-streamed-value-input-identity.md`
 
 ## Residual
 
