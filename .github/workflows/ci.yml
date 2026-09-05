@@ -5,7 +5,6 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
-      - ".agents/**"
       - ".github/**"
       - "LICENSE"
   push:
@@ -13,7 +12,6 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
-      - ".agents/**"
       - ".github/**"
       - "LICENSE"
 
