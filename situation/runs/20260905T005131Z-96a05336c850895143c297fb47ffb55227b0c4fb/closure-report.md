@@ -37,24 +37,28 @@ trigger commit named above.
 - P-000001 through P-000005 and their one-to-one O-000001 through O-000005
   oracles carry bounded behavior for lineage state, conditional keyspace
   operations, streams, manifest publication, and typed batched deletion.
-  Each promise links its current state evidence. W-000001 through W-000012 are
-  immutable observations; later witnesses correct provenance detail without
-  rewriting earlier evidence.
+  Each promise links its current state evidence. W-000001 through W-000015 are
+  immutable observations. W-000006 through W-000010 retain the opening
+  source-identity comparisons, while W-000011 through W-000015 are the
+  corresponding historical-gate witnesses supplying current state evidence.
 - G-000001 records the accepted writer-quiescence limit of destructive streamed
   chunk collection. C-000001 and draft PLAN-000001 preserve the evidence-based
   reconsideration path for part-addressed streamed reads.
 
 ## Assurance provenance
 
-Each PASS witness cites the public successful `gates` job at
-`https://api.github.com/repos/cleverunicornz/yeetz-s3-kernel/actions/runs/32736208926/jobs`,
-which ran at `49ba2ced98831d192f6a2371b90aec8e81a081fd`. The historical
-workflow defines that job's `gates` step to execute `cargo nextest run
---workspace`. For the complete workspace source/test/workflow input set named
-in the witnesses, comparison from that execution head to the opening checkpoint
-returned no changed paths. The witnesses therefore retain both the independent
-run URL and the source-identity condition; they do not use a record as evidence
-for its own provenance.
+The public successful `gates` job at
+`https://api.github.com/repos/cleverunicornz/yeetz-s3-kernel/actions/runs/32736208926/jobs`
+ran at `49ba2ced98831d192f6a2371b90aec8e81a081fd` on 2026-08-24.
+W-000011 through W-000015 are the historical-gate state-evidence witnesses:
+each names that exact Head and Observed date, while W-000006 through W-000010
+remain immutable opening source-identity observations. The historical workflow
+defines that job's `gates` step to execute `cargo nextest run --workspace`. For
+the complete workspace source/test/workflow input set named in the witnesses,
+comparison from that execution head to the opening checkpoint returned no
+changed paths. The historical-gate witnesses therefore retain both the
+independent run URL and the source-identity condition; they do not use a record
+as evidence for its own provenance.
 
 No formatter, linter, project-wide build, or project-wide test suite was run by
 this closure, in accordance with the run constraint. The edited boundary shell
