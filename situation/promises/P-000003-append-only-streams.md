@@ -25,7 +25,7 @@ business-policy decisions.
 ## State evidence
 
 - `situation/oracles/O-000003-append-only-streams.md`
-- `situation/witnesses/P-000003/W-000003-append-only-streams.md`
+- `situation/witnesses/P-000003/W-000008-streams-input-identity.md`
 
 ## Residual
 
