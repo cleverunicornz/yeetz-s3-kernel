@@ -74,6 +74,7 @@ block that follows.
 <bedrock-repository>
 ## yeetz-s3-kernel
 
+- Ownership: `OWNED`.
 - Identity, ownership, phase, and implementation map: `situation/context.md`.
 - Canonical repository knowledge: `situation/`; behavioral records are under
   `situation/promises/`, `situation/oracles/`, and `situation/witnesses/`;
