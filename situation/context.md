@@ -13,7 +13,8 @@ introduced in their package READMEs.
 - Phase: `EVOLUTION`
 - Ownership: `OWNED`
 - Upstream coordinate: none
-- Current Bedrock operation: `BACKPORT`
+- Current Bedrock operation: `DELTA`
+- Completed adoption operation: `BACKPORT`
 - Adoption run: `20260905T005131Z-96a05336c850895143c297fb47ffb55227b0c4fb`
 - Opening checkpoint: `94c39fecb90ca998156078c7532ebab45927d934`
 - Trigger tree: `96a05336c850895143c297fb47ffb55227b0c4fb`
