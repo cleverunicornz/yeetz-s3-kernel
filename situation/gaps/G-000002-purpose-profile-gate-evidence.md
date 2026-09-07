@@ -28,11 +28,10 @@ not establish a current-head gate claim after that runner-profile change.
 - `situation/oracles/O-000003-append-only-streams.md`
 - `situation/oracles/O-000004-manifest-committed-streamed-values.md`
 - `situation/oracles/O-000005-bounded-batched-deletion.md`
-- At review on 2026-09-07, the `check` job for
-  `https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/34117710250`
-  was queued at opening checkpoint
-  `89d9891c958adc12a1ac669c57374de5a668b96b`; it was not a retained PASS
-  witness.
+- `https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/34117710250`
+  completed `cancelled` on 2026-09-07 at opening checkpoint
+  `89d9891c958adc12a1ac669c57374de5a668b96b`; its `check` job has no PASS
+  result and supplies no retained gate witness.
 
 ## Impact
 
