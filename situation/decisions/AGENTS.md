@@ -46,22 +46,13 @@ state changes land atomically.
 
 ## Rules
 
-- One decision per file, immutable after acceptance.
-- A decision introduced on an unmerged pull request is not yet accepted
-  repository history and may be corrected in place before merge.
+- One decision per file, immutable from the first closing checkpoint that
+  follows its creation or change. Until then, on the open pull request, it may
+  be corrected in place by a forward commit.
 - Supersession replaces a decision with a new record; both remain.
 - A decision without evidence is a preference, not a decision; say which it
   is.
 
 ## Reference discipline
 
-Files inside this repository are referenced by repository-root-relative
-path. Files in external public repositories are referenced only by full
-public URL. Files in external private repositories are referenced by
-declared coordinate — `Private: owner/repo@<ref>#<path>` — never by an
-unauthenticated URL, never undeclared. Never reference a local clone, a
-private checkout, or a machine-local path.
-
-A declared-private reference that cannot be fetched is expected, not an
-error: never stop for one, never remove it, never invent its contents.
-Content from a private reference never crosses into a public document.
+Reference discipline is defined in `situation/AGENTS.md`.

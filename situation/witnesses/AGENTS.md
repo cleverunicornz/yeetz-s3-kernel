@@ -1,6 +1,6 @@
 # Witnesses
 
-A witness retains one observation from one real run. It is immutable
+A witness retains one observation from one real run. It is retained
 evidence, not a living status. A witness proves an observation happened,
 never that a behavior always holds.
 
@@ -32,7 +32,9 @@ Witnesses are grouped by the promise they observe.
 
 ## Rules
 
-- Never edit a witness after creation. Corrections are new witnesses.
+- A witness is immutable from the first closing checkpoint that follows its
+  creation or change; after that, corrections are new witnesses. Until then,
+  on the open pull request, it may be corrected in place by a forward commit.
 - Evidence must be retained and retrievable: a workflow run URL, an
   artifact digest, or a committed result file.
 - A failed witness explains how a promise's state changed; keep it.
@@ -43,13 +45,4 @@ Witnesses are grouped by the promise they observe.
 
 ## Reference discipline
 
-Files inside this repository are referenced by repository-root-relative
-path. Files in external public repositories are referenced only by full
-public URL. Files in external private repositories are referenced by
-declared coordinate — `Private: owner/repo@<ref>#<path>` — never by an
-unauthenticated URL, never undeclared. Never reference a local clone, a
-private checkout, or a machine-local path.
-
-A declared-private reference that cannot be fetched is expected, not an
-error: never stop for one, never remove it, never invent its contents.
-Content from a private reference never crosses into a public document.
+Reference discipline is defined in `situation/AGENTS.md`.

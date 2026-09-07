@@ -14,8 +14,8 @@ the structure, identifier rules, and relationships between namespaces.
 - `candidates/` — evidence-derived possibilities, not commitments
 - `plans/` — thin containers grouping candidates and promises into work
 - `references/` — retained depth linked from records
-- `runs/` — automation-run evidence folders
-- `context.md` — repository identity, phase, and current/intended state
+- `context.md` — repository identity, phase, current/intended state, and
+  closure state
 
 ## Identifier rules
 
@@ -39,7 +39,8 @@ allowed.
 ## Reference discipline
 
 Every reference carries a visibility class so a reader never has to guess
-whether a reference is broken or access-controlled.
+whether a reference is broken or access-controlled. This section and the next
+state that discipline once for every namespace.
 
 - A file **inside this repository** is referenced by its repository-root-
   relative path: `situation/promises/P-000001-stable-identity.md`. Never a
@@ -86,7 +87,6 @@ Decision -> Invariant (basis)
 Decision -> Decision (supersedes)
 Plan -> Candidate and Promise set
 Reference -> owning record
-Run -> automation evidence
 ```
 
 A promise states behavior. An oracle states the judgment rule. A witness
@@ -140,12 +140,56 @@ Repository phase and closure operation are separate classifications:
 - `DELTA` — a completed adoption exists; inspect only the pull-request diff
   and records it directly affects. Never re-derive unchanged donors.
 
-Every run records its operation in the opening checkpoint.
+Every run records its operation in its opening checkpoint.
 
-Git checkpoint/stage history is the sole processing receipt. A file handled by
-a stage commit inside a completed closure interval is already processed. DELTA
-compares that stage to the current head and reviews only the changed lines. No
+DELTA reviews `git diff <last closing checkpoint>..<trigger head>`. That diff is
+the complete review surface; an empty diff means there is no closure work. No
 parallel donor registry or copied donor snapshot exists.
+
+## Runs
+
+A run performs one closure on one pull request branch. It is bounded by two
+orchestrator commits: an opening checkpoint with subject
+`bedrock: open closure <run-id>`, and a closing checkpoint with subject
+`bedrock: complete closure <run-id>`. Interior commits are completed units of
+agent work, pushed as they happen; corrections are new forward commits. Only the
+checkpoints are prescribed; interior commit count and shape are not.
+
+Checkpoint metadata is one contiguous final Git trailer block with no blank
+lines between trailer lines, so `git interpret-trailers --parse` reads it. Agent
+transcripts are archived outside the repository, and both checkpoints carry the
+archive URI in a `Bedrock-Transcript` trailer alongside their other trailers.
+
+Run reports — closer summary, validator docket, corrector summary — are pull
+request comments. They are never repository files.
+
+A failed run is never resumed. An opening checkpoint with no closing checkpoint
+marks a failed closure: the pull request is closed with a pointer to its rerun,
+and the rerun starts on a new branch from the head admitted before the failed
+run. The failed branch and its comments remain the record.
+
+A record is immutable from the first closing checkpoint that follows its
+creation or change. Until then, on the open pull request, it may be corrected
+in place by a forward commit.
+
+## Closure state
+
+`context.md` carries a `## Closure state` section written only by the
+orchestrator's checkpoint commits, with exactly these lines:
+
+```text
+- Current run: `<run-id>` (open)
+- Last completed closure: run `<run-id>`, opened at `<opening-commit-sha>`
+- Transcript: `<uri>`
+```
+
+With no run open the first line is `- Current run: none`. Before the first
+completed closure the second line is `- Last completed closure: none` and the
+third is `- Transcript: none`.
+
+The opening checkpoint sets `Current run`. The closing checkpoint sets
+`Current run` to none and updates the other two lines. The most recent commit
+with subject `bedrock: complete closure <run-id>` is the DELTA base.
 
 ## Repository ownership
 
@@ -154,10 +198,10 @@ parallel donor registry or copied donor snapshot exists.
   upstream public URL and identify the repository as a fork.
 
 Every run records ownership and, for forks, the upstream coordinate in
-`context.md` and root `AGENTS.md`. Upstream synchronization and contribution
-are separate operations outside Bedrock. Root `AGENTS.md` directs agents to
-invoke the exact `fork-operations` skill; Bedrock does not restate that
-procedure.
+`context.md` and the repository block of root `AGENTS.md`. Upstream
+synchronization and contribution are separate operations outside Bedrock that
+follow the organization's fork rules in the root organization block; Bedrock
+does not restate them.
 
 ## README lifecycle
 
@@ -172,27 +216,41 @@ root `AGENTS.md` stabilize:
 
 README never overrides records under `situation/`.
 
-For `UPSTREAM_FORK`, the operational tree contains exactly one root README:
-English `README.md`. It is a minimal human projection naming the project and
-pointing to root `AGENTS.md` and `situation/`. BACKPORT considers unique content
-from alternate root READMEs, then removes every alternate-language/root variant.
-DELTA never recreates them.
+During a Bedrock closure, upstream-owned files remain untouched by the
+knowledge projection; fork orientation lives only in the root `AGENTS.md`
+blocks and `situation/`. This restriction governs Bedrock alignment, not
+ordinary product changes made through the fork's working trunk.
 
 ## Documentation classification
 
 Repository-operational knowledge — architecture explanations, maintainer or
 contributor procedure, plans, rationale, setup/status prose, and agent guidance
-— is represented under `situation/` or removed from an operational fork tree.
-It does not remain as a competing documentation authority.
+— is represented under `situation/`. In an owned repository it does not remain
+as a competing documentation authority; in an upstream fork, upstream-owned
+files remain as they are.
 
 Documentation that is functionally part of the product remains in its native
 path: website/help content, API/schema inputs, generated-code inputs, build or
 test fixtures, release/legal material, and other files whose removal changes a
 runtime, build, test, release, or delivered documentation artifact.
 
-On `UPSTREAM_FORK`, any README outside the one root `README.md` is retained only
-when it is product-functional under that test; otherwise its relevant knowledge
-is internalized and the file removed.
+On `UPSTREAM_FORK`, Bedrock does not remove or rewrite upstream-owned
+documentation to impose repository-operational orientation.
+
+## Root AGENTS.md blocks
+
+Root `AGENTS.md` carries three tagged blocks in this order:
+
+- `bedrock-protocol` — protocol-owned; the published root protocol block,
+  installed byte-for-byte and immutable to agents.
+- `bedrock-organization` — organization-owned; synchronized by the closure
+  automation and immutable to agents. It is optional; adopters whose automation
+  supplies none carry the other two blocks.
+- `bedrock-repository` — repository-owned; written by the closer in the shape
+  given by the repository block template published with the protocol release
+  and reproduced in the closure automation.
+
+Agents edit only the repository block.
 
 ## AGENTS.md placement
 

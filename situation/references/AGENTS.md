@@ -27,26 +27,23 @@ A reference is a child of the record that links it.
   copy must be owned by and linked from a record.
 - Any content type is acceptable: markdown, images, data, diagrams.
 
+## Procedures
+
+A repository procedure is a Reference owned by the Invariant that requires it
+or the Promise it satisfies. Guidance that fits in a few lines and applies to
+every session belongs in the root `AGENTS.md` blocks instead. Organization-wide rules, such as fork synchronization and contribution, live
+in the root organization block; tool procedures are named skills supplied
+outside the repository. A repository never restates either.
+
 ## Reference discipline
 
-Files inside this repository are referenced by repository-root-relative
-path. Files in external public repositories are referenced only by full
-public URL. Files in external private repositories are referenced by
-declared coordinate — `Private: owner/repo@<ref>#<path>` — never by an
-unauthenticated URL, never undeclared. Never reference a local clone, a
-private checkout, or a machine-local path.
-
-A declared-private reference that cannot be fetched is expected, not an
-error: never stop for one, never remove it, never invent its contents.
-Content from a private reference never crosses into a public document.
+Reference discipline is defined in `situation/AGENTS.md`.
 
 ## Donor provenance
 
 Git is the donor receipt. BACKPORT's opening checkpoint identifies the exact
-trigger tree; stage commits identify which files were processed and rewritten.
-Do not copy donor snapshots or create donor registries.
+trigger tree. Do not copy donor snapshots or create donor registries.
 
-On DELTA, locate the latest completed Bedrock interval and the latest relevant
-stage commit. `git diff <stage>..HEAD -- <path>` determines whether the file
-changed. Empty diff prohibits re-ingestion; nonempty diff is the complete review
-surface. Historical donor bytes remain available through `git show`.
+On DELTA, `git diff <last closing checkpoint>..<trigger head>` is the complete
+review surface. An empty diff means there is no closure work; a nonempty diff
+bounds it. Historical donor bytes remain available through `git show`.
