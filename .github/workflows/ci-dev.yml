@@ -14,21 +14,16 @@ on:
         required: false
         default: "clippy"
       runner:
-        description: "org-ci-linux-x64 (default) | runner-<host>-<nn> for a specific bare-metal runner"
+        description: "cvu-test-runner-x64 (default) | another cvu-* purpose profile from the select-runner table"
         required: false
-        default: "org-ci-linux-x64"
+        default: "cvu-test-runner-x64"
         type: choice
         options:
-          - org-ci-linux-x64
-          - runner-61w-01
-          - runner-61w-02
-          - runner-61w-03
-          - runner-66t-01
-          - runner-66t-02
-          - runner-66t-03
-          - runner-ju0-01
-          - runner-ju0-02
-          - runner-ju0-03
+          - cvu-test-runner-x64
+          - cvu-native-builder-x64
+          - cvu-docker-builder-x64
+          - cvu-agent-code-x64
+          - cvu-deploy-x64
       cache_state:
         description: "warm (default) | cold (discard this runner's repository target before execution)"
         required: false
@@ -52,7 +47,6 @@ jobs:
         with:
           toolchain: "1.96.0"
           components: clippy, rustfmt
-      - run: /opt/gh-runners/bin/configure-rust-local-cache
       - name: reset repository target for cold qualification
         if: inputs.cache_state == 'cold'
         run: rm -rf -- "$CARGO_TARGET_DIR"
