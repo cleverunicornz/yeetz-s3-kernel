@@ -203,17 +203,11 @@ Repository-specific orientation belongs in the repository block that follows.
 <bedrock-repository>
 ## yeetz-s3-kernel
 
+- Identity: `yeetz-s3-kernel` is the Rust source of record for an S3-native storage kernel and its `yeetz-s3-streams`, `yeetz-sdk-s3`, and `yeetz-sdk-core` closure.
 - Ownership: `OWNED`.
-- Identity, ownership, phase, and implementation map: `situation/context.md`.
-- Canonical repository knowledge: `situation/`; behavioral records are under
-  `situation/promises/`, `situation/oracles/`, and `situation/witnesses/`;
-  collapsed choices and rules are under `situation/decisions/` and
-  `situation/invariants/`.
-- Critical invariant: all durable object-storage access owned by this repository
-  flows through the kernel closure; see
-  `situation/invariants/I-000001-kernel-storage-boundary.md`.
-- The kernel, streams, and SDK closure live under `crates/`; durable executable
-  rigs live under `rigs/`.
-- Historical graph-era material is BACKPORT donor evidence at
-  `96a05336c850895143c297fb47ffb55227b0c4fb`, not current authority.
+- Phase and implementation map: `situation/context.md`.
+- Critical invariants: All durable object-storage access owned by this repository flows through the kernel closure: `yeetz-s3-kernel`, `yeetz-sdk-s3`, and `yeetz-sdk-core`. Application and rig code use kernel surfaces rather than raw object-store or S3 adapter APIs. ([I-000001](situation/invariants/I-000001-kernel-storage-boundary.md))
+- Verification: Unassured: no assured current-head witness route is presently recorded for the purpose-profile cutover; [G-000002](situation/gaps/G-000002-purpose-profile-gate-evidence.md) retains the absence and [C-000002](situation/candidates/C-000002-current-head-purpose-profile-gate.md) is proposed without promotion.
+- Tool priority: organization defaults.
+- Donor boundary: `96a05336c850895143c297fb47ffb55227b0c4fb`.
 </bedrock-repository>
