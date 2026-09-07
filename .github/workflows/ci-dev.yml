@@ -1,7 +1,7 @@
 name: ci-dev
 
 # Manual, agent-invocable gate runner. Never auto-triggers.
-# Usage: gh workflow run ci-dev.yml -f ref=<branch-or-sha> -f task=<task> [-f runner=<runner>]
+# Usage: gh workflow run ci-dev.yml -f ref=<branch-or-sha> -f task=<task>
 # Witness rule: gate claims cite this run's URL, not local attestations.
 on:
   workflow_dispatch:
@@ -13,29 +13,13 @@ on:
         description: "check | clippy | build | nextest | gates | qualify | kernel-rigs | real-s3"
         required: false
         default: "clippy"
-      runner:
-        description: "org-ci-linux-x64 (default) | runner-<host>-<nn> for a specific bare-metal runner"
-        required: false
-        default: "org-ci-linux-x64"
-        type: choice
-        options:
-          - org-ci-linux-x64
-          - runner-61w-01
-          - runner-61w-02
-          - runner-61w-03
-          - runner-66t-01
-          - runner-66t-02
-          - runner-66t-03
-          - runner-ju0-01
-          - runner-ju0-02
-          - runner-ju0-03
       cache_state:
         description: "warm (default) | cold (discard this runner's repository target before execution)"
         required: false
         default: "warm"
 
 concurrency:
-  group: ci-dev-${{ inputs.ref }}-${{ inputs.task }}-${{ inputs.runner }}-${{ inputs.cache_state }}
+  group: ci-dev-${{ inputs.ref }}-${{ inputs.task }}-cvu-test-runner-x64-${{ inputs.cache_state }}
   cancel-in-progress: true
 
 jobs:
@@ -43,7 +27,7 @@ jobs:
     # Fork PRs never dispatch — workflow_dispatch requires write access
     # (already enforced by GitHub), belt-and-suspenders for any future trigger
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ${{ inputs.runner }}
+    runs-on: cvu-test-runner-x64
     steps:
       - uses: actions/checkout@v7
         with:
@@ -52,7 +36,6 @@ jobs:
         with:
           toolchain: "1.96.0"
           components: clippy, rustfmt
-      - run: /opt/gh-runners/bin/configure-rust-local-cache
       - name: reset repository target for cold qualification
         if: inputs.cache_state == 'cold'
         run: rm -rf -- "$CARGO_TARGET_DIR"

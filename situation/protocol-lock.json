@@ -1,27 +1,30 @@
 {
   "repository": "cleverunicornz/yeetz-bedrock-protocol",
-  "release": "v1.7.0",
-  "commit": "44f74e1abf53d0ca26b3d7035ec4b7ed64a0144d",
+  "release": "v1.9.2",
+  "commit": "c788b062df8fe2778f3ce1b6decebdc878f0e086",
   "automation_package": {
     "repository": "cleverunicornz/infrastructure",
-    "version": "1.0.2",
-    "source_commit": "c8146afce7f018cc37362190af3f5193419697db"
+    "version": "1.1.5",
+    "source_commit": "142b059d09b2d64f96a7871cbcf064b0d87c92fe"
   },
   "root_protocol": {
     "source": "templates/root-protocol.md",
-    "sha256": "d3b904e4562249d52a93dbfa84e9aaf3c303edd41fd5ea8f6fb458c055edcfb2"
+    "sha256": "57107adb1462500e605bdbe03597baa66736fe029281cb82ff0e74a34fde25ed"
   },
   "files": {
-    "situation/AGENTS.md": "d2e0bb74a8c87ff1ce91589db8c42470a0f4f0d672a3733248d723f87d91ba40",
-    "situation/candidates/AGENTS.md": "a6009417507f82d7785768a2e668eaa63639c5cf1297f79a903c43e6019ab50a",
-    "situation/decisions/AGENTS.md": "bdeeed6783ce64172f42ba01bfe91c6a23c604504f665941ad43052660b64016",
-    "situation/gaps/AGENTS.md": "6c92dc85120dc709013b4b6b5c899dc39afc4c1528400c1e0127c1e652022742",
-    "situation/invariants/AGENTS.md": "dd8ef20d39a2548076902ae08b7e6e86c19bc57f47198c0eeb17eba68c4aa15d",
-    "situation/oracles/AGENTS.md": "f0a105f7a777d8aaa9f28fe471585bed98b7f358d29a94b5529b45252bf078dc",
-    "situation/plans/AGENTS.md": "f603502d820d5c7a09d7099212e6c719144a98f4d7c73178064c7c8606a72931",
-    "situation/promises/AGENTS.md": "80890c61782eaa93900dc64b30549de194db44f3d8ba4960ce7c455e960afdf4",
-    "situation/references/AGENTS.md": "065cd0e1bad35fe4347fd035bbf208e15749ee93be5b5afef12d439cc94476c3",
-    "situation/runs/AGENTS.md": "af50c798a9f2d22fde0d61d4b6083aac92024d9e0df7bd2b1fecdc2b1f8fee1a",
-    "situation/witnesses/AGENTS.md": "8127fac6383ac37fc7ee14446315053c63dca787e903bcdc304f476e931b16ed"
+    "situation/AGENTS.md": "0453210ee4f31fe373b1c3c3f4192c7fda2ddb9423d389cfc7c1aa17e0f73fba",
+    "situation/candidates/AGENTS.md": "93a93fec5fdf78e9a847d3fe19f4a6b041f9221ee101e9a6d78d841a3eec10c9",
+    "situation/decisions/AGENTS.md": "35cb11346c4b2c9543e73b9fd1a742ee175730f3a84aca7dd19a2d1dadceb9a2",
+    "situation/gaps/AGENTS.md": "e5d13ac237706188e030b3cbf27443ec9afa4db2645c80695a41ab2e3c011b83",
+    "situation/invariants/AGENTS.md": "0c1d2ff334e419d4c057dcf3bc615899bfbe9ad2824c4e1d2b1cc588b8bd7c4f",
+    "situation/oracles/AGENTS.md": "48b42f0602e95183c581acf39d067e12b36026492d2811ffff3bd144cfbf3402",
+    "situation/plans/AGENTS.md": "5b84a08ecc490f4fc666f1beb0dae70d7c06ffc66db8e0cd356144a24dce5051",
+    "situation/promises/AGENTS.md": "9b8ec140d2d9915f8151b8f8277288ad49e58188a9cc41b6900736a1b2a60429",
+    "situation/references/AGENTS.md": "41698ac88408a3b07eb141646ddd5f0acbfd4bd7fcdc49655e959a1f77b8a559",
+    "situation/witnesses/AGENTS.md": "982ee98b719dd752599cf5a6585d18e604b849f598fa21f36cb2492b2e410cb5"
+  },
+  "organization": {
+    "version": "1.1.2",
+    "sha256": "3100affa58640b6e739d908c8e454bd8c72d05b340b2945c598ea2dfc5455111"
   }
 }

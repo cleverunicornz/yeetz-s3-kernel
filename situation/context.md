@@ -13,7 +13,7 @@ introduced in their package READMEs.
 - Phase: `EVOLUTION`
 - Ownership: `OWNED`
 - Upstream coordinate: none
-- Current Bedrock operation: `DELTA`
+- Current Bedrock operation: `BACKPORT`
 - Completed adoption operation: `BACKPORT`
 - Adoption run: `20260905T005131Z-96a05336c850895143c297fb47ffb55227b0c4fb`
 - Opening checkpoint: `94c39fecb90ca998156078c7532ebab45927d934`
@@ -48,3 +48,9 @@ repository-local skill surface at
 `96a05336c850895143c297fb47ffb55227b0c4fb:.agents/` are BACKPORT donor
 material. It informs the current records but is not current operational
 authority. Git retains those bytes under the stated trigger commit.
+
+## Closure state
+
+- Current run: none
+- Last completed closure: run `20260907T133102Z-88b9f476b1f9b067f850cab7c1d3f6c6b50e6363`, opened at `c273dc07a802e57306bc2500ae6b4a67caca1b6e`
+- Transcript: `s3://cvu-automation-runs-uk/bedrock/cleverunicornz/yeetz-s3-kernel/pr-44/20260907T133102Z-88b9f476b1f9b067f850cab7c1d3f6c6b50e6363/`
