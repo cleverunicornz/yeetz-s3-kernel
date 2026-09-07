@@ -1,7 +1,7 @@
 name: ci-dev
 
 # Manual, agent-invocable gate runner. Never auto-triggers.
-# Usage: gh workflow run ci-dev.yml -f ref=<branch-or-sha> -f task=<task> [-f runner=<runner>]
+# Usage: gh workflow run ci-dev.yml -f ref=<branch-or-sha> -f task=<task>
 # Witness rule: gate claims cite this run's URL, not local attestations.
 on:
   workflow_dispatch:
@@ -13,24 +13,13 @@ on:
         description: "check | clippy | build | nextest | gates | qualify | kernel-rigs | real-s3"
         required: false
         default: "clippy"
-      runner:
-        description: "cvu-test-runner-x64 (default) | another cvu-* purpose profile from the select-runner table"
-        required: false
-        default: "cvu-test-runner-x64"
-        type: choice
-        options:
-          - cvu-test-runner-x64
-          - cvu-native-builder-x64
-          - cvu-docker-builder-x64
-          - cvu-agent-code-x64
-          - cvu-deploy-x64
       cache_state:
         description: "warm (default) | cold (discard this runner's repository target before execution)"
         required: false
         default: "warm"
 
 concurrency:
-  group: ci-dev-${{ inputs.ref }}-${{ inputs.task }}-${{ inputs.runner }}-${{ inputs.cache_state }}
+  group: ci-dev-${{ inputs.ref }}-${{ inputs.task }}-cvu-test-runner-x64-${{ inputs.cache_state }}
   cancel-in-progress: true
 
 jobs:
@@ -38,7 +27,7 @@ jobs:
     # Fork PRs never dispatch — workflow_dispatch requires write access
     # (already enforced by GitHub), belt-and-suspenders for any future trigger
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ${{ inputs.runner }}
+    runs-on: cvu-test-runner-x64
     steps:
       - uses: actions/checkout@v7
         with:
