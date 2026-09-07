@@ -47,6 +47,4 @@ G-<six digits>-<kebab-case-name>.md
 
 ## Reference discipline
 
-Use repository-root-relative paths for current files, `<commit>:<path>` for
-historical repository bytes, full URLs for public external files, and declared
-private coordinates for private external files.
+Reference discipline is defined in `situation/AGENTS.md`.
