@@ -48,3 +48,9 @@ repository-local skill surface at
 `96a05336c850895143c297fb47ffb55227b0c4fb:.agents/` are BACKPORT donor
 material. It informs the current records but is not current operational
 authority. Git retains those bytes under the stated trigger commit.
+
+## Closure state
+
+- Current run: `20260907T113740Z-217145a4d5b0f9f3e2255a5f177054060c355b3d` (open)
+- Last completed closure: none
+- Transcript: none
