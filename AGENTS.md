@@ -133,6 +133,14 @@ Repository-specific orientation belongs in the repository block that follows.
 - Public-first: before building inside, ask why it cannot be a public crate or
   repository.
 - Decisions are append-only: supersede, never edit.
+- Orchestration-only actors own scheduling and administrative reporting;
+  specialists own substantive work and validation. A returned completion advances
+  the assignment, with reporting defects soft-corrected from known facts. An
+  interrupted invocation without a completed return gets a fresh invocation of
+  the same role and original assignment within its retry bound; the replacement
+  worker owns the existing work and its interpretation. PR workflows retain the
+  assigned PR and branch throughout. Returned meaning establishes role completion;
+  publication evidence and machine receipts serve administrative bookkeeping.
 
 ### Git and workflows
 
@@ -148,8 +156,10 @@ Repository-specific orientation belongs in the repository block that follows.
   Bedrock request. Branches carry no `push` trigger; `push` to main exists only
   for release and deployment witnesses. CI runs once when a pull request opens
   and once on its final head by dispatch before merge.
-- Linux and platform-neutral jobs run on the owned automation fleet through
-  logical labels; WarpBuild only for native macOS and Windows artifacts. Fork
+- All agent-driven build and test work runs on Linux through the five logical
+  runner labels documented by the select-runner plugin skill; no other platform
+  or label is valid for agents. Missing runner capabilities are requested by
+  issue to the infrastructure repository, never by modifying runners. Fork
   pull requests never reach the fleet. A missing host tool is a P0 defect,
   never a hidden substitute. CI runs the real suite.
 - One fixed toolchain per repository with canonical task names.
