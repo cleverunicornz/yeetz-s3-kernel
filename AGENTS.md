@@ -49,10 +49,14 @@ the repository; both checkpoint commits carry the archive URI in a
 `Bedrock-Transcript` trailer alongside their other trailers. The checkpoint
 commits are the only writers of the closure state in `situation/context.md`.
 
-A failed run is never resumed. An opening checkpoint with no closing checkpoint
-marks a failed closure: the pull request is closed with a pointer to its rerun,
-and the rerun starts on a new branch from the head admitted before the failed
-run. The failed branch and its comments remain the record.
+A failed run is never resumed. The orchestrator retries an invoked agent that
+died by restarting that same agent with the same prompt, at most three times,
+and never adjudicates or finishes that agent's work itself. A run that still
+fails leaves its pull request open and its branch untouched: Bedrock never
+opens, closes, merges, or rebranches a pull request under any circumstance.
+Re-requesting Bedrock on the same pull request starts a new run; an opening
+checkpoint with no closing checkpoint marks a failed closure and is superseded
+by the next run's opening checkpoint.
 
 A record is immutable from the first closing checkpoint that follows its
 creation or change. Until then, on the open pull request, it may be corrected
@@ -129,6 +133,14 @@ Repository-specific orientation belongs in the repository block that follows.
 - Public-first: before building inside, ask why it cannot be a public crate or
   repository.
 - Decisions are append-only: supersede, never edit.
+- Orchestration-only actors own scheduling and administrative reporting;
+  specialists own substantive work and validation. A returned completion advances
+  the assignment, with reporting defects soft-corrected from known facts. An
+  interrupted invocation without a completed return gets a fresh invocation of
+  the same role and original assignment within its retry bound; the replacement
+  worker owns the existing work and its interpretation. PR workflows retain the
+  assigned PR and branch throughout. Returned meaning establishes role completion;
+  publication evidence and machine receipts serve administrative bookkeeping.
 
 ### Git and workflows
 
@@ -144,8 +156,10 @@ Repository-specific orientation belongs in the repository block that follows.
   Bedrock request. Branches carry no `push` trigger; `push` to main exists only
   for release and deployment witnesses. CI runs once when a pull request opens
   and once on its final head by dispatch before merge.
-- Linux and platform-neutral jobs run on the owned automation fleet through
-  logical labels; WarpBuild only for native macOS and Windows artifacts. Fork
+- All agent-driven build and test work runs on Linux through the five logical
+  runner labels documented by the select-runner plugin skill; no other platform
+  or label is valid for agents. Missing runner capabilities are requested by
+  issue to the infrastructure repository, never by modifying runners. Fork
   pull requests never reach the fleet. A missing host tool is a P0 defect,
   never a hidden substitute. CI runs the real suite.
 - One fixed toolchain per repository with canonical task names.
