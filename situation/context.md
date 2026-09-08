@@ -51,6 +51,6 @@ authority. Git retains those bytes under the stated trigger commit.
 
 ## Closure state
 
-- Current run: `20260908T133037Z-f2bedef271f7618a991101bb78680bd4a10928e9` (open)
-- Last completed closure: run `20260907T133102Z-88b9f476b1f9b067f850cab7c1d3f6c6b50e6363`, opened at `c273dc07a802e57306bc2500ae6b4a67caca1b6e`
-- Transcript: `s3://cvu-automation-runs-uk/bedrock/cleverunicornz/yeetz-s3-kernel/pr-44/20260907T133102Z-88b9f476b1f9b067f850cab7c1d3f6c6b50e6363/`
+- Current run: none
+- Last completed closure: run `20260908T133037Z-f2bedef271f7618a991101bb78680bd4a10928e9`, opened at `e5eaf6fdea573c66ecd599a9bded6d10ac1b82a0`
+- Transcript: `s3://cvu-automation-runs-uk/bedrock/cleverunicornz/yeetz-s3-kernel/pr-46/20260908T133037Z-f2bedef271f7618a991101bb78680bd4a10928e9/`
