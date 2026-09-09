@@ -582,7 +582,7 @@ async fn r5_read_range_complete_window_or_typed_error() {
     let error = streams.read_range(&stream, 0, 6, 100).await.unwrap_err();
     assert!(
         matches!(
-            error,
+            &error,
             StreamsError::Corrupt {
                 missing_or_mismatched,
                 ..
