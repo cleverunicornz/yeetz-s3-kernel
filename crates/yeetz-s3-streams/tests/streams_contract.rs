@@ -52,7 +52,10 @@ async fn s1_contiguity_one_winner_per_seq() {
         } => {
             assert_eq!(events.len(), 8);
             assert!(complete);
-            let ids: Vec<&str> = events.iter().map(|e| e.stable_event_id.as_str()).collect();
+            let ids: Vec<&str> = events
+                .iter()
+                .map(|e| e.stable_event_id().as_str())
+                .collect();
             let mut sorted = ids.clone();
             sorted.sort_unstable();
             assert_eq!(sorted.len(), 8, "eight distinct events");
@@ -88,9 +91,12 @@ async fn s2_replay_order_and_completeness() {
                 assert!(!events.is_empty());
                 for envelope in &events {
                     // Order is seq order; payloads verify.
-                    assert_eq!(envelope.seq, after + 1);
-                    collected.push((envelope.seq, envelope.stable_event_id.as_str().to_string()));
-                    after = envelope.seq;
+                    assert_eq!(envelope.seq(), after + 1);
+                    collected.push((
+                        envelope.seq(),
+                        envelope.stable_event_id().as_str().to_string(),
+                    ));
+                    after = envelope.seq();
                 }
                 if complete {
                     break;
@@ -135,7 +141,7 @@ async fn s2_replay_remains_dense_across_fetch_chunks() {
             assert!(complete);
             assert_eq!(events.len(), 65);
             assert_eq!(
-                events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+                events.iter().map(|event| event.seq()).collect::<Vec<_>>(),
                 (1..=65).collect::<Vec<_>>()
             );
         }
@@ -177,8 +183,8 @@ async fn s2_paginated_walk_limit_below_total_advances_on_last_seq() {
                 pages += 1;
                 // The resume discipline: after-exclusive read at the
                 // LAST FETCHED seq. Any cursor beyond it skips.
-                after = events.last().expect("checked nonempty").seq;
-                collected.extend(events.iter().map(|event| event.seq));
+                after = events.last().expect("checked nonempty").seq();
+                collected.extend(events.iter().map(|event| event.seq()));
                 if complete {
                     break;
                 }
@@ -246,7 +252,7 @@ async fn s3_idempotent_reappend_converges() {
         } => {
             assert!(complete);
             assert_eq!(events.len(), 1, "no duplicate event");
-            assert_eq!(events[0].stable_event_id.as_str(), "only-once");
+            assert_eq!(events[0].stable_event_id().as_str(), "only-once");
         }
         other => panic!("expected page, got {other:?}"),
     }
@@ -315,7 +321,7 @@ async fn idempotency_window_conflict_is_typed() {
             events, complete, ..
         } => {
             assert_eq!(events.len(), 1);
-            assert_eq!(events[0].payload.as_ref(), b"original");
+            assert_eq!(events[0].payload().as_ref(), b"original");
             assert!(complete);
         }
         other => panic!("expected page, got {other:?}"),
@@ -375,7 +381,7 @@ async fn idempotency_beyond_window_reappend_lands_as_new_event() {
             assert_eq!(events.len(), 21);
             let occurrences = events
                 .iter()
-                .filter(|envelope| envelope.stable_event_id.as_str() == "logical-1")
+                .filter(|envelope| envelope.stable_event_id().as_str() == "logical-1")
                 .count();
             assert_eq!(
                 occurrences, 2,
@@ -534,10 +540,10 @@ async fn s7_schema_evolution_opaque_and_malformed_loud() {
         .unwrap();
     match streams.read(&stream, 0, 100).await {
         Replay::Page { events, .. } => {
-            assert_eq!(events[0].schema_id.as_str(), "old.shape.v1");
-            assert_eq!(events[0].payload.as_ref(), b"old payload");
-            assert_eq!(events[1].schema_id.as_str(), "new.shape.v9");
-            assert_eq!(events[1].payload.as_ref(), b"new payload");
+            assert_eq!(events[0].schema_id().as_str(), "old.shape.v1");
+            assert_eq!(events[0].payload().as_ref(), b"old payload");
+            assert_eq!(events[1].schema_id().as_str(), "new.shape.v9");
+            assert_eq!(events[1].payload().as_ref(), b"new payload");
         }
         other => panic!("expected page, got {other:?}"),
     }
@@ -633,7 +639,7 @@ async fn s8_encoding_boundaries() {
             events, complete, ..
         } => {
             assert_eq!(events.len(), 1);
-            assert_eq!(events[0].seq, max);
+            assert_eq!(events[0].seq(), max);
             assert!(complete, "nothing can exist past u64::MAX");
         }
         other => panic!("expected ceiling page, got {other:?}"),
@@ -718,7 +724,7 @@ async fn cursors_monotonic_and_validated() {
         } => {
             assert!(complete);
             assert_eq!(events.len(), 1);
-            assert_eq!(events[0].stable_event_id.as_str(), "c3");
+            assert_eq!(events[0].stable_event_id().as_str(), "c3");
         }
         other => panic!("expected page, got {other:?}"),
     }
@@ -987,7 +993,7 @@ async fn r2_read_below_trim_floor_is_offset_expired_not_empty_or_corrupt() {
     match streams.read(&stream, 5, 100).await {
         Replay::Page { events, complete } => {
             assert_eq!(
-                events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+                events.iter().map(|event| event.seq()).collect::<Vec<_>>(),
                 (6..=10).collect::<Vec<_>>()
             );
             assert!(complete);
@@ -1002,7 +1008,7 @@ async fn r2_read_below_trim_floor_is_offset_expired_not_empty_or_corrupt() {
     match streams.read(&stream, 5, 100).await {
         Replay::Page { events, complete } => {
             assert_eq!(
-                events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+                events.iter().map(|event| event.seq()).collect::<Vec<_>>(),
                 (6..=10).collect::<Vec<_>>()
             );
             assert!(complete);
@@ -1049,7 +1055,7 @@ async fn r6_streams_trim_append_and_cursor_respect_the_floor() {
     match streams.read(&stream, 5, 100).await {
         Replay::Page { events, complete } => {
             assert_eq!(
-                events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+                events.iter().map(|event| event.seq()).collect::<Vec<_>>(),
                 (6..=11).collect::<Vec<_>>()
             );
             assert!(complete);
@@ -1169,7 +1175,7 @@ async fn r8_trim_to_end_is_logically_empty_and_appends_continue() {
     match streams.read(&stream, 3, 100).await {
         Replay::Page { events, complete } => {
             assert_eq!(
-                events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+                events.iter().map(|event| event.seq()).collect::<Vec<_>>(),
                 vec![4]
             );
             assert!(complete);
@@ -1202,7 +1208,7 @@ async fn r8_trim_to_end_is_logically_empty_and_appends_continue() {
     match streams.read(&stream, 3, 100).await {
         Replay::Page { events, complete } => {
             assert_eq!(
-                events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+                events.iter().map(|event| event.seq()).collect::<Vec<_>>(),
                 vec![4, 5]
             );
             assert!(complete);

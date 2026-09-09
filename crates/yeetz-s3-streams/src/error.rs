@@ -126,7 +126,7 @@ pub enum Replay {
     /// LIST-qualified end).
     Empty,
     /// A dense, verified page. Resume the walk with
-    /// `after_seq = events.last().seq` — the read is after-exclusive,
+    /// `after_seq = events.last().seq()` — the read is after-exclusive,
     /// so any cursor beyond the last fetched seq would skip events
     /// (the D2 defect; there is deliberately no `next_seq` field).
     /// `complete` is witness-bounded — see the enum docs.

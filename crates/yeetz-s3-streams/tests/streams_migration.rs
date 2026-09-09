@@ -68,10 +68,10 @@ async fn migrate_log_copies_at_explicit_seqs_and_verifies_density() {
             events, complete, ..
         } => {
             assert!(complete);
-            let seqs: Vec<u64> = events.iter().map(|e| e.seq).collect();
+            let seqs: Vec<u64> = events.iter().map(|e| e.seq()).collect();
             assert_eq!(seqs, vec![1, 2, 3]);
-            assert_eq!(events[0].payload.as_ref(), b"one");
-            assert_eq!(events[2].stable_event_id.as_str(), "old-3");
+            assert_eq!(events[0].payload().as_ref(), b"one");
+            assert_eq!(events[2].stable_event_id().as_str(), "old-3");
         }
         other => panic!("expected page, got {other:?}"),
     }
@@ -121,8 +121,8 @@ async fn migrate_log_rejects_sparse_and_conflicting_entries() {
     assert!(conflict.to_string().contains("different bytes"));
     match streams.read(&stream, 0, 10).await {
         Replay::Page { events, .. } => {
-            assert_eq!(events[0].stable_event_id.as_str(), "a");
-            assert_eq!(events[0].payload.as_ref(), b"a");
+            assert_eq!(events[0].stable_event_id().as_str(), "a");
+            assert_eq!(events[0].payload().as_ref(), b"a");
         }
         other => panic!("expected page, got {other:?}"),
     }

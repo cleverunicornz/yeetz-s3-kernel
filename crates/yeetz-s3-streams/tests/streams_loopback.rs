@@ -88,7 +88,7 @@ async fn s3_lost_response_converges_on_retry() {
         } => {
             assert!(complete);
             assert_eq!(events.len(), 1, "no duplicate from the retry");
-            assert_eq!(events[0].stable_event_id.as_str(), "lost-then-found");
+            assert_eq!(events[0].stable_event_id().as_str(), "lost-then-found");
         }
         other => panic!("expected page, got {other:?}"),
     }
@@ -627,7 +627,7 @@ async fn run_history(streams: &Streams, cut_phase: Option<FaultPhase>) -> Verdic
                         } => {
                             events = fetched
                                 .iter()
-                                .map(|e| e.stable_event_id.as_str().to_string())
+                                .map(|e| e.stable_event_id().as_str().to_string())
                                 .collect();
                             let _ = complete;
                             break;

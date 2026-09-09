@@ -64,12 +64,19 @@
 //! (tail hint, migration seal) is undetectable at this layer —
 //! explicitly not covered.
 
+mod bounded;
+mod conditional;
 mod envelope;
 mod error;
 pub mod migration;
 
+pub use bounded::RangePage;
+pub use conditional::{
+    AppendExpectedEffect, AppendExpectedError, AppendExpectedFailure, CreateStreamError,
+    CreateStreamOutcome, ExpiredSubject,
+};
 pub use envelope::{
-    ENVELOPE_FORMAT_VERSION, Envelope, GENESIS_SCHEMA_ID, MAX_ENCODED_ENVELOPE_BYTES,
+    ENVELOPE_FORMAT_VERSION, Envelope, EventRef, GENESIS_SCHEMA_ID, MAX_ENCODED_ENVELOPE_BYTES,
 };
 pub use error::{Replay, StreamsError};
 
@@ -172,6 +179,21 @@ pub struct AppendReceipt {
     pub payload_sha256: String,
 }
 
+impl AppendReceipt {
+    /// The identifying reference to the landed event: opt-in
+    /// clones of the receipt's public fields. The reference
+    /// identifies the record for revalidation — it is neither
+    /// authorization nor whole-prefix proof.
+    pub fn event_ref(&self) -> EventRef {
+        EventRef {
+            stream_id: self.stream_id.clone(),
+            seq: self.seq,
+            stable_event_id: self.stable_event_id.clone(),
+            payload_sha256: self.payload_sha256.clone(),
+        }
+    }
+}
+
 /// The tail-hint accelerator object: written only after validated
 /// contiguous truth, allowed to lag, never declaring EOF.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,7 +290,7 @@ impl Streams {
         let stream = mint_stream_id();
         let genesis = Envelope::genesis(&stream, config)?;
         self.keyspace
-            .create(&Self::log_key(&stream, 0), genesis.encoded.clone())
+            .create(&Self::log_key(&stream, 0), genesis.encoded().clone())
             .await
             .map_err(map_keyspace("create_stream"))?;
         Ok(stream)
@@ -292,7 +314,7 @@ impl Streams {
                 stream: stream.clone(),
                 missing_or_mismatched: vec![0],
             })?;
-        Ok(Some(envelope.payload.to_vec()))
+        Ok(Some(envelope.payload().to_vec()))
     }
 
     /// The stream's certified trim floor: the maximum trim
@@ -474,10 +496,10 @@ impl Streams {
                             missing_or_mismatched: vec![seq],
                         }
                     })?;
-                if envelope.stable_event_id != *stable_event_id {
+                if envelope.stable_event_id() != stable_event_id {
                     continue;
                 }
-                if envelope.schema_id == *schema_id && envelope.payload.as_ref() == payload {
+                if envelope.schema_id() == schema_id && envelope.payload().as_ref() == payload {
                     // Best-effort accelerator advance (monotone
                     // CAS; lost races and failures are fine).
                     self.advance_tail_hint(stream, seq, &envelope).await;
@@ -485,7 +507,7 @@ impl Streams {
                         stream_id: stream.clone(),
                         seq,
                         stable_event_id: stable_event_id.clone(),
-                        payload_sha256: sha256_hex(payload),
+                        payload_sha256: envelope.payload_sha256().to_string(),
                     });
                 }
                 return Err(StreamsError::IdempotencyConflict {
@@ -509,7 +531,7 @@ impl Streams {
             let envelope = Envelope::encode(stream, guess, schema_id, stable_event_id, payload)?;
             match self
                 .keyspace
-                .create(&Self::log_key(stream, guess), envelope.encoded.clone())
+                .create(&Self::log_key(stream, guess), envelope.encoded().clone())
                 .await
             {
                 Ok(()) => {
@@ -517,7 +539,7 @@ impl Streams {
                         stream_id: stream.clone(),
                         seq: guess,
                         stable_event_id: stable_event_id.clone(),
-                        payload_sha256: sha256_hex(payload),
+                        payload_sha256: envelope.payload_sha256().to_string(),
                     };
                     // Best-effort accelerator advance (monotone CAS;
                     // lost races and failures are fine).
@@ -534,13 +556,13 @@ impl Streams {
                         // Byte-identical with the same stable event id:
                         // idempotent success (maintain the accelerator,
                         // as a fresh landing would).
-                        Some(bytes) if bytes == envelope.encoded => {
+                        Some(bytes) if bytes.as_ref() == envelope.encoded().as_ref() => {
                             self.advance_tail_hint(stream, guess, &envelope).await;
                             return Ok(AppendReceipt {
                                 stream_id: stream.clone(),
                                 seq: guess,
                                 stable_event_id: stable_event_id.clone(),
-                                payload_sha256: sha256_hex(payload),
+                                payload_sha256: envelope.payload_sha256().to_string(),
                             });
                         }
                         Some(bytes) => {
@@ -552,7 +574,7 @@ impl Streams {
                                     stream: stream.clone(),
                                     missing_or_mismatched: vec![guess],
                                 })?;
-                            if landed.stable_event_id == *stable_event_id {
+                            if landed.stable_event_id() == stable_event_id {
                                 return Err(StreamsError::IdempotencyConflict {
                                     stream: stream.clone(),
                                     stable_event_id: stable_event_id.clone(),
@@ -878,7 +900,7 @@ impl Streams {
             .map_err(map_keyspace("advance_cursor: target"))?;
         let event_id = match event {
             Some(bytes) => match Envelope::decode_and_verify(stream, target_seq, &bytes) {
-                Ok(envelope) => envelope.stable_event_id.as_str().to_string(),
+                Ok(envelope) => envelope.stable_event_id().as_str().to_string(),
                 Err(_) => {
                     return Err(StreamsError::Corrupt {
                         stream: stream.clone(),
@@ -1042,7 +1064,7 @@ impl Streams {
         };
         let envelope = Envelope::decode_and_verify(stream, cursor.seq, &event)
             .map_err(|_| corrupt("referenced event is corrupt"))?;
-        if cursor.event_id != envelope.stable_event_id.as_str() {
+        if cursor.event_id != envelope.stable_event_id().as_str() {
             return Err(corrupt("event id does not match the referenced event"));
         }
         Ok(cursor)
@@ -1203,7 +1225,7 @@ impl Streams {
     /// existence monotone).
     async fn heal_tail_hint(&self, stream: &StreamId, after_seq: Seq, events: Option<&Envelope>) {
         let landed = match events {
-            Some(envelope) => envelope.seq,
+            Some(envelope) => envelope.seq(),
             None => return,
         };
         // Validated dense prefix condition: either this read started
@@ -1291,12 +1313,6 @@ fn parse_seq(component: &str) -> Option<Seq> {
     } else {
         None
     }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hex::encode(hasher.finalize())
 }
 
 fn map_keyspace(operation: &'static str) -> impl Fn(KeyspaceError) -> StreamsError {
