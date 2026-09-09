@@ -344,6 +344,26 @@ impl Loopback {
         self.state.inner.lock().unwrap().list_omitted.remove(key);
     }
 
+    /// Test-only backend corruption control: replace the stored body
+    /// of an EXISTING physical object with `bytes`, leaving its ETag,
+    /// visibility, LIST membership, and every instrument (request log,
+    /// faults, pauses) untouched. Intended for corrupting an outer
+    /// kernel v2 storage envelope — not inner stream JSON — so a typed
+    /// read must classify the object as `Corrupt` (never
+    /// `InvalidArgument`), and a post-attempt readback can witness
+    /// `Corrupt` + `PossiblyCommitted` together. The ETag is kept: the
+    /// object's identity is unchanged, only its body is now
+    /// intentionally malformed, so a conditional re-read with a
+    /// previously observed ETag still matches and the digest mismatch
+    /// is the corruption signal.
+    pub fn replace_stored_bytes(&self, key: &str, bytes: &[u8]) {
+        let mut inner = self.state.inner.lock().unwrap();
+        let object = inner.objects.get_mut(key).unwrap_or_else(|| {
+            panic!("replace_stored_bytes: no stored object at {key:?} to corrupt")
+        });
+        object.bytes = Bytes::copy_from_slice(bytes);
+    }
+
     /// Arm a one-shot fault cut matching the next request for `op`
     /// (and `key`, when given).
     pub async fn arm_fault(&self, op: StorageOp, key: Option<&str>, phase: FaultPhase) {

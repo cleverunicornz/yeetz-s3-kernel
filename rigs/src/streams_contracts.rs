@@ -242,7 +242,7 @@ pub async fn run() -> Result<Vec<String>, String> {
         )
         .await
         .expect_err("same id with different payload must conflict");
-    match &same_id.kind {
+    match same_id.kind.as_ref() {
         AppendExpectedFailure::Storage(StreamsError::IdempotencyConflict {
             conflicting_seq,
             ..
@@ -267,7 +267,7 @@ pub async fn run() -> Result<Vec<String>, String> {
         )
         .await
         .expect_err("occupied successor must be a position conflict");
-    match &other.kind {
+    match other.kind.as_ref() {
         AppendExpectedFailure::PositionConflict {
             target_seq,
             occupant,

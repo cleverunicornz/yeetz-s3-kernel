@@ -166,14 +166,17 @@ for event in &page.events { /* the complete demanded subwindow, in order */ }
   `PredecessorMismatch`, absent (`Storage(EventMissing)`), or corrupt
   (`Storage(Corrupt)`) — adjudicated before any write.
 - **Every `append_expected` failure carries its effect.**
-  `AppendExpectedError { kind, effect }`: `kind` is the typed failure;
-  `effect` records what may have landed — `NotAttempted` (nothing was
-  written), `PossiblyCommitted` (a create was invoked and its outcome
-  is unconfirmed; retry the identical call), or `Committed(receipt)`
-  (confirmed durable, e.g. an expiry observed after a confirmed
-  write). Once an attempt is made, failures never downgrade to
-  `NotAttempted`, and a conflicting or corrupt readback preserves the
-  uncertainty it must.
+  `AppendExpectedError { kind, effect }`: `kind` is the typed failure —
+  boxed (`Box<AppendExpectedFailure>`) because failures are the cold
+  path, so match through `kind.as_ref()` and destructuring
+  `{ kind, effect }` both work, and success carries no error value at
+  all; `effect` records what may have landed — `NotAttempted` (nothing
+  was written), `PossiblyCommitted` (a create was invoked and its
+  outcome is unconfirmed; retry the identical call), or
+  `Committed(receipt)` (confirmed durable, e.g. an expiry observed
+  after a confirmed write). Once an attempt is made, failures never
+  downgrade to `NotAttempted`, and a conflicting or corrupt readback
+  preserves the uncertainty it must.
 - **`Ok` is exact-successor confirmation, not a retention pin.**
   `Ok(receipt)` confirms the canonical envelope at the exact successor
   under a later successful qualified floor observation. It is not a

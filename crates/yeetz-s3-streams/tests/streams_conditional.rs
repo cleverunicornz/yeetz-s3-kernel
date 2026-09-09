@@ -134,7 +134,7 @@ async fn overwrite_key(keyspace: &AtomicKeyspace, key: &str, value: Bytes) {
 
 /// Unwrap the Storage kind or fail loudly with the whole error.
 fn storage(err: &AppendExpectedError) -> &StreamsError {
-    match &err.kind {
+    match err.kind.as_ref() {
         AppendExpectedFailure::Storage(inner) => inner,
         other => panic!(
             "expected Storage failure, got {other:?} with effect {:?}",
@@ -602,7 +602,7 @@ async fn e6_different_occupant_position_conflict_no_interleave() {
         .append_expected(&pred, &schema, &event("e6-late"), b"e6-payload")
         .await
         .unwrap_err();
-    match &error.kind {
+    match error.kind.as_ref() {
         AppendExpectedFailure::PositionConflict {
             stream: conflicted,
             target_seq,
@@ -726,7 +726,7 @@ async fn e9_mismatched_predecessor_names_expected_and_observed() {
         .append_expected(&wrong_id, &schema, &event("e9-next"), b"p")
         .await
         .unwrap_err();
-    match &error.kind {
+    match error.kind.as_ref() {
         AppendExpectedFailure::PredecessorMismatch {
             expected,
             observed: got,
@@ -748,7 +748,7 @@ async fn e9_mismatched_predecessor_names_expected_and_observed() {
         .append_expected(&wrong_digest, &schema, &event("e9-next"), b"p")
         .await
         .unwrap_err();
-    match &error.kind {
+    match error.kind.as_ref() {
         AppendExpectedFailure::PredecessorMismatch {
             expected,
             observed: got,
@@ -793,7 +793,7 @@ async fn e10_verified_later_event_witnesses_hole_without_filling() {
         )
         .await
         .unwrap_err();
-    match &error.kind {
+    match error.kind.as_ref() {
         AppendExpectedFailure::HoleWitnessed {
             stream: holed,
             target_seq,
@@ -931,7 +931,7 @@ async fn e13_predecessor_expiry_at_floor_is_typed() {
         )
         .await
         .unwrap_err();
-    match &error.kind {
+    match error.kind.as_ref() {
         AppendExpectedFailure::Expired {
             target_seq,
             first_retained,
@@ -973,7 +973,7 @@ async fn e14_target_expiry_at_floor_is_typed() {
         )
         .await
         .unwrap_err();
-    match &error.kind {
+    match error.kind.as_ref() {
         AppendExpectedFailure::Expired {
             target_seq,
             first_retained,
@@ -1018,7 +1018,7 @@ async fn e15_below_floor_zombie_committed_then_swept_target_cannot_recreate() {
         )
         .await
         .unwrap_err();
-    match &zombie.kind {
+    match zombie.kind.as_ref() {
         AppendExpectedFailure::Expired {
             target_seq,
             first_retained,
@@ -1047,7 +1047,7 @@ async fn e15_below_floor_zombie_committed_then_swept_target_cannot_recreate() {
         )
         .await
         .unwrap_err();
-    match &swept.kind {
+    match swept.kind.as_ref() {
         AppendExpectedFailure::Expired {
             target_seq,
             first_retained,
@@ -1420,7 +1420,7 @@ async fn e21_pause_after_target_put_trim_beyond_and_gc_expired_committed() {
     );
     pause.release();
     let error = call.await.expect("append task").unwrap_err();
-    match &error.kind {
+    match error.kind.as_ref() {
         AppendExpectedFailure::Expired {
             target_seq,
             first_retained,
@@ -1482,7 +1482,7 @@ async fn e22_lost_target_put_gc_before_readback_expired_possibly_committed() {
     streams.gc(&stream).await.unwrap();
     pause.release();
     let error = call.await.expect("append task").unwrap_err();
-    match &error.kind {
+    match error.kind.as_ref() {
         AppendExpectedFailure::Expired {
             target_seq,
             first_retained,
@@ -1522,9 +1522,10 @@ async fn e23_frozen_certificate_list_residual_is_honest() {
     let driver = streams.clone();
     let pred = event_ref(&stream, 1, "e23-one", b"p1");
     let stable = event("e23-two");
+    let task_schema = schema.clone();
     let call = tokio::spawn(async move {
         driver
-            .append_expected(&pred, &schema, &stable, b"p23")
+            .append_expected(&pred, &task_schema, &stable, b"p23")
             .await
     });
     tokio::time::timeout(PAUSE_TIMEOUT, pause.wait_reached())
@@ -1551,7 +1552,7 @@ async fn e23_frozen_certificate_list_residual_is_honest() {
         )
         .await
         .unwrap_err();
-    match &error.kind {
+    match error.kind.as_ref() {
         AppendExpectedFailure::Expired {
             target_seq,
             first_retained,
@@ -1701,7 +1702,7 @@ async fn e25_expired_target_overrides_zombie_conflict() {
         )
         .await
         .unwrap_err();
-    match &error.kind {
+    match error.kind.as_ref() {
         AppendExpectedFailure::Expired {
             target_seq,
             first_retained,
@@ -1830,7 +1831,7 @@ async fn e27_lost_put_conflicting_readback_preserves_possibly_committed() {
     .await;
     pause.release();
     let error = call.await.expect("append task").unwrap_err();
-    match &error.kind {
+    match error.kind.as_ref() {
         AppendExpectedFailure::PositionConflict {
             stream: conflicted,
             target_seq,
@@ -2068,6 +2069,269 @@ async fn e30_floor_regression_after_commit_preserves_committed_receipt() {
         streams.trim_floor(&stream).await.unwrap(),
         Some(2),
         "the certificate object was never touched"
+    );
+    loopback.shutdown();
+}
+
+/// c11: corruption of the OUTER kernel stored bytes of the incumbent
+/// genesis (raw object replacement, not the inner stream envelope)
+/// maps through the shared error mapper to Storage(Corrupt) naming
+/// seq 0 — never InvalidArgument.
+#[tokio::test]
+async fn c11_outer_genesis_corruption_maps_to_corrupt() {
+    let (loopback, streams) = counterpart_streams().await;
+    let id = stream_id("cond-c11");
+    streams
+        .create_stream_with_id(&id, b"cfg-c11")
+        .await
+        .unwrap();
+    loopback.replace_stored_bytes(&wire_log_key(&id, 0), b"outer-garbage");
+    let error = streams
+        .create_stream_with_id(&id, b"cfg-c11")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            create_storage(&error),
+            StreamsError::Corrupt {
+                missing_or_mismatched,
+                ..
+            } if missing_or_mismatched.contains(&0)
+        ),
+        "outer envelope corruption is Corrupt at the incumbent seq, got {error:?}"
+    );
+    loopback.shutdown();
+}
+
+/// e31: a predecessor GET that comes back missing after a concurrent
+/// writer landed the target and trim/GC advanced the floor past it
+/// prioritizes TARGET expiry on the floor reread — Expired(Target),
+/// not a predecessor verdict.
+#[tokio::test]
+async fn e31_missing_predecessor_raced_by_trim_gc_prioritizes_target_expiry() {
+    let (loopback, streams) = counterpart_streams().await;
+    let keyspace = streams_keyspace(&loopback.kernel());
+    let stream = streams.create_stream(b"cfg-e31").await.unwrap();
+    let schema = schema("cond.v31");
+    streams
+        .append_expected(
+            &genesis_ref(&stream, b"cfg-e31"),
+            &schema,
+            &event("e31-one"),
+            b"p1",
+        )
+        .await
+        .unwrap();
+    // Our caller targets seq 2; its predecessor read parks.
+    let pause = loopback.pause_next(
+        StorageOp::Get,
+        Some(&wire_log_key(&stream, 1)),
+        FaultPhase::Before,
+    );
+    let driver = streams.clone();
+    let pred = event_ref(&stream, 1, "e31-one", b"p1");
+    let stable = event("e31-ours");
+    let call = tokio::spawn(async move {
+        driver
+            .append_expected(&pred, &schema, &stable, b"p-ours")
+            .await
+    });
+    tokio::time::timeout(PAUSE_TIMEOUT, pause.wait_reached())
+        .await
+        .expect("the predecessor read parks before its effect");
+    // While it parks: another VALID writer lands the exact target,
+    // retention advances past it, and the sweeper collects below it.
+    keyspace
+        .create(
+            &log_key(&stream, 2),
+            hand_envelope(stream.as_str(), 2, "e31-writer", "cond.v31", b"p-writer"),
+        )
+        .await
+        .unwrap();
+    streams.trim(&stream, 3).await.unwrap();
+    streams.gc(&stream).await.unwrap();
+    pause.release();
+    let error = call.await.expect("append task").unwrap_err();
+    match error.kind.as_ref() {
+        AppendExpectedFailure::Expired {
+            target_seq,
+            first_retained,
+            subject,
+            ..
+        } => {
+            assert_eq!(*target_seq, 2);
+            assert_eq!(*first_retained, 3);
+            assert_eq!(
+                *subject,
+                ExpiredSubject::Target,
+                "target expiry outranks the missing predecessor"
+            );
+        }
+        other => panic!(
+            "expected Expired(Target) after the retention race, got {other:?} (effect {:?})",
+            error.effect
+        ),
+    }
+    assert_eq!(
+        error.effect,
+        AppendExpectedEffect::NotAttempted,
+        "the raced append never attempted a create"
+    );
+    loopback.shutdown();
+}
+
+/// e32: corruption of the OUTER kernel stored bytes of the event
+/// target maps to Storage(Corrupt) naming the target seq — never
+/// InvalidArgument.
+#[tokio::test]
+async fn e32_outer_target_corruption_maps_to_corrupt() {
+    let (loopback, streams) = counterpart_streams().await;
+    let stream = streams.create_stream(b"cfg-e32").await.unwrap();
+    let schema = schema("cond.v32");
+    streams
+        .append_expected(
+            &genesis_ref(&stream, b"cfg-e32"),
+            &schema,
+            &event("e32-first"),
+            b"p1",
+        )
+        .await
+        .unwrap();
+    loopback.replace_stored_bytes(&wire_log_key(&stream, 1), b"outer-garbage");
+    let error = streams
+        .append_expected(
+            &genesis_ref(&stream, b"cfg-e32"),
+            &schema,
+            &event("e32-second"),
+            b"p2",
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            storage(&error),
+            StreamsError::Corrupt {
+                missing_or_mismatched,
+                ..
+            } if missing_or_mismatched.contains(&1)
+        ),
+        "outer target corruption is Corrupt naming the target, got {error:?}"
+    );
+    assert_eq!(error.effect, AppendExpectedEffect::NotAttempted);
+    loopback.shutdown();
+}
+
+/// e33: corruption of the OUTER kernel stored bytes of the predecessor
+/// object maps to Storage(Corrupt) naming the predecessor seq — never
+/// InvalidArgument.
+#[tokio::test]
+async fn e33_outer_predecessor_corruption_maps_to_corrupt() {
+    let (loopback, streams) = counterpart_streams().await;
+    let stream = streams.create_stream(b"cfg-e33").await.unwrap();
+    let schema = schema("cond.v33");
+    streams
+        .append_expected(
+            &genesis_ref(&stream, b"cfg-e33"),
+            &schema,
+            &event("e33-one"),
+            b"p1",
+        )
+        .await
+        .unwrap();
+    streams
+        .append_expected(
+            &event_ref(&stream, 1, "e33-one", b"p1"),
+            &schema,
+            &event("e33-two"),
+            b"p2",
+        )
+        .await
+        .unwrap();
+    loopback.replace_stored_bytes(&wire_log_key(&stream, 2), b"outer-garbage");
+    let error = streams
+        .append_expected(
+            &event_ref(&stream, 2, "e33-two", b"p2"),
+            &schema,
+            &event("e33-three"),
+            b"p3",
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            storage(&error),
+            StreamsError::Corrupt {
+                missing_or_mismatched,
+                ..
+            } if missing_or_mismatched.contains(&2)
+        ),
+        "outer predecessor corruption is Corrupt naming the predecessor, got {error:?}"
+    );
+    assert_eq!(error.effect, AppendExpectedEffect::NotAttempted);
+    loopback.shutdown();
+}
+
+/// e34: a target PUT that applied but lost its response, read back
+/// with OUTER kernel stored bytes corrupted inside the parked window:
+/// the corrupt witness survives floor adjudication — Storage(Corrupt)
+/// with PossiblyCommitted, never Unavailable. (e28 keeps the inner
+/// JSON-corruption leg.)
+#[tokio::test]
+async fn e34_lost_put_outer_corrupt_readback_preserves_possibly_committed() {
+    let (loopback, streams) = counterpart_streams().await;
+    let stream = streams.create_stream(b"cfg-e34").await.unwrap();
+    let schema = schema("cond.v34");
+    streams
+        .append_expected(
+            &genesis_ref(&stream, b"cfg-e34"),
+            &schema,
+            &event("e34-first"),
+            b"p1",
+        )
+        .await
+        .unwrap();
+    let target = wire_log_key(&stream, 2);
+    loopback
+        .arm_fault(StorageOp::Put, Some(&target), FaultPhase::After)
+        .await;
+    let pause = loopback.pause_next(StorageOp::Put, Some(&target), FaultPhase::After);
+    let mark = loopback.request_log().len();
+    let driver = streams.clone();
+    let pred = event_ref(&stream, 1, "e34-first", b"p1");
+    let stable = event("e34-event");
+    let call = tokio::spawn(async move {
+        driver
+            .append_expected(&pred, &schema, &stable, b"p34")
+            .await
+    });
+    tokio::time::timeout(PAUSE_TIMEOUT, pause.wait_reached())
+        .await
+        .expect("the target PUT parks after its effect");
+    // Clobber the applied object's OUTER kernel bytes before the
+    // response is lost: the readback witnesses outer corruption.
+    loopback.replace_stored_bytes(&target, b"clobbered-outer");
+    pause.release();
+    let error = call.await.expect("append task").unwrap_err();
+    assert!(
+        matches!(
+            storage(&error),
+            StreamsError::Corrupt {
+                missing_or_mismatched,
+                ..
+            } if missing_or_mismatched.contains(&2)
+        ),
+        "outer-corrupt readback stays Corrupt through floor adjudication, got {error:?}"
+    );
+    assert_eq!(
+        error.effect,
+        AppendExpectedEffect::PossiblyCommitted,
+        "the outer-corrupt readback preserves the uncertainty"
+    );
+    assert!(
+        log_put_keys(&loopback.request_log()[mark..], &stream)
+            .iter()
+            .all(|key| key == &target),
+        "every log write stayed at the exact target"
     );
     loopback.shutdown();
 }

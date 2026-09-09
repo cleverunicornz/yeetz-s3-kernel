@@ -11,8 +11,8 @@ implemented
 ## Inputs
 
 The c-suite (creation) and e-suite (expected append) tests in
-`crates/yeetz-s3-streams/tests/streams_conditional.rs` (`c1`–`c10`,
-`e1`–`e30`, name-aligned below), run against the existing in-memory
+`crates/yeetz-s3-streams/tests/streams_conditional.rs` (`c1`–`c11`,
+`e1`–`e34`, name-aligned below), run against the existing in-memory
 harness (`crates/yeetz-s3-streams/tests/support/mod.rs`:
 `streams_on_in_memory_store`, `streams_on_store`, `hand_envelope`,
 `streams_keyspace`) and the loopback S3 counterpart
@@ -37,7 +37,8 @@ only writes attributable to the conditional call itself — the
 mark-partitioned `Loopback::request_log()` window the call's own
 operations produce. Writes the test fixture deliberately injects into
 the same trace (trim-certificate proposals at the reserved `trims`
-scope, GC/bulk deletes, seeded or damage-overwriting CAS, fixture-driven
+scope, GC/bulk deletes, seeded or damage-overwriting CAS including raw
+object replacement for outer-corruption legs, fixture-driven
 cursor/tail operations, omitted/restored LIST state) are excluded from
 the product-write judgment. The suite source is complete and landed;
 this record claims the existence of the executable legs, not any
@@ -68,14 +69,18 @@ Creation:
   fault) surfaces as a storage error and that the same-id, same-bytes
   retry returns `Existing` without writing a second identity.
 - P5: `c3_different_config_conflicts_and_never_overwrites`,
-  `c4_corrupt_incumbent_is_typed_storage_corrupt`, and
-  `c10_absent_incumbent_after_conflict_is_backend_unqualified`
-  establish the incumbent-conflict family: a valid different genesis is
-  `ConfigurationConflict` with incumbent bytes unchanged; a malformed
-  incumbent is `Storage(Corrupt)` naming seq 0 — never adopted, never
-  overwritten; a losing conditional create whose incumbent readback
-  comes back absent (hidden from GET while the losing PUT parks after
-  its effect) contradicts the conflict and is
+  `c4_corrupt_incumbent_is_typed_storage_corrupt`,
+  `c10_absent_incumbent_after_conflict_is_backend_unqualified`, and
+  `c11_outer_genesis_corruption_maps_to_corrupt` establish the
+  incumbent-conflict family: a valid different genesis is
+  `ConfigurationConflict` with incumbent bytes unchanged; an incumbent
+  failing envelope verification is `Storage(Corrupt)` naming seq 0 —
+  never adopted, never overwritten — and so is corruption of the OUTER
+  kernel stored bytes of the genesis (raw object replacement), which
+  maps through the shared error mapper to `Storage(Corrupt)`, never
+  `InvalidArgument`; a losing conditional create whose incumbent
+  readback comes back absent (hidden from GET while the losing PUT
+  parks after its effect) contradicts the conflict and is
   `Storage(BackendUnqualified)`, with the incumbent untouched.
 - P6: `c7_invalid_stream_id_rejected_before_any_io`,
   `c8_oversized_genesis_rejected_before_any_io`, and
@@ -103,21 +108,25 @@ Expected append:
   without reading the predecessor.
 - P9: `e4_same_id_payload_conflict_is_not_attempted`,
   `e5_same_id_schema_conflict_is_not_attempted`,
-  `e6_different_occupant_position_conflict_no_interleave`, and
-  `e24_malformed_target_occupant_is_corrupt_before_attempt` establish
+  `e6_different_occupant_position_conflict_no_interleave`,
+  `e24_malformed_target_occupant_is_corrupt_before_attempt`, and
+  `e32_outer_target_corruption_maps_to_corrupt` establish
   occupied-target adjudication: the same stable id with different
   payload, or identical payload under a different schema, is
   `IdempotencyConflict`; a different verified occupant at the target is
   `PositionConflict` naming the occupant; a target occupied by bytes
-  failing envelope verification is `Corrupt` naming the target seq —
+  failing envelope verification, or by corrupted OUTER kernel stored
+  bytes, is `Corrupt` naming the target seq — never `InvalidArgument` —
   each `NotAttempted`, nothing written at the target or any other
   position.
 - P10: `e7_missing_predecessor_is_event_missing_not_attempted`,
-  `e8_corrupt_predecessor_is_typed_corrupt`, and
-  `e9_mismatched_predecessor_names_expected_and_observed` establish
+  `e8_corrupt_predecessor_is_typed_corrupt`,
+  `e9_mismatched_predecessor_names_expected_and_observed`, and
+  `e33_outer_predecessor_corruption_maps_to_corrupt` establish
   predecessor adjudication: a missing predecessor (floor unchanged on
-  the reread) is `EventMissing`, a predecessor failing verification is
-  `Corrupt` naming the predecessor seq, and a stable-id or
+  the reread) is `EventMissing`, a predecessor failing verification —
+  inner envelope or OUTER kernel stored bytes — is `Corrupt` naming the
+  predecessor seq, never `InvalidArgument`, and a stable-id or
   digest-disagreeing reference is `PredecessorMismatch` carrying both
   the expected and observed references — each `NotAttempted`, each
   naming the predecessor.
@@ -137,17 +146,22 @@ Expected append:
 - P13: `e13_predecessor_expiry_at_floor_is_typed`,
   `e14_target_expiry_at_floor_is_typed`,
   `e15_below_floor_zombie_committed_then_swept_target_cannot_recreate`,
-  and `e25_expired_target_overrides_zombie_conflict` establish
-  pre-attempt expiry: a nonzero predecessor below the certified floor
-  (target retained) is `Expired` naming the Predecessor subject; an
-  absent target below the floor is `Expired` naming the Target subject
-  — both `NotAttempted`; an exact below-floor zombie (retained bytes
-  under a floor past them, pre-GC) carries its receipt as
-  `Expired(Target, Committed)`, and after the sweeper collects the
+  `e25_expired_target_overrides_zombie_conflict`, and
+  `e31_missing_predecessor_raced_by_trim_gc_prioritizes_target_expiry`
+  establish pre-attempt expiry: a nonzero predecessor below the
+  certified floor (target retained) is `Expired` naming the Predecessor
+  subject; an absent target below the floor is `Expired` naming the
+  Target subject — both `NotAttempted`; an exact below-floor zombie
+  (retained bytes under a floor past them, pre-GC) carries its receipt
+  as `Expired(Target, Committed)`, and after the sweeper collects the
   target a later retry is `Expired(Target, NotAttempted)` — a swept
   target cannot recreate a receipt; a target holding a verified
   DIFFERENT event below a floor past it is judged by the floor first —
-  `Expired(Target)`, not `PositionConflict` — and nothing is attempted.
+  `Expired(Target)`, not `PositionConflict` — and nothing is attempted;
+  when a missing predecessor is raced by a concurrent landing of the
+  target and trim/GC advances the floor past it, the floor reread
+  prioritizes the target's own expiry — `Expired(Target)`, never a
+  predecessor verdict.
 - P14: `e16_seq_max_and_invalid_admission_perform_no_io` establishes
   that a predecessor at `u64::MAX` (`SeqExhausted`),
   non-canonical/invalid predecessor digests, deserialized-invalid ids,
@@ -155,17 +169,21 @@ Expected append:
   client-side with `NotAttempted` and zero storage requests.
 - P15: `e17_refused_target_put_retains_possibly_committed`,
   `e18_lost_target_put_unavailable_readback_retains_possibly_committed`,
-  `e27_lost_put_conflicting_readback_preserves_possibly_committed`, and
-  `e28_lost_put_corrupt_readback_preserves_possibly_committed`
+  `e27_lost_put_conflicting_readback_preserves_possibly_committed`,
+  `e28_lost_put_corrupt_readback_preserves_possibly_committed`, and
+  `e34_lost_put_outer_corrupt_readback_preserves_possibly_committed`
   establish the attempt boundary: a target PUT refused before its effect
   still reports `PossiblyCommitted` (no `Rejected` certainty is
   exposed); a PUT that applied but lost its response followed by an
   unavailable readback retains `PossiblyCommitted` — never downgraded to
   `NotAttempted`; the same lost PUT read back as a verified different
   event preserves the conflicting witness — `PositionConflict` with
-  `PossiblyCommitted` — and read back as bytes failing verification
-  preserves `Storage(Corrupt)` with `PossiblyCommitted`; neither path
-  lands a log write at any other position.
+  `PossiblyCommitted`; read back as bytes failing verification — inner
+  envelope corruption (e28) or OUTER kernel stored bytes corrupted
+  inside the parked window (e34) — preserves `Storage(Corrupt)` with
+  `PossiblyCommitted`, surviving floor adjudication and never degrading
+  to `Unavailable`; neither path lands a log write at any other
+  position.
 - P16: `e19_postwrite_floor_failure_preserves_committed_receipt`,
   `e20_pause_before_target_put_trim_to_target_retained_success`,
   `e21_pause_after_target_put_trim_beyond_and_gc_expired_committed`, and
@@ -197,11 +215,12 @@ Expected append:
   tail-hint key, no cursor key, and no key at any other position is
   written by the call. Writes deliberately injected by the test fixture
   into the same trace (trim-certificate proposals, GC/bulk deletes,
-  seeded or damage CAS) are excluded by the attribution rule in Inputs.
-  Raw request multiplicity is not the criterion: the consumed kernel may
-  retry its incarnation mechanics inside one logical create, and no SDK
-  retry prohibition is judged here. The exact-target reconciliation path
-  (P8) still issues zero writes.
+  seeded or damage CAS, raw object replacement) are excluded by the
+  attribution rule in Inputs. Raw request multiplicity is not the
+  criterion: the consumed kernel may retry its incarnation mechanics
+  inside one logical create, and no SDK retry prohibition is judged
+  here. The exact-target reconciliation path (P8) still issues zero
+  writes.
 - P19: `e29_floor_regression_before_attempt_is_backend_unqualified` and
   `e30_floor_regression_after_commit_preserves_committed_receipt`
   establish monotone-floor handling: a floor observation that regresses
@@ -219,23 +238,25 @@ Expected append:
   kernel-reserved logical key is answered as a retryable `Unavailable`
   (P6, P14; c7, c8, c9, e16).
 - F2: any `append_expected` failure is returned without an effect, any
-  post-attempt failure is downgraded to `NotAttempted`, or any
-  definite-rejected certainty is surfaced (P15, P16, P19; e17, e18,
-  e19–e22, e27, e28, e30).
+  post-attempt failure is downgraded to `NotAttempted` or `Unavailable`,
+  or any definite-rejected certainty is surfaced (P15, P16, P19; e17,
+  e18, e19–e22, e27, e28, e30, e34).
 - F3: an occupied position is mistyped: a different genesis not
-  `ConfigurationConflict`, a malformed incumbent or occupant not
-  `Corrupt`, a conflict-then-absent incumbent not
+  `ConfigurationConflict`, a malformed incumbent or occupant — inner or
+  outer corruption — not `Corrupt` (including answered
+  `InvalidArgument`), a conflict-then-absent incumbent not
   `BackendUnqualified`, a same-id-different-content occupant not
   `IdempotencyConflict`, a different verified occupant not
   `PositionConflict`, or an expired zombie occupant answered
-  `PositionConflict` (P5, P9, P13; c3, c4, c10, e4, e5, e6, e24, e25).
+  `PositionConflict` (P5, P9, P13; c3, c4, c10, c11, e4, e5, e6, e24,
+  e25, e32).
 - F4: a slot is advanced, a second landing occurs for a converged
   retry, or a second genesis identity appears: any attributable write
   at a position other than the exact target, a duplicate object for an
   identical retry, or an extra genesis for one id (P2, P3, P4, P8, P9,
   P15, P18; c2, c5, c6, e2, e4–e6, e27, and the suite-wide witness).
 - F5: a predecessor condition is answered by another variant or `Ok`,
-  or the predecessor object is written (P10; e7, e8, e9).
+  or the predecessor object is written (P10; e7, e8, e9, e33).
 - F6: a witnessed hole is repaired by any write, or a LIST/GET
   contradiction is served as success (P11; e10, e11, e26).
 - F7: the genesis exemption is violated — floor 1 at target 1 answered
@@ -243,9 +264,10 @@ Expected append:
   e12).
 - F8: expiry loses its effect or mislabels its subject:
   `Expired(Target, Committed)` returned without the committed receipt,
-  an expired predecessor answered as a target expiry, or a zombie
-  answered without its receipt (P13, P16; e13, e14, e15, e21, e22,
-  e25).
+  an expired predecessor answered as a target expiry, a zombie answered
+  without its receipt, or a target raced by trim/GC answered with a
+  predecessor verdict or `EventMissing` instead of the prioritized
+  target expiry (P13, P16; e13, e14, e15, e21, e22, e25, e31).
 - F9: a stale or contradictory floor observation is mishandled — a
   monotone floor regression not answered `BackendUnqualified` with the
   current effect, or the frozen-LIST residual answered with a repair
@@ -262,13 +284,13 @@ Expected append:
 ## Implementation
 
 The executable is `crates/yeetz-s3-streams/tests/streams_conditional.rs`
-(`c1`–`c10`, `e1`–`e30`), run by `cargo nextest run --workspace` inside
+(`c1`–`c11`, `e1`–`e34`), run by `cargo nextest run --workspace` inside
 the `gates` task of the current `.github/workflows/ci-dev.yml`. The
-suite source exists complete on this branch; no execution of it has
-been recorded yet, and this section claims the legs' executability
-only — no run, no pass, and no assurance. A witness under
-`situation/witnesses/P-000007/` will record the executed outcome with
-the exact source and workflow identities.
+suite source exists complete on this branch and has never executed to
+completion: the published candidate `7c40b58` failed compilation before
+any test ran, so no execution, pass, or assurance is claimed here. A
+witness under `situation/witnesses/P-000007/` will record the executed
+outcome with the exact source and workflow identities.
 
 ## Implementation coverage
 
@@ -282,28 +304,28 @@ executability, not outcome.
 | P2 | identical retry converges with no second creation effect | `c2_identical_retry_returns_existing_and_retains_config` |
 | P3 | concurrent same-id creation yields one identity | `c5_concurrent_same_id_yields_one_created_one_existing` |
 | P4 | lost create response converges on same-id retry | `c6_lost_create_response_then_same_id_retry_returns_existing` |
-| P5 | incumbent conflict family is typed; no overwrite | `c3_different_config_conflicts_and_never_overwrites`, `c4_corrupt_incumbent_is_typed_storage_corrupt`, `c10_absent_incumbent_after_conflict_is_backend_unqualified` |
+| P5 | incumbent conflict family is typed, incl. outer corruption; no overwrite | `c3_different_config_conflicts_and_never_overwrites`, `c4_corrupt_incumbent_is_typed_storage_corrupt`, `c10_absent_incumbent_after_conflict_is_backend_unqualified`, `c11_outer_genesis_corruption_maps_to_corrupt` |
 | P6 | creation admission preflight is effect-free incl. reserved keys | `c7_invalid_stream_id_rejected_before_any_io`, `c8_oversized_genesis_rejected_before_any_io`, `c9_kernel_reserved_scope_id_rejected_before_any_io` |
 | P7 | append lands at the exact successor | `e1_exact_successor_from_genesis` |
 | P8 | exact retry converges after suffix advance and predecessor trim | `e2_exact_retry_after_suffix_advance_writes_nothing`, `e3_exact_retry_after_predecessor_trimmed_target_retained` |
-| P9 | occupied target conflicts are typed; no interleave | `e4_same_id_payload_conflict_is_not_attempted`, `e5_same_id_schema_conflict_is_not_attempted`, `e6_different_occupant_position_conflict_no_interleave`, `e24_malformed_target_occupant_is_corrupt_before_attempt` |
-| P10 | predecessor adjudication is typed and NotAttempted | `e7_missing_predecessor_is_event_missing_not_attempted`, `e8_corrupt_predecessor_is_typed_corrupt`, `e9_mismatched_predecessor_names_expected_and_observed` |
+| P9 | occupied target conflicts are typed, incl. outer corruption; no interleave | `e4_same_id_payload_conflict_is_not_attempted`, `e5_same_id_schema_conflict_is_not_attempted`, `e6_different_occupant_position_conflict_no_interleave`, `e24_malformed_target_occupant_is_corrupt_before_attempt`, `e32_outer_target_corruption_maps_to_corrupt` |
+| P10 | predecessor adjudication is typed, incl. outer corruption, and NotAttempted | `e7_missing_predecessor_is_event_missing_not_attempted`, `e8_corrupt_predecessor_is_typed_corrupt`, `e9_mismatched_predecessor_names_expected_and_observed`, `e33_outer_predecessor_corruption_maps_to_corrupt` |
 | P11 | hole witnessed, never repaired; contradiction and malformed witness fail typed | `e10_verified_later_event_witnesses_hole_without_filling`, `e11_list_get_contradiction_fails_closed`, `e26_malformed_later_witness_is_corrupt_without_fill` |
 | P12 | genesis successor allowed at floor 1 | `e12_genesis_predecessor_at_floor_one_still_appends` |
-| P13 | below-floor expiry: subjects typed; zombie carries receipt; expiry overrides occupant | `e13_predecessor_expiry_at_floor_is_typed`, `e14_target_expiry_at_floor_is_typed`, `e15_below_floor_zombie_committed_then_swept_target_cannot_recreate`, `e25_expired_target_overrides_zombie_conflict` |
+| P13 | expiry: subjects typed; zombie receipt; expiry overrides occupant and predecessor verdicts | `e13_predecessor_expiry_at_floor_is_typed`, `e14_target_expiry_at_floor_is_typed`, `e15_below_floor_zombie_committed_then_swept_target_cannot_recreate`, `e25_expired_target_overrides_zombie_conflict`, `e31_missing_predecessor_raced_by_trim_gc_prioritizes_target_expiry` |
 | P14 | append admission preflight is effect-free incl. SeqExhausted | `e16_seq_max_and_invalid_admission_perform_no_io` |
-| P15 | attempt failures preserve PossiblyCommitted incl. conflicting/corrupt readback | `e17_refused_target_put_retains_possibly_committed`, `e18_lost_target_put_unavailable_readback_retains_possibly_committed`, `e27_lost_put_conflicting_readback_preserves_possibly_committed`, `e28_lost_put_corrupt_readback_preserves_possibly_committed` |
-| P16 | post-attempt floor adjudication and retention races | `e19_postwrite_floor_failure_preserves_committed_receipt`, `e20_pause_before_target_put_trim_to_target_retained_success`, `e21_pause_after_target_put_trim_beyond_and_gc_expired_committed`, `e22_lost_target_put_gc_before_readback_expired_possibly_committed` |
+| P15 | attempt failures preserve PossiblyCommitted incl. conflicting/corrupt/outer-corrupt readback | `e17_refused_target_put_retains_possibly_committed`, `e18_lost_target_put_unavailable_readback_retains_possibly_committed`, `e27_lost_put_conflicting_readback_preserves_possibly_committed`, `e28_lost_put_corrupt_readback_preserves_possibly_committed`, `e34_lost_put_outer_corrupt_readback_preserves_possibly_committed` |
+| P16 | post-attempt floor adjudication and retention races | `e19_postwrite_floor_failure_preserves_committed_receipt`, `e20_pause_before_target_put_trim_to_target_retained_success`, `e21_pause_after_target_put_trim_beyond_and_gc_expired_committed`, `e22_lost_put_gc_before_readback_expired_possibly_committed` |
 | P17 | frozen certificate LIST stands on the qualified observation | `e23_frozen_certificate_list_residual_is_honest` |
 | P18 | attributable writes target the exact slot; no tail/cursor/alternate writes | suite-wide `log_put_keys`/no-PUT assertions (incl. `e2`, `e10`, `e11`, `e27`) and `e20`'s one-log-PUT assertion |
 | P19 | monotone floor regression fails closed with the current effect | `e29_floor_regression_before_attempt_is_backend_unqualified`, `e30_floor_regression_after_commit_preserves_committed_receipt` |
 | F1 | preflight detects a premature effect or a mistyped reserved refusal | `c7`, `c8`, `c9`, `e16` |
-| F2 | effect coverage detects a lost or downgraded certainty | `e17`, `e18`, `e19`–`e22`, `e27`, `e28`, `e30` |
-| F3 | occupancy legs detect a mistyped outcome | `c3`, `c4`, `c10`, `e4`–`e6`, `e24`, `e25` |
+| F2 | effect coverage detects a lost, downgraded, or degraded certainty | `e17`, `e18`, `e19`–`e22`, `e27`, `e28`, `e30`, `e34` |
+| F3 | occupancy legs detect a mistyped outcome incl. outer corruption | `c3`, `c4`, `c10`, `c11`, `e4`–`e6`, `e24`, `e25`, `e32` |
 | F4 | attributable-write witness detects slot advance or duplicate landing | `c2`, `c5`, `c6`, `e2`, `e4`–`e6`, `e27`, suite witness |
-| F5 | predecessor legs detect a mistyped or written predecessor | `e7`, `e8`, `e9` |
+| F5 | predecessor legs detect a mistyped or written predecessor | `e7`, `e8`, `e9`, `e33` |
 | F6 | hole legs detect repair, contradiction-as-success, or skipped corruption | `e10`, `e11`, `e26` |
 | F7 | floor legs detect exemption violation or clamping | `e12` |
-| F8 | expiry legs detect a lost receipt, wrong subject, or overridden-by-conflict | `e13`–`e15`, `e21`, `e22`, `e25` |
+| F8 | expiry legs detect a lost receipt, wrong subject, or unprioritized verdict | `e13`–`e15`, `e21`, `e22`, `e25`, `e31` |
 | F9 | stale-floor legs detect regression or dishonest repair | `e11`, `e23`, `e29`, `e30` |
 | F10 | attributable-write witness detects any non-target-key write | suite-wide `log_put_keys`/no-PUT assertions |

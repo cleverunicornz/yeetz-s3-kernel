@@ -67,13 +67,16 @@ meaning for `EventRef`.
 ## State evidence
 
 - `situation/decisions/D-000006-strict-stream-reads.md` — accepted design
-  authorizing this slice as its scoped batch; source implementation is the
-  next unit of work on this pull request.
-- `situation/oracles/O-000006-strict-stream-reads.md` — designed judgment
-  rule with predeclared legs.
-- No implementation commit or witness exists yet; the transition to
-  `implemented` will cite the implementation commit, and `assured` will cite
-  a passing witness.
+  authorizing this slice as its scoped batch; implementation work is active
+  on this pull request.
+- `situation/oracles/O-000006-strict-stream-reads.md` — implemented judgment
+  rule; the r-suite (r1–r10) exists in
+  `crates/yeetz-s3-streams/tests/streams_read.rs`.
+- The source and test suite are present in the working tree; the published
+  candidate head `7c40b58` failed compilation before any test ran, so no
+  implementation commit or passing witness is cited yet. The transition to
+  `implemented` will cite the final containing commit, and `assured` will
+  cite a passing witness.
 
 ## Residual
 

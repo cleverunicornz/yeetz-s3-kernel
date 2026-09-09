@@ -32,8 +32,9 @@ invalidating the claim its verification carried;
 - Live replay read path, LIST/hint machinery, read-path writes, and
   `AppendReceipt` public fields: `crates/yeetz-s3-streams/src/lib.rs`
 - Envelope public mutable fields, per-call digest recompute, and the
-  verified-then-dropped payload digest:
-  `crates/yeetz-s3-streams/src/envelope.rs`
+  verified-then-dropped payload digest (the file's state as examined on this
+  decision's date, 2026-09-09; the implemented tree has since adopted the
+  private getters): `crates/yeetz-s3-streams/src/envelope.rs`
 - Existing typed boundary variants (`InvalidArgument`, `StreamNotFound`,
   `EventMissing`, `OffsetExpired`, `Corrupt`, `Unavailable`) already serving
   the cursor and replay paths: `crates/yeetz-s3-streams/src/error.rs`

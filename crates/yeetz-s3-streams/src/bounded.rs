@@ -54,6 +54,7 @@
 //! landing between pages surfaces as `OffsetExpired` on the next
 //! page, and the caller owns that recovery.
 
+use crate::error::map_event_read_error;
 use crate::{
     Envelope, FETCH_PARALLELISM, Seq, StreamId, Streams, StreamsError, map_keyspace,
     validate_segment,
@@ -300,8 +301,13 @@ impl Streams {
     /// absent key; a present object is decoded and fully verified
     /// (format version, key↔envelope agreement, payload length and
     /// digest) — a failure is [`StreamsError::Corrupt`] naming the
-    /// seq, never a skip. Storage failures map to the caller's
-    /// operation name.
+    /// seq, never a skip. GET errors are classified by
+    /// [`map_event_read_error`]: stored-integrity failures in the
+    /// kernel layers below the stream envelope (value envelope,
+    /// manifest, chunks) are [`StreamsError::Corrupt`] naming the
+    /// same seq; store unavailability is
+    /// [`StreamsError::Unavailable`] under the caller's operation
+    /// name.
     async fn strict_fetch(
         &self,
         stream: &StreamId,
@@ -312,7 +318,7 @@ impl Streams {
             .keyspace
             .get(&Self::log_key(stream, seq))
             .await
-            .map_err(map_keyspace(operation))?;
+            .map_err(|err| map_event_read_error(stream, seq, operation, err))?;
         match bytes {
             Some(bytes) => Envelope::decode_and_verify(stream, seq, &bytes)
                 .map(Some)

@@ -114,6 +114,12 @@ Add a conditional-write surface to `Streams` in a new
    variants inside `Storage` and adds `PredecessorMismatch`,
    `PositionConflict`, `HoleWitnessed`, and `Expired` with subject
    `Predecessor` or `Target`.
+   The cold failure kind is boxed — `kind:
+   Box<AppendExpectedFailure>` — so the failure payload does not widen
+   the error value carried on the hot success path, and a successful
+   adjudication returns the receipt derived from the envelope identity
+   without cloning it. The result signature and the persisted wire
+   format are unchanged.
 
    Adjudication order, each step observable from the request log: pure
    admission validation before any request (identifiers, predecessor

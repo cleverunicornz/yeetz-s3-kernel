@@ -2,8 +2,8 @@
 
 ## Promises
 
-- `situation/promises/P-000006-strict-stream-reads.md` (implementing)
-- `situation/promises/P-000007-conditional-stream-writes.md` (implementing)
+- `situation/promises/P-000006-strict-stream-reads.md`
+- `situation/promises/P-000007-conditional-stream-writes.md`
 
 ## Dependencies
 

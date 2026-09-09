@@ -67,6 +67,7 @@
 //! target's bytes — never that the supplied predecessor digest or id
 //! was examined, and never any authorization.
 
+use crate::error::map_event_read_error;
 use crate::{
     AppendReceipt, Envelope, EventRef, SchemaId, Seq, StableEventId, StreamId, Streams,
     StreamsError, map_keyspace, validate_segment,
@@ -203,21 +204,26 @@ pub enum AppendExpectedFailure {
 ///
 /// Every failure carries an effect — including corruption and
 /// conflict observed after an attempt — because a landed PUT cannot
-/// be un-landed by the observation that discovered it.
+/// be un-landed by the observation that discovered it. The kind is
+/// boxed so the common success path pays no allocation for the cold
+/// failure taxonomy.
 #[derive(Debug, thiserror::Error)]
 #[error("append_expected failed: {kind} (effect: {effect:?})")]
 pub struct AppendExpectedError {
     /// The typed failure; also this error's source.
     #[source]
-    pub kind: AppendExpectedFailure,
+    pub kind: Box<AppendExpectedFailure>,
     /// What the call can prove about storage effects.
     pub effect: AppendExpectedEffect,
 }
 
 /// Wrap a typed failure kind with the effect certainty that survives
-/// it.
+/// it; the only place the cold failure kind is boxed.
 fn failed(kind: AppendExpectedFailure, effect: AppendExpectedEffect) -> AppendExpectedError {
-    AppendExpectedError { kind, effect }
+    AppendExpectedError {
+        kind: Box::new(kind),
+        effect,
+    }
 }
 
 /// Wrap a storage failure with its surviving effect.
@@ -354,9 +360,12 @@ impl Streams {
                         .get(&Self::log_key(stream, 0))
                         .await
                         .map_err(|err| {
-                            CreateStreamError::Storage(map_keyspace(
+                            CreateStreamError::Storage(map_event_read_error(
+                                stream,
+                                0,
                                 "create_stream_with_id: incumbent readback",
-                            )(err))
+                                err,
+                            ))
                         })?;
                 match incumbent {
                     // Create said the key exists; the readback says it
@@ -408,12 +417,16 @@ impl Streams {
             ) => Err(CreateStreamError::Storage(StreamsError::InvalidArgument(
                 format!("stream id {stream:?} names a refused genesis key: {err}"),
             ))),
-            // Any other failure is unresolved storage; retrying the
-            // SAME id and bytes is safe (the create is
+            // Any other create failure is unresolved storage. The
+            // kernel's create can surface incarnation-era errors only
+            // after its PUT landed, so nothing past the permanent
+            // admission matches is a caller-invalid argument: every
+            // remaining failure is retryable unavailability, and
+            // retrying the SAME id and bytes is safe (the create is
             // put-if-absent).
-            Err(err) => Err(CreateStreamError::Storage(map_keyspace(
-                "create_stream_with_id",
-            )(err))),
+            Err(_) => Err(CreateStreamError::Storage(StreamsError::Unavailable {
+                operation: "create_stream_with_id",
+            })),
         }
     }
 
@@ -562,19 +575,19 @@ impl Streams {
             payload_sha256: envelope.payload_sha256().to_string(),
         };
 
+        // The exact target key, computed once after admission and
+        // reused by the target GET, the create, and the readback.
+        let target_key = Self::log_key(stream, target_seq);
+
         // --- B: genesis, then the exact target FIRST — before
         // predecessor, suffix, or floor-driven reads. ---
         let genesis = self.verified_genesis(stream).await?;
-        let target_bytes = self
-            .keyspace
-            .get(&Self::log_key(stream, target_seq))
-            .await
-            .map_err(|err| {
-                storage(
-                    map_keyspace("append_expected: target")(err),
-                    AppendExpectedEffect::NotAttempted,
-                )
-            })?;
+        let target_bytes = self.keyspace.get(&target_key).await.map_err(|err| {
+            storage(
+                map_event_read_error(stream, target_seq, "append_expected: target", err),
+                AppendExpectedEffect::NotAttempted,
+            )
+        })?;
         let mut max_floor: Option<Seq> = None;
 
         if let Some(bytes) = target_bytes.as_ref() {
@@ -673,10 +686,7 @@ impl Streams {
         // reports, including AlreadyExists. ---
         let create = self
             .keyspace
-            .create(
-                &Self::log_key(stream, target_seq),
-                envelope.encoded().clone(),
-            )
+            .create(&target_key, envelope.encoded().clone())
             .await;
         match create {
             // --- I/J: a successful create upgrades to Committed;
@@ -692,7 +702,7 @@ impl Streams {
             // observed before a possibly expired occupant is
             // interpreted. ---
             Err(_) => {
-                let readback = self.keyspace.get(&Self::log_key(stream, target_seq)).await;
+                let readback = self.keyspace.get(&target_key).await;
                 match readback {
                     Ok(Some(bytes)) if bytes.as_ref() == envelope.encoded().as_ref() => {
                         self.adjudicate_committed(stream, target_seq, receipt, &mut max_floor)
@@ -703,11 +713,7 @@ impl Streams {
                         // the occupant, and a monotone contradiction
                         // is a disqualification.
                         match self
-                            .observe_floor(
-                                stream,
-                                "append_expected: floor after create",
-                                &mut max_floor,
-                            )
+                            .observe_floor(stream, "append_expected: final floor", &mut max_floor)
                             .await
                         {
                             Ok(floor) if target_seq < floor => {
@@ -733,14 +739,41 @@ impl Streams {
                             Err(err) => Err(storage(err, AppendExpectedEffect::PossiblyCommitted)),
                         }
                     }
-                    // Absent or unavailable readback: unresolved. The
-                    // mandatory floor observation decides only
-                    // whether the position is expired; otherwise the
-                    // uncertainty stands — absence and error wording
-                    // prove no non-effect.
-                    Ok(None) | Err(_) => Err(self
+                    // Absent readback: unresolved. The mandatory floor
+                    // observation decides only whether the position is
+                    // expired; otherwise the uncertainty stands —
+                    // absence proves no non-effect.
+                    Ok(None) => Err(self
                         .adjudicate_unresolved(stream, target_seq, &mut max_floor)
                         .await),
+                    // A readback that itself failed: classify its
+                    // stored-integrity taxonomy, but retention first —
+                    // an expired target wins, a monotone floor
+                    // contradiction disqualifies, and otherwise the
+                    // typed witness (Corrupt naming the target on
+                    // stored-integrity failure) is preserved, never
+                    // lost to a generic unavailability.
+                    Err(readback_err) => {
+                        let witness = map_event_read_error(
+                            stream,
+                            target_seq,
+                            "append_expected: create readback",
+                            readback_err,
+                        );
+                        match self
+                            .observe_floor(stream, "append_expected: final floor", &mut max_floor)
+                            .await
+                        {
+                            Ok(floor) if target_seq < floor => Err(failed(
+                                expired(stream, target_seq, floor, ExpiredSubject::Target),
+                                AppendExpectedEffect::PossiblyCommitted,
+                            )),
+                            Err(floor_err @ StreamsError::BackendUnqualified { .. }) => {
+                                Err(storage(floor_err, AppendExpectedEffect::PossiblyCommitted))
+                            }
+                            _ => Err(storage(witness, AppendExpectedEffect::PossiblyCommitted)),
+                        }
+                    }
                 }
             }
         }
@@ -757,7 +790,7 @@ impl Streams {
             .await
             .map_err(|err| {
                 storage(
-                    map_keyspace("append_expected: genesis")(err),
+                    map_event_read_error(stream, 0, "append_expected: genesis", err),
                     AppendExpectedEffect::NotAttempted,
                 )
             })?;
@@ -849,19 +882,31 @@ impl Streams {
             .await
             .map_err(|err| {
                 storage(
-                    map_keyspace("append_expected: predecessor")(err),
+                    map_event_read_error(
+                        stream,
+                        predecessor.seq,
+                        "append_expected: predecessor",
+                        err,
+                    ),
                     AppendExpectedEffect::NotAttempted,
                 )
             })?;
         let Some(bytes) = bytes else {
             // Absent: reread the floor once — the certificate, not
             // object absence, is the boundary — before naming the
-            // event missing.
+            // event missing. Target expiry takes priority, then a
+            // nonzero predecessor's; the seq-0 genesis is exempt.
             let floor = self
                 .observe_floor(stream, "append_expected: floor reread", max_observed)
                 .await
                 .map_err(|err| storage(err, AppendExpectedEffect::NotAttempted))?;
-            if predecessor.seq < floor {
+            if target_seq < floor {
+                return Err(failed(
+                    expired(stream, target_seq, floor, ExpiredSubject::Target),
+                    AppendExpectedEffect::NotAttempted,
+                ));
+            }
+            if predecessor.seq > 0 && predecessor.seq < floor {
                 return Err(failed(
                     expired(stream, target_seq, floor, ExpiredSubject::Predecessor),
                     AppendExpectedEffect::NotAttempted,
@@ -927,7 +972,7 @@ impl Streams {
             .await
             .map_err(|err| {
                 storage(
-                    map_keyspace("append_expected: suffix witness")(err),
+                    map_event_read_error(stream, later, "append_expected: suffix witness", err),
                     AppendExpectedEffect::NotAttempted,
                 )
             })?;
@@ -961,10 +1006,12 @@ impl Streams {
     }
 
     /// Post-attempt adjudication of a committed effect (contract J):
-    /// the mandatory floor observation precedes any success. An
-    /// expired target returns [`AppendExpectedFailure::Expired`] with
-    /// the [`AppendExpectedEffect::Committed`] receipt; a failed
-    /// observation preserves the committed effect under
+    /// the mandatory floor observation precedes any success, and the
+    /// receipt is moved into whichever outcome the observation
+    /// selects — the success path clones nothing. An expired target
+    /// returns [`AppendExpectedFailure::Expired`] carrying the
+    /// [`AppendExpectedEffect::Committed`] receipt; a failed
+    /// observation preserves the committed effect and receipt under
     /// [`StreamsError::Unavailable`]; a nonexpired observed floor
     /// returns the receipt.
     async fn adjudicate_committed(
@@ -974,18 +1021,22 @@ impl Streams {
         receipt: AppendReceipt,
         max_observed: &mut Option<Seq>,
     ) -> Result<AppendReceipt, AppendExpectedError> {
-        let effect = AppendExpectedEffect::Committed(receipt.clone());
-        let floor = self
-            .observe_floor(stream, "append_expected: floor after create", max_observed)
+        match self
+            .observe_floor(stream, "append_expected: final floor", max_observed)
             .await
-            .map_err(|err| storage(err, effect.clone()))?;
-        if target_seq < floor {
-            return Err(failed(
+        {
+            Err(err) => Err(failed(
+                AppendExpectedFailure::Storage(err),
+                AppendExpectedEffect::Committed(receipt),
+            )),
+            Ok(floor) if target_seq < floor => Err(failed(
                 expired(stream, target_seq, floor, ExpiredSubject::Target),
-                effect,
-            ));
+                AppendExpectedEffect::Committed(receipt),
+            )),
+            // Nonexpired observed floor: success, with no receipt or
+            // effect clone on this path.
+            Ok(_) => Ok(receipt),
         }
-        Ok(receipt)
     }
 
     /// Post-attempt adjudication of an unresolved possibly-committed
@@ -1001,7 +1052,7 @@ impl Streams {
     ) -> AppendExpectedError {
         let effect = AppendExpectedEffect::PossiblyCommitted;
         match self
-            .observe_floor(stream, "append_expected: floor after create", max_observed)
+            .observe_floor(stream, "append_expected: final floor", max_observed)
             .await
         {
             Ok(floor) if target_seq < floor => failed(

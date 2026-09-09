@@ -974,3 +974,62 @@ async fn r9_envelope_immutable_surface_and_event_ref() {
     assert_eq!(receipt.event_ref(), landed.event_ref().clone());
     assert_eq!(receipt.event_ref().payload_sha256, sha256_hex(b"appended"));
 }
+
+/// P3/P5 (kernel-layer leg): corruption of the OUTER kernel value
+/// envelope — the versioned wrapper below the stream JSON — is
+/// `Corrupt` naming the seq on both strict surfaces. This is a
+/// different failure from the inner-JSON fixtures: kernel writes
+/// always produce a well-formed outer envelope, so the damage is
+/// seeded by raw byte replacement over the wire (`replace_stored_bytes`).
+/// Before the `map_event_read_error` fix, the generic keyspace mapping
+/// accused the caller (`InvalidArgument`) for these stored-integrity
+/// failures.
+#[tokio::test]
+async fn r10_corrupt_outer_kernel_envelope_names_seq_on_both_strict_reads() {
+    let (loopback, streams) = counterpart_streams().await;
+    let stream = streams.create_stream(&[]).await.unwrap();
+    for index in 1..=3u64 {
+        streams
+            .append(&stream, &schema(), &event(&format!("outer-{index}")), &[])
+            .await
+            .unwrap();
+    }
+
+    // Corrupt the stored bytes of the seq-2 object so the kernel's
+    // value-envelope prefix no longer decodes: the object exists,
+    // its wrapper does not.
+    loopback.replace_stored_bytes(&wire_log_key(&stream, 2), b"corrupt-outer-kernel-envelope");
+    assert!(matches!(
+        streams.read_event(&stream, 2).await.unwrap_err(),
+        StreamsError::Corrupt {
+            missing_or_mismatched,
+            ..
+        } if missing_or_mismatched == vec![2]
+    ));
+    assert!(matches!(
+        streams.read_range(&stream, 0, 3, 10).await.unwrap_err(),
+        StreamsError::Corrupt {
+            missing_or_mismatched,
+            ..
+        } if missing_or_mismatched == vec![2]
+    ));
+
+    // The same outer damage on the genesis names seq 0 on both
+    // surfaces — genesis verification precedes every window fetch.
+    loopback.replace_stored_bytes(&wire_log_key(&stream, 0), b"corrupt-outer-genesis");
+    assert!(matches!(
+        streams.read_event(&stream, 1).await.unwrap_err(),
+        StreamsError::Corrupt {
+            missing_or_mismatched,
+            ..
+        } if missing_or_mismatched == vec![0]
+    ));
+    assert!(matches!(
+        streams.read_range(&stream, 0, 3, 10).await.unwrap_err(),
+        StreamsError::Corrupt {
+            missing_or_mismatched,
+            ..
+        } if missing_or_mismatched == vec![0]
+    ));
+    loopback.shutdown();
+}

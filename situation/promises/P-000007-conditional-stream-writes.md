@@ -66,8 +66,10 @@ ordinary ones:
      of 1 at target 1 never refuses a fresh append from a verified
      genesis. The predecessor is then GET-verified against all four
      `EventRef` fields, reusing the verified genesis when the
-     predecessor is seq 0: absent is `EventMissing` (after one floor
-     reread to distinguish concurrent expiry), a mismatch is
+     predecessor is seq 0: absent is `EventMissing` after one floor
+     reread to distinguish concurrent expiry — a reread whose floor
+     retires the target prioritizes `Expired(Target, NotAttempted)`
+     over any predecessor verdict — a mismatch is
      `PredecessorMismatch`, malformed is `Corrupt` — all
      `NotAttempted`.
    - Before any create, the ordered next log key after the target is
@@ -129,11 +131,12 @@ outcomes inside this scope.
   oracle claims executability only.
 - Implementation source is complete on this branch
   (`crates/yeetz-s3-streams/src/conditional.rs` and the test suite);
-  the state remains `implementing` only because its citation — the
-  containing commit or pull request — does not exist yet. No witness
-  exists and no assurance is claimed; the transition to `implemented`
-  will cite that commit, and `assured` will cite a passing witness on
-  the `gates` route.
+  the state remains `implementing`: the published candidate `7c40b58`
+  failed compilation before any test executed, so it is not a valid
+  implementation citation and no witness exists. No assurance is
+  claimed; the transition to `implemented` will cite a compiling
+  containing commit, and `assured` will cite a passing witness on the
+  `gates` route.
 
 ## Residual
 
