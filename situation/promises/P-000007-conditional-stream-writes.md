@@ -123,15 +123,17 @@ outcomes inside this scope.
 ## State evidence
 
 - `situation/oracles/O-000007-conditional-stream-writes.md` —
-  `implemented` judgment rule, name-aligned to the 48-test suite.
+  `implemented` judgment rule with explicit executable and manual coverage.
 - `43fb1f661ad91363fc99ae257ed4e62ea8207303` — the implementation
   head containing `crates/yeetz-s3-streams/src/conditional.rs` and
   `crates/yeetz-s3-streams/tests/streams_conditional.rs`.
 - `situation/witnesses/P-000007/W-000017-conditional-stream-writes-gate.md`
   — PASS on the `gates` route at that head: all 48 conditional cases
-  (`c1`–`c12`, `e1`–`e36`) passed, independently evidencing every
-  O-000007 Pass leg; `situation/decisions/D-000007-conditional-stream-writes.md`
-  records the accepted design authorizing the slice.
+  (`c1`–`c12`, `e1`–`e36`) passed, and retained direct manual source evidence
+  decides P8's target-retry request order and P18/F10's complete
+  conditional-call write destination;
+  `situation/decisions/D-000007-conditional-stream-writes.md` records the
+  accepted design authorizing the slice.
 
 ## Residual
 

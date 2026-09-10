@@ -47,8 +47,12 @@ PASS
   decided only by the loopback suite inside the gates job.
 - Also observed at this head, outside this promise's oracle: the 10
   strict-read cases `r1`–`r10` passed (P-000006's records own them).
-- Source review accepted and retained at
-  `https://github.com/cleverunicornz/yeetz-s3-kernel/pull/47#issuecomment-5610975924`.
+- Direct manual source review for P8, P18, and F10 is retained at
+  https://github.com/cleverunicornz/yeetz-s3-kernel/pull/47#issuecomment-5611554000.
+  At this immutable head it records target-first exact-retry return before
+  predecessor, suffix, or create code, and the only conditional-call logical
+  creates at the genesis or derived exact target key. It is source evidence,
+  not a claim that the filtered loopback helper observed every destination.
 - Provenance: the facts above are transcribed from the GitHub Actions
   run/job records and the retained pull-request comment; no
   machine-local scratch file is cited as evidence.
@@ -63,9 +67,9 @@ repair; separately, `e17` passed as the effect-uncertainty claim (a
 refused target PUT still reports `PossiblyCommitted`). No
 retention pin, ownership grant, or future-retention guarantee is
 observed; `Ok` is bounded exactly as the promise states. The e20 leg
-passed with its corrected mark-partitioned attribution (window opened
-before spawn, closed before the legacy read), so its write-shape
-evidence is attributable to the call alone.
+passed with corrected mark-partitioned attribution for its individual path.
+Complete P18 write-destination coverage is instead the retained manual source
+decision, not a suite-wide wire-witness claim.
 
 ## Oracle legs
 
@@ -78,7 +82,7 @@ evidence is attributable to the call alone.
 | P5 | `c3_different_config_conflicts_and_never_overwrites` PASS (128/287); `c4_corrupt_incumbent_is_typed_storage_corrupt` PASS (129/287); `c10_absent_incumbent_after_conflict_is_backend_unqualified` PASS (124/287); `c11_outer_genesis_corruption_maps_to_corrupt` PASS (131/287) |
 | P6 | `c7_invalid_stream_id_rejected_before_any_io` PASS (132/287); `c8_oversized_genesis_rejected_before_any_io` PASS (141/287); `c9_kernel_reserved_scope_id_rejected_before_any_io` PASS (134/287); `c12_hierarchical_ids_are_valid_through_create_append_and_reads` PASS (125/287) |
 | P7 | `e1_exact_successor_from_genesis` PASS (145/287) |
-| P8 | `e2_exact_retry_after_suffix_advance_writes_nothing` PASS (159/287); `e3_exact_retry_after_predecessor_trimmed_target_retained` PASS (164/287) |
+| P8 | `e2_exact_retry_after_suffix_advance_writes_nothing` PASS (159/287) establishes receipt convergence and its no-PUT trace; `e3_exact_retry_after_predecessor_trimmed_target_retained` PASS (164/287) establishes the retained-target trim scenario; the direct manual source review decides no predecessor/suffix reads or writes |
 | P9 | `e4_same_id_payload_conflict_is_not_attempted` PASS (165/287); `e5_same_id_schema_conflict_is_not_attempted` PASS (166/287); `e6_different_occupant_position_conflict_no_interleave` PASS (167/287); `e24_malformed_target_occupant_is_corrupt_before_attempt` PASS (150/287); `e32_outer_target_corruption_maps_to_corrupt` PASS (161/287) |
 | P10 | `e7_missing_predecessor_is_event_missing_not_attempted` PASS (168/287); `e8_corrupt_predecessor_is_typed_corrupt` PASS (169/287); `e9_mismatched_predecessor_names_expected_and_observed` PASS (170/287); `e33_outer_predecessor_corruption_maps_to_corrupt` PASS (162/287) |
 | P11 | `e10_verified_later_event_witnesses_hole_without_filling` PASS (135/287); `e11_list_get_contradiction_fails_closed` PASS (136/287); `e26_malformed_later_witness_is_corrupt_without_fill` PASS (152/287) |
@@ -88,5 +92,5 @@ evidence is attributable to the call alone.
 | P15 | `e17_refused_target_put_retains_possibly_committed` PASS (142/287); `e18_lost_target_put_unavailable_readback_retains_possibly_committed` PASS (143/287); `e27_lost_put_conflicting_readback_preserves_possibly_committed` PASS (154/287); `e28_lost_put_corrupt_readback_preserves_possibly_committed` PASS (156/287); `e34_lost_put_outer_corrupt_readback_preserves_possibly_committed` PASS (163/287); `e35_lost_put_with_exact_readback_returns_committed_receipt` PASS (189/287) — the positive lost-response same-call upgrade |
 | P16 | `e19_postwrite_floor_failure_preserves_committed_receipt` PASS (147/287); `e20_pause_before_target_put_trim_to_target_retained_success` PASS (148/287) with corrected attribution; `e21_pause_after_target_put_trim_beyond_and_gc_expired_committed` PASS (149/287); `e22_lost_target_put_gc_before_readback_expired_possibly_committed` PASS (153/287) |
 | P17 | `e23_frozen_certificate_list_residual_is_honest` PASS (155/287) |
-| P18 | no-PUT assertions inside `e2` (159/287), `e10` (135/287), `e11` (136/287), `e27` (154/287); `e20`'s exact-one-log-PUT assertion (148/287); the suite-wide mark-partitioned `log_put_keys` witness across the loopback legs — every constituent test PASS at this head |
+| P18 | Direct manual source review decides the complete conditional-call logical write destination: only the genesis or derived exact target key; the no-PUT/e20/filtered `log_put_keys` assertions are individual-path corroboration, not a suite-wide wire witness |
 | P19 | `e29_floor_regression_before_attempt_is_backend_unqualified` PASS (157/287); `e30_floor_regression_after_commit_preserves_committed_receipt` PASS (158/287) |

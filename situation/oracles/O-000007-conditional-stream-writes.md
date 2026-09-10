@@ -34,17 +34,27 @@ about changed bytes. The `kernel-rigs` route of the same workflow
 separately proves standalone keyspace behavior; it is not an input to
 this oracle, and its runs are not witnesses for these legs.
 
-Request-trace attribution: every write-shape judgment below examines
-only writes attributable to the conditional call itself — the
-mark-partitioned `Loopback::request_log()` window the call's own
-operations produce. Writes the test fixture deliberately injects into
-the same trace (trim-certificate proposals at the reserved `trims`
-scope, GC/bulk deletes, seeded or damage-overwriting CAS including raw
-object replacement for outer-corruption legs, fixture-driven
-cursor/tail operations, omitted/restored LIST state) are excluded from
-the product-write judgment. The suite source is complete and landed;
-this record claims the existence of the executable legs, not any
-outcome — only a witness claims an outcome.
+Request-trace attribution applies to the executable trace legs: each examines
+only writes attributable to the conditional call itself — the mark-partitioned
+`Loopback::request_log()` window the call's own operations produce. Writes the
+test fixture deliberately injects into the same trace (trim-certificate
+proposals at the reserved `trims` scope, GC/bulk deletes, seeded or
+damage-overwriting CAS including raw object replacement for outer-corruption
+legs, fixture-driven cursor/tail operations, omitted/restored LIST state) are
+excluded from the product-write judgment.
+
+Manual source-attribution decisions for P8, P18, and F10 inspect
+`crates/yeetz-s3-streams/src/conditional.rs` at the witness head. They
+distinguish logical conditional-call effects from raw loopback traffic:
+`create_stream_with_id` has only its `keyspace.create` at the genesis log key;
+`append_expected` derives one target key and has only its `keyspace.create` at
+that key; and the byte-identical-target return occurs before predecessor,
+suffix, or create code, with final adjudication only observing the floor. This
+decides the tail, cursor, non-log, and alternate-position paths that
+`log_put_keys` cannot observe. Raw request multiplicity from kernel-internal
+retries within one logical create remains outside this oracle. This record
+claims the existence of executable and manual legs, not any outcome — only a
+witness claims an outcome.
 
 ## Pass
 
@@ -110,12 +120,14 @@ Expected append:
   carrying the landed envelope's identity.
 - P8: `e2_exact_retry_after_suffix_advance_writes_nothing` and
   `e3_exact_retry_after_predecessor_trimmed_target_retained` establish
-  exact-retry convergence: after later appends, the identical retry
-  returns the same receipt and the reconciliation writes nothing — no
-  retry PUT, no tail hint, no write at any position; after the
-  predecessor is collected while the target remains retained (floor ==
-  target), the retry reconciles on the target's canonical bytes alone
-  without reading the predecessor.
+  exact-retry receipt convergence after later appends and after the
+  predecessor was collected while the target remains retained (floor ==
+  target). `e2` additionally observes no retry `PUT`; neither case alone
+  decides the complete request shape. Manual source inspection decides that
+  after genesis verification and the exact target GET, the byte-identical
+  target branch reaches only final-floor adjudication before the predecessor,
+  suffix, and create paths, so it reads neither predecessor nor suffix and
+  writes nothing.
 - P9: `e4_same_id_payload_conflict_is_not_attempted`,
   `e5_same_id_schema_conflict_is_not_attempted`,
   `e6_different_occupant_position_conflict_no_interleave`,
@@ -228,21 +240,19 @@ Expected append:
   the append is `Ok` — the explicit qualified-backend residual — while a
   later exact retry under a fresh LIST honestly reports
   `Expired(Target, Committed)` for the same bytes.
-- P18: the suite-wide write-shape witness — the mark-partitioned
-  `log_put_keys` assertions and the per-path no-PUT assertions
-  (`e2`, `e10`, `e11`, `e27`) plus `e20`'s exact-one-log-PUT assertion —
-  establishes, from `Loopback::request_log`, that every write
-  attributable to `append_expected` targets the exact target log key
-  (the method makes one logical keyspace create per attempt) and that no
-  tail-hint key, no cursor key, and no key at any other position is
-  written by the call. Writes deliberately injected by the test fixture
-  into the same trace (trim-certificate proposals, GC/bulk deletes,
-  seeded or damage CAS, raw object replacement) are excluded by the
-  attribution rule in Inputs. Raw request multiplicity is not the
-  criterion: the consumed kernel may retry its incarnation mechanics
-  inside one logical create, and no SDK retry prohibition is judged
-  here. The exact-target reconciliation path (P8) still issues zero
-  writes.
+- P18: Manual source inspection decides the complete attributable logical
+  write-destination claim. `create_stream_with_id` has its only logical
+  `keyspace.create` at the genesis `log_key(stream, 0)`;
+  `append_expected` derives one `target_key` and has its only logical create
+  at that key; its exact-target reconciliation branch returns before any
+  create. The remaining conditional helpers only read. Thus neither
+  conditional call writes a tail, cursor, trim, non-log, or
+  alternate-position key. The limited `log_put_keys`, no-PUT, and e20
+  assertions remain corroboration for their individual loopback paths, not a
+  suite-wide wire witness. Writes deliberately injected by test fixtures are
+  excluded by the Inputs attribution rule. Raw request multiplicity inside one
+  logical create is not the criterion: the consumed kernel may retry its
+  incarnation mechanics there, and no SDK retry prohibition is judged.
 - P19: `e29_floor_regression_before_attempt_is_backend_unqualified` and
   `e30_floor_regression_after_commit_preserves_committed_receipt`
   establish monotone-floor handling: a floor observation that regresses
@@ -278,8 +288,8 @@ Expected append:
   retry, or a second genesis identity appears: any attributable write
   at a position other than the exact target, a duplicate object for an
   identical retry, or an extra genesis for one id (P2, P3, P4, P8, P9,
-  P15, P18; c2, c5, c6, e2, e4, e5, e6, e27, and the suite-wide
-  witness).
+  P15, P18; c2, c5, c6, e2, e4, e5, e6, e27, and the P18 manual source
+  decision).
 - F5: a predecessor condition is answered by another variant or `Ok`,
   or the predecessor object is written (P10; e7, e8, e9, e33).
 - F6: a witnessed hole is repaired by any write, or a LIST/GET
@@ -300,29 +310,30 @@ Expected append:
   current effect, or the frozen-LIST residual answered with a repair
   write or a spurious failure instead of standing on the qualified
   observation (P11, P17, P19; e11, e23, e29, e30).
-- F10: the suite's attributable-write witness shows the call writing
-  any key other than the exact target log key — a tail-hint write, a
-  cursor write, a non-target or alternate-position log write, or any
-  other key — anywhere in the suite, judged under the Inputs attribution
-  rule. Raw PUT multiplicity from kernel-internal retries within one
-  logical create is not itself a failure (P18; `log_put_keys` and
-  no-PUT assertions across the loopback legs).
+- F10: manual source inspection finds a conditional-call logical write other
+  than `create_stream_with_id`'s genesis log key or `append_expected`'s exact
+  target key — a tail-hint write, cursor write, non-log write, or
+  alternate-position log write — under the Inputs attribution rule. Raw
+  request multiplicity from kernel-internal retries within one logical create
+  is not itself a failure (P18).
 
 ## Implementation
 
 The executable is `crates/yeetz-s3-streams/tests/streams_conditional.rs`
 (`c1`–`c12`, `e1`–`e36`; 48 tests), run by `cargo nextest run
 --workspace --no-fail-fast` inside the `gates` task of the current
-`.github/workflows/ci-dev.yml`. The names and assertions of these cases
-implement the Pass and Fail legs below. Execution outcomes belong only in
-the linked Witness records; this Oracle records the implemented judgment
-machinery.
+`.github/workflows/ci-dev.yml`. The named cases decide their listed
+executable clauses. P8's predecessor/suffix/write ordering, P18's complete
+logical write destination, and F10's non-target-write condition are manual
+source legs; `log_put_keys` is deliberately not credited beyond its filtered
+loopback assertions. Execution outcomes belong only in linked Witness records.
 
 ## Implementation coverage
 
-Every leg is executable through the named tests via
-`cargo nextest run --workspace --no-fail-fast` in the `gates` task; the
-table claims executability, not outcome.
+Every Pass and Fail leg appears once below. The named tests decide executable
+clauses; P8, P18, and F10 retain manual source decisions in
+`crates/yeetz-s3-streams/src/conditional.rs`. The table claims decision form,
+not outcome.
 
 | Leg | Decision | Coverage |
 |---|---|---|
@@ -333,7 +344,7 @@ table claims executability, not outcome.
 | P5 | incumbent conflict family is typed, incl. outer corruption; no overwrite | `c3_different_config_conflicts_and_never_overwrites`, `c4_corrupt_incumbent_is_typed_storage_corrupt`, `c10_absent_incumbent_after_conflict_is_backend_unqualified`, `c11_outer_genesis_corruption_maps_to_corrupt` |
 | P6 | admission boundary: invalid/oversized/reserved refused effect-free; hierarchical ids accepted | `c7_invalid_stream_id_rejected_before_any_io`, `c8_oversized_genesis_rejected_before_any_io`, `c9_kernel_reserved_scope_id_rejected_before_any_io`, `c12_hierarchical_ids_are_valid_through_create_append_and_reads` |
 | P7 | append lands at the exact successor | `e1_exact_successor_from_genesis` |
-| P8 | exact retry converges after suffix advance and predecessor trim | `e2_exact_retry_after_suffix_advance_writes_nothing`, `e3_exact_retry_after_predecessor_trimmed_target_retained` |
+| P8 | exact retry converges after suffix advance and predecessor trim; target reconciliation avoids predecessor/suffix reads and writes | `e2_exact_retry_after_suffix_advance_writes_nothing`, `e3_exact_retry_after_predecessor_trimmed_target_retained` for the scenarios; manual (source inspection of `crates/yeetz-s3-streams/src/conditional.rs`) for complete request order |
 | P9 | occupied target conflicts are typed, incl. outer corruption; no interleave | `e4_same_id_payload_conflict_is_not_attempted`, `e5_same_id_schema_conflict_is_not_attempted`, `e6_different_occupant_position_conflict_no_interleave`, `e24_malformed_target_occupant_is_corrupt_before_attempt`, `e32_outer_target_corruption_maps_to_corrupt` |
 | P10 | predecessor adjudication is typed, incl. outer corruption, and NotAttempted | `e7_missing_predecessor_is_event_missing_not_attempted`, `e8_corrupt_predecessor_is_typed_corrupt`, `e9_mismatched_predecessor_names_expected_and_observed`, `e33_outer_predecessor_corruption_maps_to_corrupt` |
 | P11 | hole witnessed, never repaired; contradiction and malformed witness fail typed | `e10_verified_later_event_witnesses_hole_without_filling`, `e11_list_get_contradiction_fails_closed`, `e26_malformed_later_witness_is_corrupt_without_fill` |
@@ -343,15 +354,15 @@ table claims executability, not outcome.
 | P15 | attempt failures preserve PossiblyCommitted; exact readback upgrades to Committed/`Ok` | `e17_refused_target_put_retains_possibly_committed`, `e18_lost_target_put_unavailable_readback_retains_possibly_committed`, `e27_lost_put_conflicting_readback_preserves_possibly_committed`, `e28_lost_put_corrupt_readback_preserves_possibly_committed`, `e34_lost_put_outer_corrupt_readback_preserves_possibly_committed`, `e35_lost_put_with_exact_readback_returns_committed_receipt` |
 | P16 | post-attempt floor adjudication and retention races | `e19_postwrite_floor_failure_preserves_committed_receipt`, `e20_pause_before_target_put_trim_to_target_retained_success`, `e21_pause_after_target_put_trim_beyond_and_gc_expired_committed`, `e22_lost_put_gc_before_readback_expired_possibly_committed` |
 | P17 | frozen certificate LIST stands on the qualified observation | `e23_frozen_certificate_list_residual_is_honest` |
-| P18 | attributable writes target the exact slot; no tail/cursor/alternate writes | suite-wide `log_put_keys`/no-PUT assertions (incl. `e2`, `e10`, `e11`, `e27`) and `e20`'s one-log-PUT assertion |
+| P18 | conditional-call logical writes use only the genesis or exact target key; no tail/cursor/non-log/alternate write | manual (source inspection of `crates/yeetz-s3-streams/src/conditional.rs`); filtered loopback assertions are corroborative only |
 | P19 | monotone floor regression fails closed with the current effect | `e29_floor_regression_before_attempt_is_backend_unqualified`, `e30_floor_regression_after_commit_preserves_committed_receipt` |
 | F1 | preflight detects a premature effect, a mistyped reserved refusal, or a refused valid id | `c7`, `c8`, `c9`, `c12`, `e16` |
 | F2 | effect coverage detects a lost, downgraded, degraded, or un-upgraded certainty | `e17`, `e18`, `e19`, `e20`, `e21`, `e22`, `e27`, `e28`, `e30`, `e34`, `e35` |
 | F3 | occupancy legs detect a mistyped outcome incl. outer corruption | `c3`, `c4`, `c10`, `c11`, `e4`, `e5`, `e6`, `e24`, `e25`, `e32` |
-| F4 | attributable-write witness detects slot advance or duplicate landing | `c2`, `c5`, `c6`, `e2`, `e4`, `e5`, `e6`, `e27`, suite witness |
+| F4 | attributable-write evidence detects slot advance or duplicate landing | `c2`, `c5`, `c6`, `e2`, `e4`, `e5`, `e6`, `e27`; P18 manual source decision for complete write destination |
 | F5 | predecessor legs detect a mistyped or written predecessor | `e7`, `e8`, `e9`, `e33` |
 | F6 | hole legs detect repair, contradiction-as-success, or skipped corruption | `e10`, `e11`, `e26` |
 | F7 | floor legs detect exemption violation or clamping | `e12` |
 | F8 | expiry legs detect a lost receipt, wrong subject, or unprioritized verdict | `e13`, `e14`, `e15`, `e21`, `e22`, `e25`, `e31`, `e36` |
 | F9 | stale-floor legs detect regression or dishonest repair | `e11`, `e23`, `e29`, `e30` |
-| F10 | attributable-write witness detects any non-target-key write | suite-wide `log_put_keys`/no-PUT assertions |
+| F10 | source detects any conditional-call logical write outside the genesis/exact target keys | manual (source inspection of `crates/yeetz-s3-streams/src/conditional.rs`) |
