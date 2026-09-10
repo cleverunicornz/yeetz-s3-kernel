@@ -10,40 +10,41 @@ accepted
 
 ## Supersedes
 
-`f13635dab992eb93ecfa55ffd8b59b8209fdc55b:situation/decisions/D-000008-native-crate-publication.md`
+`situation/decisions/D-000008-native-crate-publication.md`
 
 ## Context
 
 The admitted DELTA at `c733386f3577fd6c10322d14dc9c5f07baa6f667` removes the
 custom native crate-release route: the `release` job and `package`/`publish`
-inputs in `.github/workflows/ci-dev.yml`, `tools/release_crates.py`, and the
-current P-000008, O-000008, D-000008, and P-000008 reference records. It adds
+inputs in `.github/workflows/ci-dev.yml` and `tools/release_crates.py`. It adds
 `.github/workflows/publish.yml` instead. PR #50 identifies this as an
-owner-directed cleanup and retains the removed records only as historical Git
-bytes at the prior closure checkpoint.
+owner-directed cleanup. The frozen D-000008, P-000008, O-000008, and P-000008
+reference records remain in the current tree as historical knowledge; they do
+not describe the active workflow route.
 
 ## Evidence
 
 - https://github.com/cleverunicornz/yeetz-s3-kernel/pull/50 — the admitted
   owner-directed scope names the removed release machinery and the replacement
   manual workflow.
-- `f13635dab992eb93ecfa55ffd8b59b8209fdc55b:situation/decisions/D-000008-native-crate-publication.md`
-  — the prior native-route decision.
-- `f13635dab992eb93ecfa55ffd8b59b8209fdc55b:situation/promises/P-000008-native-crate-publication.md`,
-  `f13635dab992eb93ecfa55ffd8b59b8209fdc55b:situation/oracles/O-000008-native-crate-publication.md`,
-  and `f13635dab992eb93ecfa55ffd8b59b8209fdc55b:situation/references/P-000008/crate-publication.md`
-  — the retired current records and procedure.
+- `situation/decisions/D-000008-native-crate-publication.md` — the retained
+  immutable prior native-route decision, frozen at
+  `f13635dab992eb93ecfa55ffd8b59b8209fdc55b`.
+- `situation/promises/P-000008-native-crate-publication.md`,
+  `situation/oracles/O-000008-native-crate-publication.md`, and
+  `situation/references/P-000008/crate-publication.md` — the retained
+  immutable historical promise, oracle, and procedure.
 - `c733386f3577fd6c10322d14dc9c5f07baa6f667:.github/workflows/ci-dev.yml`
   and `c733386f3577fd6c10322d14dc9c5f07baa6f667:.github/workflows/publish.yml`
   — the selected workflow surface.
 
 ## Decision
 
-Use `.github/workflows/publish.yml` as the current crate-publication entry
-point. It is manually dispatched and delegates publication to its ordinary
-Cargo command. Treat the P-000008/O-000008/D-000008 route and its procedure as
-retired historical material at the prior closure checkpoint, not as current
-records.
+Use `.github/workflows/publish.yml` as the active successor
+crate-publication route. It is manually dispatched and delegates publication
+to its ordinary Cargo command. D-000009, P-000009, and O-000009 record that
+active route. The retained P-000008/O-000008/D-000008 route and its procedure
+remain historical current-tree knowledge, not current behavior.
 
 ## Why
 
@@ -65,10 +66,10 @@ replacement wrapper or release-state mechanism.
 ## Consequences
 
 `ci-dev` again provides only its manual verification tasks, while publication
-has its own manual workflow. P-000009 and O-000009 record the limited current
-workflow behavior; G-000003 retains the missing PASS witness. Historical
-P-000008/O-000008/D-000008 bytes remain addressable through the evidence
-coordinates above.
+has its own manual workflow. D-000009, P-000009, and O-000009 are the active
+successor route; G-000003 retains the missing PASS witness. The retained
+P-000008/O-000008/D-000008 records and their procedure remain immutable
+historical current-tree knowledge.
 
 ## Revisit when
 
