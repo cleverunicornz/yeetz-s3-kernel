@@ -6,9 +6,9 @@ implemented
 
 ## Promise
 
-The repository publishes crate releases only through the `package` and
-`publish` tasks of the `ci-dev` workflow. For a dispatched full-SHA `ref`
-and `release_version` V:
+The repository's complete tree at a dispatched full-SHA `ref` exposes crate
+publication only through the dispatch-only `package` and `publish` tasks of
+the `ci-dev` workflow. For `release_version` V:
 
 1. The `package` task produces exactly four `.crate` archives —
    `yeetz-sdk-core-V`, `yeetz-sdk-s3-V`, `yeetz-s3-kernel-V`,
@@ -28,8 +28,9 @@ and `release_version` V:
    wrong package path is not accepted; and carries a
    registry-normalized dependency table — no path or workspace references,
    with each of the four internal dependencies rewritten to a registry
-   requirement on V. A SHA-256 checksum is emitted per archive alongside
-   it.
+   requirement on V and every external dependency requirement equal to its
+   corresponding workspace dependency pin. A SHA-256 checksum is emitted
+   per archive alongside it.
 3. The `publish` task refuses any source SHA not merged into `main`. The
    registry token is present only in the publish step's environment. For
    each crate in the order `yeetz-sdk-core`, `yeetz-sdk-s3`,
@@ -52,17 +53,27 @@ and `release_version` V:
    after clause 3 confirms all four crates at V. The tag resolves to
    exactly the published SHA, and the release attaches the four archives
    and their checksums, matching what was published.
+6. The release authority boundary is fixed: `package` and `publish` run
+   only through the `ci-dev` dispatch-only trigger with a full 40-hex
+   `ref`; their `release` job runs only on `cvu-native-builder-x64`, while
+   the existing `run` gate job skips them. `CARGO_REGISTRY_TOKEN` is
+   present only in the publish step's environment, and every packaging
+   subprocess has all Cargo credential environment keys removed. The crate
+   list is exactly the four named in clause 1. The complete repository tree
+   at `ref` contains no other in-repository crate-publication surface.
 
 ## Scope
 
 The `package` and `publish` tasks of `.github/workflows/ci-dev.yml`,
 `tools/release_crates.py`, the four named crates' release artifacts and
-sparse-index outcomes, and the `v0.5.0` tag and release publication.
-Excludes any Rust code, public API, or dependency change; downstream
-migration; crates beyond the four (`yeetz-rigs` stays unpublished);
-cross-crate atomicity (explicitly absent — clause 4); registry-side
-behavior beyond the observed sparse-index state; and any publication not
-initiated through these tasks.
+sparse-index outcomes, the `v0.5.0` tag and release publication, and the
+complete repository tree at `ref` solely for the finite clause-6
+no-other-in-repository-publication-surface check. Excludes any Rust code,
+public API, or dependency change; downstream migration; crates beyond the
+four (`yeetz-rigs` stays unpublished); cross-crate atomicity (explicitly
+absent — clause 4); registry-side behavior beyond the observed sparse-index
+state; and external publication surfaces or release behavior outside a
+dispatch of these tasks.
 
 ## Oracle
 
@@ -106,12 +117,12 @@ evidence judged by O-000008.
 - Sparse-index propagation and registry availability between upload and
   confirmation are registry-side; the route fails closed when
   confirmation is not observable and promises no consistency window.
-- Non-disclosure of the token beyond the reviewed step scoping, and
-  absence of unauthorized runner or repository access, are negative
-  guarantees no runtime success can prove; they are covered only by the
-  manual source legs of O-000008 and remain otherwise unassured.
-- Archives are built on the `cvu-native-builder-x64` Linux runner; no
-  other platform's packaging behavior is claimed.
+- Clause 6 constrains the reviewed workflow and tool source at `ref`; it
+  does not assure that a token cannot be disclosed through systems or
+  behavior outside that source inspection, nor that external runner or
+  repository access is absent.
+- The clause-6 runner constraint is `cvu-native-builder-x64`; no other
+  platform's packaging behavior is claimed.
 - Cross-run archive byte determinism is not claimed: the clause-3
   checksum equality either reconciles idempotently or fails closed.
 
