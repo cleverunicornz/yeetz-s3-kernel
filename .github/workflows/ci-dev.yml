@@ -2,6 +2,9 @@ name: ci-dev
 
 # Manual, agent-invocable gate runner. Never auto-triggers.
 # Usage: gh workflow run ci-dev.yml -f ref=<branch-or-sha> -f task=<task>
+# Native release tasks (package | publish) additionally require
+# ref=<full-40-hex-sha>, release_version=<exact semver>, and run in the
+# release job on cvu-native-builder-x64; see that job for the contract.
 # Witness rule: gate claims cite this run's URL, not local attestations.
 on:
   workflow_dispatch:
@@ -10,23 +13,40 @@ on:
         description: "branch or SHA to verify"
         required: true
       task:
-        description: "check | clippy | build | nextest | gates | qualify | kernel-rigs | real-s3"
+        description: "check | clippy | build | nextest | gates | qualify | kernel-rigs | real-s3 | package | publish"
         required: false
         default: "clippy"
+      release_version:
+        description: "exact release version (mandatory for package | publish)"
+        required: false
+        default: ""
       cache_state:
         description: "warm (default) | cold (discard this runner's repository target before execution)"
         required: false
         default: "warm"
 
+# Validation tasks keep their historical cancellation group byte-identical.
+# Native release tasks get a run-unique group instead, so a re-dispatch can
+# never cancel an in-flight publish; publication serialization lives in the
+# release job's own concurrency group below.
 concurrency:
-  group: ci-dev-${{ inputs.ref }}-${{ inputs.task }}-cvu-test-runner-x64-${{ inputs.cache_state }}
+  group: >-
+    ${{
+    (inputs.task == 'package' || inputs.task == 'publish')
+    && format('ci-dev-native-{0}-{1}', inputs.task, github.run_id)
+    || format('ci-dev-{0}-{1}-cvu-test-runner-x64-{2}', inputs.ref, inputs.task, inputs.cache_state)
+    }}
   cancel-in-progress: true
 
 jobs:
   run:
     # Fork PRs never dispatch — workflow_dispatch requires write access
-    # (already enforced by GitHub), belt-and-suspenders for any future trigger
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # (already enforced by GitHub), belt-and-suspenders for any future trigger.
+    # Validation tasks only; native release tasks run in the release job.
+    if: >-
+      (github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && inputs.task != 'package' && inputs.task != 'publish'
     runs-on: cvu-test-runner-x64
     steps:
       - uses: actions/checkout@v7
@@ -88,3 +108,112 @@ jobs:
       - name: kernel-facing durable rigs
         if: inputs.task == 'kernel-rigs'
         run: cargo run --locked -p yeetz-rigs --example streams_contracts
+
+  # Native crate release route: package produces verified .crate archives
+  # only; publish additionally uploads them to crates.io in dependency
+  # order (yeetz-sdk-core -> yeetz-sdk-s3 -> yeetz-s3-kernel ->
+  # yeetz-s3-streams). Serialized per task and never canceled mid-flight:
+  # a queued run waits for the in-flight one instead of canceling it.
+  # GitHub tag/release creation is NOT part of this job; it is a separate
+  # Main-owned action after all four crates are verified on the registry.
+  release:
+    if: inputs.task == 'package' || inputs.task == 'publish'
+    concurrency:
+      group: ci-dev-release-${{ inputs.task }}
+      cancel-in-progress: false
+    runs-on: cvu-native-builder-x64
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    env:
+      RELEASE_TASK: ${{ inputs.task }}
+      RELEASE_SOURCE_SHA: ${{ inputs.ref }}
+      # Trusted identity of the workflow definition GitHub is executing.
+      WORKFLOW_SHA: ${{ github.workflow_sha }}
+      WORKFLOW_REF: ${{ github.workflow_ref }}
+      RELEASE_VERSION: ${{ inputs.release_version }}
+      # Unique per run and attempt: a fresh output directory every time, so
+      # stale artifacts can never contaminate the exact-four release set.
+      RELEASE_DIR: ${{ runner.temp }}/release-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: validate native release dispatch inputs and host tools
+        run: |
+          set -euo pipefail
+          for tool in git cargo python3; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "::error::required host tool '$tool' is missing on cvu-native-builder-x64" >&2
+              exit 1
+            fi
+          done
+          if [ -z "${RELEASE_VERSION:-}" ]; then
+            echo "::error::release_version input is mandatory for task '${RELEASE_TASK}'" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$RELEASE_SOURCE_SHA" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+            echo "::error::task '${RELEASE_TASK}' requires ref to be a full 40-hex commit SHA (got '$RELEASE_SOURCE_SHA')" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      # Secret-free workflow-owned guard. Runs from the trusted workflow
+      # definition, never from the checked-out tree, before the checked-out
+      # helper executes or the Cargo token is granted to any step: HEAD must
+      # equal the dispatch SHA, the tree must be clean, publish additionally
+      # requires origin/main ancestry and the workflow definition from
+      # refs/heads/main, and in BOTH modes the checked-out release sources
+      # must be blob-identical to the trusted workflow commit's blobs. All
+      # inputs reach the shell as quoted environment data only.
+      - name: guard checked-out release sources (workflow-owned)
+        run: |
+          set -euo pipefail
+          die() { echo "::error::release guard: $1" >&2; exit 1; }
+          head="$(git rev-parse HEAD)" || die "cannot resolve HEAD"
+          [ "$head" = "$RELEASE_SOURCE_SHA" ] \
+            || die "HEAD $head does not match dispatch ref $RELEASE_SOURCE_SHA"
+          [ -z "$(git status --porcelain)" ] || die "working tree is not clean"
+          if [ "$RELEASE_TASK" = "publish" ]; then
+            origin_main="$(git rev-parse --verify refs/remotes/origin/main)" \
+              || die "cannot resolve refs/remotes/origin/main"
+            git merge-base --is-ancestor "$RELEASE_SOURCE_SHA" "$origin_main" \
+              || die "publish source $RELEASE_SOURCE_SHA is not an ancestor of origin/main ($origin_main)"
+            case "$WORKFLOW_REF" in
+              *@refs/heads/main) ;;
+              *) die "publish must run the workflow definition from refs/heads/main (got '$WORKFLOW_REF')" ;;
+            esac
+          fi
+          for f in tools/release_crates.py .github/workflows/ci-dev.yml; do
+            selected="$(git rev-parse "$RELEASE_SOURCE_SHA:$f")" \
+              || die "$f is absent at the selected source $RELEASE_SOURCE_SHA"
+            trusted="$(git rev-parse "$WORKFLOW_SHA:$f")" \
+              || die "$f is absent at the trusted workflow commit $WORKFLOW_SHA"
+            [ "$selected" = "$trusted" ] \
+              || die "$f at $RELEASE_SOURCE_SHA ($selected) is not blob-identical to the trusted workflow commit $WORKFLOW_SHA ($trusted)"
+          done
+          echo "release guard passed: HEAD=$head workflow=$WORKFLOW_SHA ref=$WORKFLOW_REF"
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: package crates (verification retained)
+        if: inputs.task == 'package'
+        run: >-
+          python3 tools/release_crates.py package
+          --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION"
+          --output "$RELEASE_DIR"
+      - name: publish crates (verification retained)
+        if: inputs.task == 'publish'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: >-
+          python3 tools/release_crates.py publish
+          --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION"
+          --output "$RELEASE_DIR"
+      - name: upload crate release artifacts (partial on failure)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: crate-release-${{ inputs.release_version }}
+          path: |
+            ${{ runner.temp }}/release-${{ github.run_id }}-${{ github.run_attempt }}/*.crate
+            ${{ runner.temp }}/release-${{ github.run_id }}-${{ github.run_attempt }}/release-manifest.json
+            ${{ runner.temp }}/release-${{ github.run_id }}-${{ github.run_attempt }}/SHA256SUMS
+          if-no-files-found: warn
