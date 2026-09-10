@@ -63,11 +63,12 @@ yeetz-s3-kernel -> yeetz-s3-streams):
   * a registry version already present is skipped only when its index
     checksum equals the verified local artifact checksum; a mismatch fails
     closed;
-  * after each upload, the freshly produced archive (the one this attempt
-    created, not the earlier pre-packaging copy) is re-inspected and
-    re-hashed, the sparse index is polled (bounded) until the version is
-    visible, and its checksum must equal that fresh artifact; the verified
-    artifact and its receipt are retained in ``--output``;
+  * after each upload, the sparse index is polled (bounded) until the
+    version is visible, and its authoritative checksum must equal the
+    SHA256 of the source-verified candidate archive already retained in
+    ``--output`` -- cryptographically binding the actual registry upload
+    to the exact verified bytes. ``cargo publish`` does not reliably leave
+    a local tarball behind, so nothing depends on one;
   * an upload is never repeated merely because a response was ambiguous --
     ambiguity is resolved against the index, and only exact-checksum
     visibility counts as success;
@@ -736,11 +737,15 @@ def publish_crates(root: Path, version: str, source_sha: str, output: Path,
                      "verified checksum; skipping upload")
                 continue
 
-            # Rotate any earlier package output away so the archive examined
-            # below is provably the one this publish attempt produced.
-            fresh = build_dir / "package" / entry["file"]
-            if fresh.exists():
-                fresh.unlink()
+            # The upload is bound to the source-verified candidate archive
+            # already retained in the output directory. cargo publish does
+            # not uplift its temporary tarball to cargo package's output
+            # path, so confirmation does not depend on Cargo's internal
+            # artifact locations.
+            candidate = output / entry["file"]
+            if not candidate.is_file():
+                fail(f"verified candidate archive {candidate} is missing "
+                     "from the output directory; cannot bind the upload")
 
             statuses[name] = "unconfirmed"  # attempted, outcome pending
             persist()
@@ -761,15 +766,15 @@ def publish_crates(root: Path, version: str, source_sha: str, output: Path,
                           end="" if redacted.endswith("\n") else "\n",
                           file=sink)
 
-            # Reinspect and hash the archive cargo publish actually produced;
-            # never claim equality against the earlier pre-packaging copy.
-            if not fresh.is_file():
-                fail(f"publish attempt for {name} {version} (cargo exit "
-                     f"{proc.returncode}) left no fresh archive at {fresh}; "
-                     "the produced artifact cannot be examined")
-            inspect_archive(fresh, name, version, root, source_sha)
-            fresh_data = fresh.read_bytes()
-            fresh_cksum = hashlib.sha256(fresh_data).hexdigest()
+            # Bind the actual registry upload to the exact verified bytes:
+            # hash the retained candidate now and require it to still match
+            # the checksum recorded when it was verified. Cargo's own local
+            # artifacts are not consulted.
+            candidate_cksum = hashlib.sha256(candidate.read_bytes()).hexdigest()
+            if candidate_cksum != packaged_cksum:
+                fail(f"candidate archive {candidate} no longer hashes to the "
+                     f"verified checksum {packaged_cksum} (now "
+                     f"{candidate_cksum}); refusing to bind the upload")
 
             visibility, cksum = wait_for_index_cksum(
                 name, version,
@@ -786,39 +791,23 @@ def publish_crates(root: Path, version: str, source_sha: str, output: Path,
                      f"the sparse index within {AMBIGUOUS_TIMEOUT_S}s; "
                      "publication stops and the upload is not retried "
                      "(status remains 'unconfirmed')")
-            check_cksum("post-verify", name, version, cksum, fresh_cksum)
+            check_cksum("post-verify", name, version, cksum, candidate_cksum)
 
             # Registry confirmation first: persist the confirmed receipt
-            # (atomic manifest replacement) before any fallible artifact
-            # retention, so a known registry confirmation is never left
-            # unconfirmed.
-            entry["sha256"] = fresh_cksum
-            entry["size"] = len(fresh_data)
+            # (atomic manifest replacement) before any fallible work, so a
+            # known registry confirmation is never left unconfirmed. The
+            # verified candidate already sits in the output directory; no
+            # re-copy is performed and the checksum files already describe
+            # it.
             statuses[name] = ("published" if proc.returncode == 0
                               else "verified-after-ambiguous-error")
+            retention[name] = "retained"
             persist()
             info(f"confirmed receipt: {name} {version} status={statuses[name]} "
-                 f"registry checksum={fresh_cksum}")
-            # Artifact retention is fallible and tracked separately from the
-            # registry receipt; it never flips a confirmed status back.
-            try:
-                shutil.copy2(fresh, output / entry["file"])
-                write_checksums(output, entries)
-                retention[name] = "retained"
-            except OSError as exc:
-                retention[name] = f"failed: {exc}"
-                print(f"release_crates: warning: {name} {version} is confirmed "
-                      f"on {REGISTRY_NAME} but artifact retention failed: {exc}",
-                      file=sys.stderr)
-            persist()
+                 f"registry checksum={candidate_cksum} "
+                 f"(bound to verified candidate {entry['file']})")
 
         guard_clean_unchanged(root, source_sha)
-        broken = [crate for crate, state in retention.items()
-                  if state.startswith("failed")]
-        if broken:
-            fail("artifact retention failed for " + ", ".join(sorted(broken))
-                 + "; registry statuses are recorded in release-manifest.json "
-                 "and are not affected")
     finally:
         persist()  # failure path keeps confirmed crates and the untouched tail
 

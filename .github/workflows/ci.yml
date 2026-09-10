@@ -39,6 +39,8 @@ jobs:
       - run: tools/test_dependency_floor.sh
       - run: tools/check_storage_boundaries.sh
       - run: tools/check_dependency_floor.sh
+      # Release-tooling contract tests (stdlib unittest; no Rust needed).
+      - run: python3 -m unittest discover -s tools -p "test_*.py"
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest

@@ -90,6 +90,7 @@ jobs:
           cargo clippy --workspace --all-targets --all-features -- -D warnings
           cargo build --workspace --locked
           cargo nextest run --workspace --no-fail-fast
+          python3 -m unittest discover -s tools -p "test_*.py"
       - name: qualify commissioned runner
         if: inputs.task == 'qualify'
         run: |
