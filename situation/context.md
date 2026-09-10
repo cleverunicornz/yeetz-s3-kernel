@@ -31,6 +31,9 @@ introduced in their package READMEs.
   their historical execution evidence.
 - `tools/check_storage_boundaries.sh` mechanically checks the storage-access
   boundary for repository Rust sources.
+- `.github/workflows/publish.yml` is the manual crate-publication workflow
+  for `yeetz-sdk-core`, `yeetz-sdk-s3`, `yeetz-s3-kernel`, and
+  `yeetz-s3-streams`.
 
 ## Canonical knowledge
 
