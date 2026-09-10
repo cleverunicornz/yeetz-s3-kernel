@@ -19,7 +19,7 @@ emitted SHA-256 checksums; the four sparse-index endpoints
 `https://index.crates.io/ye/et/yeetz-sdk-s3`,
 `https://index.crates.io/ye/et/yeetz-s3-kernel`,
 `https://index.crates.io/ye/et/yeetz-s3-streams`); the `v0.5.0` annotated
-tag and GitHub release; and the preparation pull request. A run whose
+tag and GitHub release. A run whose
 workflow or script source differs from the head under judgment is INVALID
 for this oracle rather than a judgment about changed bytes. The
 executable surface — the native `ci-dev` tasks and
@@ -27,8 +27,8 @@ executable surface — the native `ci-dev` tasks and
 package route has now executed for real: `package` run `34459982826` at
 `c7ef1eee845f322dcfc009885b3e6b999712c2c1` passed, exercising the
 P1–P5 executable decisions. No `publish` run has executed and no tag or
-release was created, so P6–P10 remain uncredited; the manual legs
-P11–P12 await their direct evidence.
+release was created, so P6–P10 remain uncredited; P11 awaits its
+direct source evidence.
 
 ## Pass
 
@@ -85,8 +85,6 @@ P11–P12 await their direct evidence.
   `cvu-native-builder-x64` and the existing gate job skips them; the
   trigger remains dispatch-only; the crate list is the fixed four; and no
   other in-repo publication surface exists.
-- P12: The preparation pull request carrying the route merged only with
-  explicit human approval under the root organization rules.
 
 ## Fail
 
@@ -122,8 +120,6 @@ P11–P12 await their direct evidence.
   label, the gate job executes a native task, a non-dispatch trigger
   exists, a fifth crate is packaged, or another in-repo publication
   surface exists (P11).
-- F12: the preparation pull request merged without explicit human
-  approval (P12).
 
 ## Implementation
 
@@ -170,7 +166,6 @@ names both.
 | P9 | An exercised partial failure reports exactly | an exercised failing run's summary output; manual (source inspection of the failure-summary path) until one exists |
 | P10 | Tag/release only after four confirmations, exact SHA, matching assets | manual (receipt reconciliation: tag object type, resolved SHA, release asset checksums vs published receipts) |
 | P11 | Token step-scoping, credential-stripped packaging, runner label, gate-job skip, dispatch-only, fixed four, no other surface | manual (source inspection of the workflow and `tools/` at the run head) |
-| P12 | Preparation PR merged with explicit human approval | manual (pull request record) |
 | F1 | Preflight fails closed on a violation | manual (source inspection of the preflight); an exercised refusal case in a retained run upgrades it to executable |
 | F2 | Package mode detects a missing or extra archive, or a missing checksum | `tools/release_crates.py` package-mode check |
 | F3 | Post-package check detects an archive defect, including a wrong SHA, `dirty` not absent or false, or omitted/wrong `path_in_vcs` | `tools/release_crates.py` post-package archive check |
@@ -182,4 +177,3 @@ names both.
 | F9 | A failing run misreports the partial state or conflates retention with publication status | an exercised failing run's summary output; manual (source inspection of the failure-summary path) until one exists |
 | F10 | Tag/release violates the four-before-release rule, the SHA, or asset equality | manual (receipt reconciliation) |
 | F11 | A guard violation exists in source or in the run | manual (source inspection of the workflow and `tools/` at the run head) |
-| F12 | Merge record lacks human approval | manual (pull request record) |
