@@ -159,8 +159,8 @@ from every packaging subprocess, so packaging never sees a token.
    release attaching the four archives and their checksum files.
 7. Witness retention: the witness cites the real Actions run URLs and
    the four sparse-index receipts (version, checksum, publication time),
-plus the manual-leg evidence for P10's tag/release reconciliation and
-P11.
+   plus the manual-leg evidence for P10's tag/release reconciliation and
+   P11.
 
 Current position: the package route is already exercised — pilot
 `package` run `34459982826` at the PR-48 head
