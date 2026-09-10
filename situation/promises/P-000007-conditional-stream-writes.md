@@ -2,7 +2,7 @@
 
 ## State
 
-implementing
+assured
 
 ## Promise
 
@@ -122,21 +122,16 @@ outcomes inside this scope.
 
 ## State evidence
 
-- `situation/decisions/D-000007-conditional-stream-writes.md` — accepted
-  design authorizing this slice as its scoped batch.
 - `situation/oracles/O-000007-conditional-stream-writes.md` —
-  `implemented` judgment rule, name-aligned to the
-  `crates/yeetz-s3-streams/tests/streams_conditional.rs` suite
-  (`c1`–`c12`, `e1`–`e36`; 48 tests); no execution has passed and the
-  oracle claims executability only.
-- Implementation source is complete on this branch
-  (`crates/yeetz-s3-streams/src/conditional.rs` and the test suite);
-  the state remains `implementing`: the published candidate `7c40b58`
-  failed compilation before any test executed, so it is not a valid
-  implementation citation and no witness exists. No assurance is
-  claimed; the transition to `implemented` will cite a compiling
-  containing commit, and `assured` will cite a passing witness on the
-  `gates` route.
+  `implemented` judgment rule, name-aligned to the 48-test suite.
+- `43fb1f661ad91363fc99ae257ed4e62ea8207303` — the implementation
+  head containing `crates/yeetz-s3-streams/src/conditional.rs` and
+  `crates/yeetz-s3-streams/tests/streams_conditional.rs`.
+- `situation/witnesses/P-000007/W-000017-conditional-stream-writes-gate.md`
+  — PASS on the `gates` route at that head: all 48 conditional cases
+  (`c1`–`c12`, `e1`–`e36`) passed, independently evidencing every
+  O-000007 Pass leg; `situation/decisions/D-000007-conditional-stream-writes.md`
+  records the accepted design authorizing the slice.
 
 ## Residual
 
@@ -153,8 +148,11 @@ outcomes inside this scope.
 - A hidden suffix invisible to both LIST and verified evidence during
   hole adjudication is unwitnessed; the `HoleWitnessed` and
   `BackendUnqualified` decisions are bounded by witnessed evidence.
-- Assurance is pending (state `implementing`): no witness claims any
-  leg has passed.
+- Assurance is scoped to the observed harnesses: the passing witness
+  exercises the in-memory kernel and the loopback S3 counterpart under
+  the qualified-backend contract; no external object-store provider,
+  retention pin, ownership grant, or future-retention guarantee is
+  claimed.
 
 ## References
 

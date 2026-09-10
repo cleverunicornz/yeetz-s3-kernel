@@ -2,7 +2,7 @@
 
 ## State
 
-implementing
+assured
 
 ## Promise
 
@@ -66,17 +66,16 @@ meaning for `EventRef`.
 
 ## State evidence
 
-- `situation/decisions/D-000006-strict-stream-reads.md` — accepted design
-  authorizing this slice as its scoped batch; implementation work is active
-  on this pull request.
+- Implementation commit `43fb1f661ad91363fc99ae257ed4e62ea8207303` — the
+  strict-read source (`read_event`, `read_range`, `RangePage`), the
+  immutable `Envelope` with `EventRef`, and the r-suite (r1–r10).
 - `situation/oracles/O-000006-strict-stream-reads.md` — implemented judgment
-  rule; the r-suite (r1–r10) exists in
-  `crates/yeetz-s3-streams/tests/streams_read.rs`.
-- The source and test suite are present in the working tree; the published
-  candidate head `7c40b58` failed compilation before any test ran, so no
-  implementation commit or passing witness is cited yet. The transition to
-  `implemented` will cite the final containing commit, and `assured` will
-  cite a passing witness.
+  rule whose every Pass leg is decided at that head.
+- `situation/witnesses/P-000006/W-000016-strict-stream-reads-gate.md` —
+  PASS: `gates` run 34421839069 (job 102698755081; 287 passed, 4 skipped)
+  executed the full r-suite at that head on 2026-09-10; rig run 34421838684
+  added 13 PASS verdicts; the manual `Envelope`-privacy clause is retained
+  in the witness evidence.
 
 ## Residual
 
@@ -86,8 +85,10 @@ meaning for `EventRef`.
 - Verification is per-envelope: a served window is verified event by event and
   is not a chain or whole-prefix proof; `EventRef` authorizes nothing.
 - `reached_end` deliberately claims nothing about events beyond `through_seq`.
-- Assurance is pending (state `implementing`): no witness claims any leg has
-  passed.
+- The assurance is bounded by W-000016's observation: contract tests run
+  against the in-memory kernel and the loopback wire counterpart, the rig
+  harness is in-memory, and no live external-S3 qualification of the strict
+  reads is claimed.
 
 ## References
 

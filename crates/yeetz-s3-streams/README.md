@@ -28,6 +28,9 @@ Design boundaries, on purpose:
 [D-000002]: https://github.com/cleverunicornz/yeetz-s3-kernel/blob/main/situation/decisions/D-000002-append-only-streams.md
 [D-000006]: https://github.com/cleverunicornz/yeetz-s3-kernel/blob/main/situation/decisions/D-000006-strict-stream-reads.md
 [P-000006]: https://github.com/cleverunicornz/yeetz-s3-kernel/blob/main/situation/promises/P-000006-strict-stream-reads.md
+[O-000006]: https://github.com/cleverunicornz/yeetz-s3-kernel/blob/main/situation/oracles/O-000006-strict-stream-reads.md
+[P-000007]: https://github.com/cleverunicornz/yeetz-s3-kernel/blob/main/situation/promises/P-000007-conditional-stream-writes.md
+[W-000017]: https://github.com/cleverunicornz/yeetz-s3-kernel/blob/main/situation/witnesses/P-000007/W-000017-conditional-stream-writes-gate.md
 
 ## Example
 
@@ -266,16 +269,23 @@ kernel, a fault-injecting loopback S3 wire counterpart
 against real backends.
 
 The strict historical-read surface — `read_event`, `read_range`, the
-immutable `Envelope`, `EventRef` ([D-000006], [P-000006]) — is not
-included in the assurance above; no witness claims it yet. The blanket
-claim here covers the live append, replay, trim, and migration surfaces
-named above only.
+immutable `Envelope`, `EventRef` ([D-000006], [P-000006]) — is assured at
+source head `43fb1f6` (observed 2026-09-10): oracle [O-000006]'s full
+r-suite (r1–r10, `crates/yeetz-s3-streams/tests/streams_read.rs`) passed
+in the `gates` CI run [34421839069](https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/34421839069) (287 passed, 4 skipped), the rig run
+[34421838684](https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/34421838684) added 13 PASS verdicts from its in-memory harness including
+paginated-window stability across suffix growth, and the manual
+`Envelope`-privacy clause is retained as reviewed source inspection
+([P-000006] carries the witness). The qualification runs in-memory and
+against the loopback wire counterpart; no live external-S3 qualification
+of the strict reads is claimed.
 
 The conditional-write surface — `create_stream_with_id`,
-`append_expected`, and their outcomes, errors, and effects — is
-likewise not included; no witness claims it yet. Its fault and
-retention races (paused PUTs, trims racing appends, stale LIST
-certificates) belong to the loopback tests, not to the durable rig.
+`append_expected`, and their outcomes, errors, and effects — passed its
+full executable suite at the same head in the same gates run; its
+assurance is recorded under [P-000007] and its PASS witness [W-000017].
+Its fault and retention races (paused PUTs, trims racing appends, stale
+LIST certificates) belong to the loopback tests, not to the durable rig.
 
 MSRV: Rust 1.96 (pinned by the workspace `rust-toolchain.toml`).
 
