@@ -1,5 +1,9 @@
 # PLAN-000002 — Stream operations
 
+## Candidates
+
+none
+
 ## Promises
 
 - `situation/promises/P-000006-strict-stream-reads.md`
