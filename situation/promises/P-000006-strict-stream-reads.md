@@ -70,12 +70,14 @@ meaning for `EventRef`.
   strict-read source (`read_event`, `read_range`, `RangePage`), the
   immutable `Envelope` with `EventRef`, and the r-suite (r1–r10).
 - `situation/oracles/O-000006-strict-stream-reads.md` — implemented judgment
-  rule whose every Pass leg is decided at that head.
+  rule whose executable and manual coverage decides every Pass and Fail leg at
+  that head.
 - `situation/witnesses/P-000006/W-000016-strict-stream-reads-gate.md` —
   PASS: `gates` run 34421839069 (job 102698755081; 287 passed, 4 skipped)
   executed the full r-suite at that head on 2026-09-10; rig run 34421838684
-  added 13 PASS verdicts; the manual `Envelope`-privacy clause is retained
-  in the witness evidence.
+  added 13 PASS verdicts; the witness retains direct manual source evidence
+  for bounded range-fetch parallelism, retained digest storage, and
+  `Envelope` privacy.
 
 ## Residual
 

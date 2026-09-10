@@ -38,17 +38,23 @@ PASS
   https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/34421838684/job/102698754400
   The rig harness runs against the kernel's in-memory store; neither run is
   a live external-S3 qualification.
-- Manual `Envelope`-privacy clause (the P9 manual leg): retained review
-  comment
+- Manual P9 range-fetch bound and the P10 retained-digest clause: the
+  correction source review
+  https://github.com/cleverunicornz/yeetz-s3-kernel/pull/47#issuecomment-5611554000
+  inspects the immutable source at this head. It records that `read_range`
+  limits each fetch chunk to `FETCH_PARALLELISM` and awaits it before the next
+  chunk, and that `decode_and_verify` retains the verified wire digest in
+  `EventRef` while `payload_sha256()` borrows it without recomputing.
+- Manual P10 `Envelope`-privacy clause: retained review comment
   https://github.com/cleverunicornz/yeetz-s3-kernel/pull/47#issuecomment-5610975924
-  — disposition PASS by source inspection over the immutable source at this
-  head,
+  and the same correction source review — disposition PASS by source
+  inspection over the immutable source at this head,
   https://github.com/cleverunicornz/yeetz-s3-kernel/blob/43fb1f661ad91363fc99ae257ed4e62ea8207303/crates/yeetz-s3-streams/src/envelope.rs.
-  The review records every `Envelope` field private, public access limited
-  to value/shared-reference getters, `encode` and `decode_and_verify` as
-  crate-private constructors, and forgeable public `EventRef` fields
-  granting no mutation of an existing verified `Envelope`. This is retained
-  manual review, not a claim that runtime tests prove privacy.
+  They record every `Envelope` field private, public access limited to
+  value/shared-reference getters, `encode` and `decode_and_verify` as
+  crate-private constructors, and forgeable public `EventRef` fields granting
+  no mutation of an existing verified `Envelope`. These are retained manual
+  reviews, not claims that runtime tests prove the source-only clauses.
 - Observation provenance: job metadata and logs were fetched from GitHub
   Actions by the orchestrator against this head on 2026-09-10; the run and
   job URLs above are the canonical evidence, not any local copy.
@@ -65,4 +71,5 @@ PASS
 | P6 | `PASS [0.012s] (218/287) yeetz-s3-streams::streams_read r6_read_range_reached_end_is_window_not_eof`; rig verdict R re-serves the identical window after suffix growth past its end |
 | P7 | `PASS [0.009s] (219/287) yeetz-s3-streams::streams_read r7_read_range_resume_and_seq_max` |
 | P8 | `PASS [0.477s] (234/287) yeetz-s3-streams::streams_read r8_read_range_request_shape_no_log_list_no_tail_no_writes` |
-| P9 | `PASS [0.007s] (221/287) yeetz-s3-streams::streams_read r9_envelope_immutable_surface_and_event_ref` for the runtime clauses; the manual field-privacy clause by the retained review comment and the immutable source at this head |
+| P9 | Manual source inspection in the correction review: `read_range` constructs at most `FETCH_PARALLELISM.min(remaining)` fetches per chunk and awaits `join_all` before the next chunk |
+| P10 | `PASS [0.007s] (221/287) yeetz-s3-streams::streams_read r9_envelope_immutable_surface_and_event_ref` for runtime clauses; retained direct source reviews decide digest retention and field privacy |
