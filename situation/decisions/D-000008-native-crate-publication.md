@@ -68,11 +68,11 @@ Adopt a retained native publication route as the only mechanism that
 publishes repository crates, and release 0.5.0 through it:
 
 1. `ci-dev` gains task values `package` and `publish` and a
-   `release_version` input. Both run only from a dispatched full 40-hex
-   SHA `ref` and route to a new native job on `cvu-native-builder-x64`
-   pinned to Rust 1.96.0 through the approved immutable toolchain-action
-   pin. The existing `run` job is unchanged except that it skips the two
-   tasks.
+   `release_version` input. Its dispatch-only trigger accepts each task only
+   with a full 40-hex SHA `ref`; each routes to a new native `release` job on
+   `cvu-native-builder-x64` pinned to Rust 1.96.0 through the approved
+   immutable toolchain-action pin. The existing `run` gate job is otherwise
+   unchanged and skips the two tasks.
 2. `tools/release_crates.py` provides modes `package` and `publish`
    taking `--source-sha SHA --version V --output DIR`. It operates on a
    clean checkout of the exact SHA located outside the output directory,
@@ -87,24 +87,27 @@ publishes repository crates, and release 0.5.0 through it:
    `release_version` with the workspace license metadata, source, README,
    and test bytes derived from the pinned tree, cargo VCS metadata
    recording the pinned SHA, `dirty` absent or false, and `path_in_vcs`
-   exactly `crates/<name>`, internal dependencies rewritten to registry
-   requirements with no path or workspace references, and a SHA-256
-   checksum emitted per archive into the output directory.
+   exactly `crates/<name>`. Internal dependencies are rewritten to registry
+   requirements with no path or workspace references, and every external
+   dependency requirement equals its corresponding workspace dependency pin.
+   A SHA-256 checksum is emitted per archive into the output directory.
 5. Publishing accepts only source merged into `main`. The registry token
    — the temporary repository Actions secret `CARGO_REGISTRY_TOKEN` — is
-   present only in the publish step's environment. Per crate, in order,
-   the sparse index is
-   adjudicated first: `release_version` absent means upload; present with
-   an index checksum equal to the local artifact's SHA-256 means skip as
-   already complete; any other state fails closed with no upload. An
-   immutable registry version is never overwritten, and each upload is
-   confirmed in the sparse index with a checksum equal to the actual
-   uploaded artifact before the next crate proceeds.
+   present only in the publish step's environment; every packaging
+   subprocess has all Cargo credential environment keys removed. Per crate,
+   in order, the sparse index is adjudicated first: `release_version` absent
+   means upload; present with an index checksum equal to the local artifact's
+   SHA-256 means skip as already complete; any other state fails closed with
+   no upload. An immutable registry version is never overwritten, and each
+   upload is confirmed in the sparse index with a checksum equal to the
+   actual uploaded artifact before the next crate proceeds.
 6. Publication is honestly non-atomic: a partial failure reports exactly
    which crates are confirmed and which are not, with no blind reupload.
-   Main creates the annotated `v0.5.0` tag and the GitHub release at
-   exactly the published source, attaching the four archives and
-   checksums, only after all four crates are confirmed.
+   Main creates the annotated `v0.5.0` tag and the GitHub release at exactly
+   the published source, attaching the four archives and checksums, only
+   after all four crates are confirmed.
+7. The complete repository tree at the judged source SHA contains no other
+   in-repository crate-publication surface.
 
 ## Why
 
