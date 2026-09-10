@@ -13,7 +13,7 @@ introduced in their package READMEs.
 - Phase: `EVOLUTION`
 - Ownership: `OWNED`
 - Upstream coordinate: none
-- Current Bedrock operation: `BACKPORT`
+- Current Bedrock operation: `DELTA`
 - Completed adoption operation: `BACKPORT`
 - Adoption run: `20260905T005131Z-96a05336c850895143c297fb47ffb55227b0c4fb`
 - Opening checkpoint: `94c39fecb90ca998156078c7532ebab45927d934`
@@ -31,9 +31,9 @@ introduced in their package READMEs.
   their historical execution evidence.
 - `tools/check_storage_boundaries.sh` mechanically checks the storage-access
   boundary for repository Rust sources.
-- `.github/workflows/ci-dev.yml` provides manual verification and native
-  crate-release tasks; `tools/release_crates.py` implements the four-crate
-  `package`/`publish` route.
+- `.github/workflows/publish.yml` is the manual crate-publication workflow
+  for `yeetz-sdk-core`, `yeetz-sdk-s3`, `yeetz-s3-kernel`, and
+  `yeetz-s3-streams`.
 
 ## Canonical knowledge
 
@@ -55,5 +55,5 @@ authority. Git retains those bytes under the stated trigger commit.
 ## Closure state
 
 - Current run: none
-- Last completed closure: run `20260910T093312Z-94191f254ff0478d8dcf4835b1991d4adde6ed6c`, opened at `a1d8fba882dc42de06db24fdd92138e43379ab56`
-- Transcript: `s3://cvu-automation-runs-uk/bedrock/cleverunicornz/yeetz-s3-kernel/pr-48/20260910T093312Z-94191f254ff0478d8dcf4835b1991d4adde6ed6c/`
+- Last completed closure: run `20260910T114044Z-c733386f3577fd6c10322d14dc9c5f07baa6f667`, opened at `3ed83156e84119fa5de00416bdf9c5a9554d5cfd`
+- Transcript: `s3://cvu-automation-runs-uk/bedrock/cleverunicornz/yeetz-s3-kernel/pr-50/20260910T114044Z-c733386f3577fd6c10322d14dc9c5f07baa6f667/`

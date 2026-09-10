@@ -1,0 +1,21 @@
+name: publish
+
+# Manual dispatch only, never tied to a pull request. The run log is the
+# publication witness: it records who published which crate versions to
+# crates.io, from which commit, and when. Cargo publishes the four crates
+# in dependency order with its own verification; no wrappers.
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: cvu-native-builder-x64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+      - name: publish crates to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked -p yeetz-sdk-core -p yeetz-sdk-s3 -p yeetz-s3-kernel -p yeetz-s3-streams
