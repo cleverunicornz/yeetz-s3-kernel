@@ -162,18 +162,19 @@ from every packaging subprocess, so packaging never sees a token.
    plus the manual-leg evidence for P10's tag/release reconciliation and
    P11.
 
-Current position: the package route is already exercised — pilot
-`package` run `34459982826` at the PR-48 head
+Current position: the already-completed pilot qualification is `package` run
+`34459982826` at the PR-48 head
 `c7ef1eee845f322dcfc009885b3e6b999712c2c1`
-(https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/34459982826)
-passed with exactly four verified archives — LICENSE, normalized
-manifest, lock, and VCS-source checks, Cargo 1.96 `--locked`
-verification retained — artifact `crate-release-0.5.0-package-1`
+(https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/34459982826).
+It produced four verified archives — LICENSE, normalized manifest, lock, and
+VCS-source checks, Cargo 1.96 `--locked` verification retained — in artifact
+`crate-release-0.5.0-package-1`
 (https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/34459982826/artifacts/10145210146).
-Package mode permits the unmerged pilot source; publish does not, so
-steps 1 and 3–7 remain and the publish dispatch waits for the merge. A
-package-only run cannot fulfill the publish or release legs, so no PASS
-witness exists.
+The pilot does not substitute for step 2: the required secret-free package
+verification at post-merge release SHA M has not run because M does not yet
+exist. Steps 1–7 remain in order, including step 2; the publish dispatch
+waits for the merge. A package-only pilot cannot fulfill the publish or
+release legs, so no PASS witness exists.
 
 ## Partial-failure handling
 
