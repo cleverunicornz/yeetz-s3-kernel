@@ -12,7 +12,7 @@ implemented
 
 The c-suite (creation) and e-suite (expected append) tests in
 `crates/yeetz-s3-streams/tests/streams_conditional.rs` (`c1`–`c12`,
-`e1`–`e34`, name-aligned below), run against the existing in-memory
+`e1`–`e36`, name-aligned below), run against the existing in-memory
 harness (`crates/yeetz-s3-streams/tests/support/mod.rs`:
 `streams_on_in_memory_store`, `streams_on_store`, `hand_envelope`,
 `streams_keyspace`) and the loopback S3 counterpart
@@ -168,10 +168,17 @@ Expected append:
   target cannot recreate a receipt; a target holding a verified
   DIFFERENT event below a floor past it is judged by the floor first —
   `Expired(Target)`, not `PositionConflict` — and nothing is attempted;
-  when a missing predecessor is raced by a concurrent landing of the
-  target and trim/GC advances the floor past it, the floor reread
-  prioritizes the target's own expiry — `Expired(Target)`, never a
-  predecessor verdict.
+  the same floor precedence holds over corruption:
+  `e36_outer_corrupt_expired_target_is_expired_not_corrupt` establishes
+  that a target whose outer kernel stored bytes are corrupted while a
+  certified floor already extends past it is judged by the floor FIRST —
+  `Expired(Target, NotAttempted)`, not `Corrupt`: the requested
+  canonical bytes cannot be verified, so no `Committed` receipt is
+  inferred, with no GC run and the corrupt object physically present
+  (e32 keeps the retained-target leg); when a missing predecessor
+  is raced by a concurrent landing of the target and trim/GC advances
+  the floor past it, the floor reread prioritizes the target's own
+  expiry — `Expired(Target)`, never a predecessor verdict.
 - P14: `e16_seq_max_and_invalid_admission_perform_no_io` establishes
   that a predecessor at `u64::MAX` (`SeqExhausted`),
   non-canonical/invalid predecessor digests, deserialized-invalid ids,
@@ -180,8 +187,9 @@ Expected append:
 - P15: `e17_refused_target_put_retains_possibly_committed`,
   `e18_lost_target_put_unavailable_readback_retains_possibly_committed`,
   `e27_lost_put_conflicting_readback_preserves_possibly_committed`,
-  `e28_lost_put_corrupt_readback_preserves_possibly_committed`, and
-  `e34_lost_put_outer_corrupt_readback_preserves_possibly_committed`
+  `e28_lost_put_corrupt_readback_preserves_possibly_committed`,
+  `e34_lost_put_outer_corrupt_readback_preserves_possibly_committed`,
+  and `e35_lost_put_with_exact_readback_returns_committed_receipt`
   establish the attempt boundary: a target PUT refused before its effect
   still reports `PossiblyCommitted` (no `Rejected` certainty is
   exposed); a PUT that applied but lost its response followed by an
@@ -192,8 +200,12 @@ Expected append:
   envelope corruption (e28) or OUTER kernel stored bytes corrupted
   inside the parked window (e34) — preserves `Storage(Corrupt)` with
   `PossiblyCommitted`, surviving floor adjudication and never degrading
-  to `Unavailable`; neither path lands a log write at any other
-  position.
+  to `Unavailable`; and the same lost PUT whose exact canonical readback
+  remains available upgrades WITHIN the same call — `Ok` with the
+  verified intended receipt under a valid final floor, the target
+  durable exactly once and the byte-identical retry converging with no
+  new PUT (e18 cuts the readback, e22 sweeps it, e35 is the upgrade
+  leg); neither failing path lands a log write at any other position.
 - P16: `e19_postwrite_floor_failure_preserves_committed_receipt`,
   `e20_pause_before_target_put_trim_to_target_retained_success`,
   `e21_pause_after_target_put_trim_beyond_and_gc_expired_committed`, and
@@ -249,8 +261,10 @@ Expected append:
   a retryable `Unavailable` (P6, P14; c7, c8, c9, c12, e16).
 - F2: any `append_expected` failure is returned without an effect, any
   post-attempt failure is downgraded to `NotAttempted` or `Unavailable`,
-  or any definite-rejected certainty is surfaced (P15, P16, P19; e17,
-  e18, e19–e22, e27, e28, e30, e34).
+  or any definite-rejected certainty is surfaced — including a
+  lost-PUT-with-exact-readback blindly returned `PossiblyCommitted`
+  instead of upgrading (P15, P16, P19; e17, e18, e19, e20, e21, e22,
+  e27, e28, e30, e34, e35).
 - F3: an occupied position is mistyped: a different genesis not
   `ConfigurationConflict`, a malformed incumbent or occupant — inner or
   outer corruption — not `Corrupt` (including answered
@@ -264,7 +278,8 @@ Expected append:
   retry, or a second genesis identity appears: any attributable write
   at a position other than the exact target, a duplicate object for an
   identical retry, or an extra genesis for one id (P2, P3, P4, P8, P9,
-  P15, P18; c2, c5, c6, e2, e4–e6, e27, and the suite-wide witness).
+  P15, P18; c2, c5, c6, e2, e4, e5, e6, e27, and the suite-wide
+  witness).
 - F5: a predecessor condition is answered by another variant or `Ok`,
   or the predecessor object is written (P10; e7, e8, e9, e33).
 - F6: a witnessed hole is repaired by any write, or a LIST/GET
@@ -275,9 +290,11 @@ Expected append:
 - F8: expiry loses its effect or mislabels its subject:
   `Expired(Target, Committed)` returned without the committed receipt,
   an expired predecessor answered as a target expiry, a zombie answered
-  without its receipt, or a target raced by trim/GC answered with a
+  without its receipt, a target raced by trim/GC answered with a
   predecessor verdict or `EventMissing` instead of the prioritized
-  target expiry (P13, P16; e13, e14, e15, e21, e22, e25, e31).
+  target expiry, or an outer-corrupt expired target answered `Corrupt`
+  instead of the prioritized expiry (P13, P16; e13, e14, e15, e21, e22,
+  e25, e31, e36).
 - F9: a stale or contradictory floor observation is mishandled — a
   monotone floor regression not answered `BackendUnqualified` with the
   current effect, or the frozen-LIST residual answered with a repair
@@ -294,18 +311,27 @@ Expected append:
 ## Implementation
 
 The executable is `crates/yeetz-s3-streams/tests/streams_conditional.rs`
-(`c1`–`c12`, `e1`–`e34`), run by `cargo nextest run --workspace
---no-fail-fast` inside the `gates` task of the current
-`.github/workflows/ci-dev.yml`. The suite source exists complete on
-this branch and has never executed to completion: the published
-candidate `7c40b58` failed compilation before any test ran, and the
-one negative literal that run exposed — c7's original "bad/id", valid
-under the grammar's slash-joined components — was a fixture defect,
-corrected by the owner to leading-slash/empty-component literals with
-the source unchanged; no execution, pass, or assurance is claimed
-here. The next run rides a new immutable SHA, and a witness under
-`situation/witnesses/P-000007/` will record the executed outcome with
-the exact source and workflow identities.
+(`c1`–`c12`, `e1`–`e36`; 48 tests), run by `cargo nextest run
+--workspace --no-fail-fast` inside the `gates` task of the current
+`.github/workflows/ci-dev.yml`. No case has passed and no witness
+exists. Run history so far: the published candidate `7c40b58` failed
+compilation before any test ran (exposing c7's original "bad/id"
+literal — valid under the grammar's slash-joined components — as a
+fixture defect, corrected to leading-slash/empty-component literals
+with the source unchanged); a subsequent CI run reached the suite and
+failed `e20` on fixture-side trace attribution — the mark was taken
+after the parked request was already logged, and a later legacy live
+read wrote the tail inside the attributed window — corrected by
+opening the window before the spawn and closing it before the legacy
+read; the product criteria and the Inputs trace-exclusion rules are
+unchanged. Since those runs, `e35_lost_put_with_exact_readback_returns_committed_receipt`
+(the same-call Committed/`Ok` upgrade leg) and
+`e36_outer_corrupt_expired_target_is_expired_not_corrupt` (the
+floor-precedence-over-corruption leg) have landed, their names verified
+against the landed source — completing the declared 48-test suite with
+no criteria change. The next run rides a new immutable SHA, and a
+witness under `situation/witnesses/P-000007/` will record the executed
+outcome with the exact source and workflow identities.
 
 ## Implementation coverage
 
@@ -327,20 +353,20 @@ table claims executability, not outcome.
 | P10 | predecessor adjudication is typed, incl. outer corruption, and NotAttempted | `e7_missing_predecessor_is_event_missing_not_attempted`, `e8_corrupt_predecessor_is_typed_corrupt`, `e9_mismatched_predecessor_names_expected_and_observed`, `e33_outer_predecessor_corruption_maps_to_corrupt` |
 | P11 | hole witnessed, never repaired; contradiction and malformed witness fail typed | `e10_verified_later_event_witnesses_hole_without_filling`, `e11_list_get_contradiction_fails_closed`, `e26_malformed_later_witness_is_corrupt_without_fill` |
 | P12 | genesis successor allowed at floor 1 | `e12_genesis_predecessor_at_floor_one_still_appends` |
-| P13 | expiry: subjects typed; zombie receipt; expiry overrides occupant and predecessor verdicts | `e13_predecessor_expiry_at_floor_is_typed`, `e14_target_expiry_at_floor_is_typed`, `e15_below_floor_zombie_committed_then_swept_target_cannot_recreate`, `e25_expired_target_overrides_zombie_conflict`, `e31_missing_predecessor_raced_by_trim_gc_prioritizes_target_expiry` |
+| P13 | expiry: subjects typed; zombie receipt; expiry overrides occupant, corruption, and predecessor verdicts | `e13_predecessor_expiry_at_floor_is_typed`, `e14_target_expiry_at_floor_is_typed`, `e15_below_floor_zombie_committed_then_swept_target_cannot_recreate`, `e25_expired_target_overrides_zombie_conflict`, `e31_missing_predecessor_raced_by_trim_gc_prioritizes_target_expiry`, `e36_outer_corrupt_expired_target_is_expired_not_corrupt` |
 | P14 | append admission preflight is effect-free incl. SeqExhausted | `e16_seq_max_and_invalid_admission_perform_no_io` |
-| P15 | attempt failures preserve PossiblyCommitted incl. conflicting/corrupt/outer-corrupt readback | `e17_refused_target_put_retains_possibly_committed`, `e18_lost_target_put_unavailable_readback_retains_possibly_committed`, `e27_lost_put_conflicting_readback_preserves_possibly_committed`, `e28_lost_put_corrupt_readback_preserves_possibly_committed`, `e34_lost_put_outer_corrupt_readback_preserves_possibly_committed` |
+| P15 | attempt failures preserve PossiblyCommitted; exact readback upgrades to Committed/`Ok` | `e17_refused_target_put_retains_possibly_committed`, `e18_lost_target_put_unavailable_readback_retains_possibly_committed`, `e27_lost_put_conflicting_readback_preserves_possibly_committed`, `e28_lost_put_corrupt_readback_preserves_possibly_committed`, `e34_lost_put_outer_corrupt_readback_preserves_possibly_committed`, `e35_lost_put_with_exact_readback_returns_committed_receipt` |
 | P16 | post-attempt floor adjudication and retention races | `e19_postwrite_floor_failure_preserves_committed_receipt`, `e20_pause_before_target_put_trim_to_target_retained_success`, `e21_pause_after_target_put_trim_beyond_and_gc_expired_committed`, `e22_lost_put_gc_before_readback_expired_possibly_committed` |
 | P17 | frozen certificate LIST stands on the qualified observation | `e23_frozen_certificate_list_residual_is_honest` |
 | P18 | attributable writes target the exact slot; no tail/cursor/alternate writes | suite-wide `log_put_keys`/no-PUT assertions (incl. `e2`, `e10`, `e11`, `e27`) and `e20`'s one-log-PUT assertion |
 | P19 | monotone floor regression fails closed with the current effect | `e29_floor_regression_before_attempt_is_backend_unqualified`, `e30_floor_regression_after_commit_preserves_committed_receipt` |
 | F1 | preflight detects a premature effect, a mistyped reserved refusal, or a refused valid id | `c7`, `c8`, `c9`, `c12`, `e16` |
-| F2 | effect coverage detects a lost, downgraded, or degraded certainty | `e17`, `e18`, `e19`–`e22`, `e27`, `e28`, `e30`, `e34` |
-| F3 | occupancy legs detect a mistyped outcome incl. outer corruption | `c3`, `c4`, `c10`, `c11`, `e4`–`e6`, `e24`, `e25`, `e32` |
-| F4 | attributable-write witness detects slot advance or duplicate landing | `c2`, `c5`, `c6`, `e2`, `e4`–`e6`, `e27`, suite witness |
+| F2 | effect coverage detects a lost, downgraded, degraded, or un-upgraded certainty | `e17`, `e18`, `e19`, `e20`, `e21`, `e22`, `e27`, `e28`, `e30`, `e34`, `e35` |
+| F3 | occupancy legs detect a mistyped outcome incl. outer corruption | `c3`, `c4`, `c10`, `c11`, `e4`, `e5`, `e6`, `e24`, `e25`, `e32` |
+| F4 | attributable-write witness detects slot advance or duplicate landing | `c2`, `c5`, `c6`, `e2`, `e4`, `e5`, `e6`, `e27`, suite witness |
 | F5 | predecessor legs detect a mistyped or written predecessor | `e7`, `e8`, `e9`, `e33` |
 | F6 | hole legs detect repair, contradiction-as-success, or skipped corruption | `e10`, `e11`, `e26` |
 | F7 | floor legs detect exemption violation or clamping | `e12` |
-| F8 | expiry legs detect a lost receipt, wrong subject, or unprioritized verdict | `e13`–`e15`, `e21`, `e22`, `e25`, `e31` |
+| F8 | expiry legs detect a lost receipt, wrong subject, or unprioritized verdict | `e13`, `e14`, `e15`, `e21`, `e22`, `e25`, `e31`, `e36` |
 | F9 | stale-floor legs detect regression or dishonest repair | `e11`, `e23`, `e29`, `e30` |
 | F10 | attributable-write witness detects any non-target-key write | suite-wide `log_put_keys`/no-PUT assertions |

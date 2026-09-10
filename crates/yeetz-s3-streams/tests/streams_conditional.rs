@@ -1332,6 +1332,10 @@ async fn e20_pause_before_target_put_trim_to_target_retained_success() {
     let driver = streams.clone();
     let pred = event_ref(&stream, 1, "e20-one", b"p1");
     let stable = event("e20-two");
+    // The window opens BEFORE the spawn: the parked target PUT is
+    // logged at its request start — ahead of its Before pause — so a
+    // mark taken after wait_reached would miss it.
+    let mark = loopback.request_log().len();
     let call = tokio::spawn(async move {
         driver
             .append_expected(&pred, &schema, &stable, b"p20")
@@ -1340,7 +1344,6 @@ async fn e20_pause_before_target_put_trim_to_target_retained_success() {
     tokio::time::timeout(PAUSE_TIMEOUT, pause.wait_reached())
         .await
         .expect("the target PUT parks before its effect");
-    let mark = loopback.request_log().len();
     // Concurrent retention: the floor advances exactly to the target;
     // the sweeper collects only below it.
     streams.trim(&stream, 2).await.unwrap();
@@ -1351,6 +1354,22 @@ async fn e20_pause_before_target_put_trim_to_target_retained_success() {
     assert_eq!(
         receipt.seq, 2,
         "floor == target keeps the target retained: Ok allowed"
+    );
+    // Snapshot the operation's whole trace immediately: the window
+    // opened before the spawn (covering the parked target PUT), and
+    // the legacy replay below may legitimately heal the tail hint —
+    // its writes must not be attributed to this operation.
+    let since = loopback.request_log()[mark..].to_vec();
+    assert_eq!(
+        log_put_keys(&since, &stream),
+        vec![target],
+        "the append performed exactly one log PUT, at the exact target"
+    );
+    assert!(
+        !since
+            .iter()
+            .any(|record| record.method == "PUT" && record.key.ends_with("/tail")),
+        "no tail-hint write by the expected append"
     );
     assert_eq!(
         streams.trim_floor(&stream).await.unwrap(),
@@ -1370,18 +1389,6 @@ async fn e20_pause_before_target_put_trim_to_target_retained_success() {
         }
         other => panic!("expected a page, got {other:?}"),
     }
-    let since = &loopback.request_log()[mark..];
-    assert_eq!(
-        log_put_keys(since, &stream),
-        vec![target],
-        "the append performed exactly one log PUT, at the exact target"
-    );
-    assert!(
-        !since
-            .iter()
-            .any(|record| record.method == "PUT" && record.key.ends_with("/tail")),
-        "no tail-hint write by the expected append"
-    );
     loopback.shutdown();
 }
 
@@ -2390,6 +2397,137 @@ async fn e34_lost_put_outer_corrupt_readback_preserves_possibly_committed() {
             .iter()
             .all(|key| key == &target),
         "every log write stayed at the exact target"
+    );
+    loopback.shutdown();
+}
+
+/// e35: a target PUT whose acknowledgement is lost (one-shot After
+/// fault) but whose exact canonical readback remains available
+/// upgrades WITHIN the same call — Ok with the verified intended
+/// receipt under a valid final floor — rather than blindly returning
+/// PossiblyCommitted on the create error. The target is durable
+/// exactly once, and the byte-identical retry converges with no new
+/// PUT. (e18 cuts the readback; e22 sweeps it; this is the upgrade
+/// leg.)
+#[tokio::test]
+async fn e35_lost_put_with_exact_readback_returns_committed_receipt() {
+    let (loopback, streams) = counterpart_streams().await;
+    let keyspace = streams_keyspace(&loopback.kernel());
+    let stream = streams.create_stream(b"cfg-e35").await.unwrap();
+    let schema = schema("cond.v35");
+    let target = wire_log_key(&stream, 1);
+    loopback
+        .arm_fault(StorageOp::Put, Some(&target), FaultPhase::After)
+        .await;
+    let receipt = streams
+        .append_expected(
+            &genesis_ref(&stream, b"cfg-e35"),
+            &schema,
+            &event("e35-event"),
+            b"p35",
+        )
+        .await
+        .expect("the exact readback upgrades the lost acknowledgement to Ok");
+    assert!(loopback.fault_fired(), "the response cut fired");
+    assert_eq!(receipt.stream_id, stream);
+    assert_eq!(receipt.seq, 1);
+    assert_eq!(receipt.stable_event_id, event("e35-event"));
+    assert_eq!(receipt.payload_sha256, sha256_hex(b"p35"));
+    assert_eq!(
+        streams.trim_floor(&stream).await.unwrap(),
+        None,
+        "the final floor observation was valid and non-retiring"
+    );
+    // One durable target: the genesis and the target, nothing else —
+    // no duplicate landing, no tail-hint write.
+    assert_eq!(
+        stream_objects(&keyspace, &stream).await,
+        vec![log_key(&stream, 0), log_key(&stream, 1)],
+        "exactly one durable target object"
+    );
+    // The byte-identical retry converges on the same receipt with no
+    // new PUT.
+    let mark = loopback.request_log().len();
+    let retry = streams
+        .append_expected(
+            &genesis_ref(&stream, b"cfg-e35"),
+            &schema,
+            &event("e35-event"),
+            b"p35",
+        )
+        .await
+        .unwrap();
+    assert_eq!(retry, receipt, "the retry returns the identical receipt");
+    assert!(
+        !loopback.request_log()[mark..]
+            .iter()
+            .any(|record| record.method == "PUT"),
+        "the reconciliation retry writes nothing"
+    );
+    loopback.shutdown();
+}
+
+/// e36: a target whose OUTER kernel stored bytes are corrupted while
+/// a certified floor already extends past it is judged by the floor
+/// FIRST — Expired(Target), not Corrupt — and stays NotAttempted:
+/// the requested canonical bytes cannot be verified, so no Committed
+/// receipt is inferred. No GC ran; the corrupt object is physically
+/// present. (e32 keeps the retained-target outer-corruption leg.)
+#[tokio::test]
+async fn e36_outer_corrupt_expired_target_is_expired_not_corrupt() {
+    let (loopback, streams) = counterpart_streams().await;
+    let stream = streams.create_stream(b"cfg-e36").await.unwrap();
+    let schema = schema("cond.v36");
+    streams
+        .append_expected(
+            &genesis_ref(&stream, b"cfg-e36"),
+            &schema,
+            &event("e36-event"),
+            b"p36",
+        )
+        .await
+        .unwrap();
+    // Certify a floor past the target WITHOUT sweeping: the object
+    // stays physically present, then its outer bytes are corrupted.
+    streams.trim(&stream, 2).await.unwrap();
+    assert_eq!(streams.trim_floor(&stream).await.unwrap(), Some(2));
+    loopback.replace_stored_bytes(&wire_log_key(&stream, 1), b"outer-garbage");
+    let mark = loopback.request_log().len();
+    let error = streams
+        .append_expected(
+            &genesis_ref(&stream, b"cfg-e36"),
+            &schema,
+            &event("e36-event"),
+            b"p36",
+        )
+        .await
+        .unwrap_err();
+    match error.kind.as_ref() {
+        AppendExpectedFailure::Expired {
+            target_seq,
+            first_retained,
+            subject,
+            ..
+        } => {
+            assert_eq!(*target_seq, 1);
+            assert_eq!(*first_retained, 2);
+            assert_eq!(*subject, ExpiredSubject::Target);
+        }
+        other => panic!(
+            "the floor outranks the corrupt occupant, got {other:?} (effect {:?})",
+            error.effect
+        ),
+    }
+    assert_eq!(
+        error.effect,
+        AppendExpectedEffect::NotAttempted,
+        "unverifiable bytes under an expired target never imply a commit"
+    );
+    assert!(
+        !loopback.request_log()[mark..]
+            .iter()
+            .any(|record| record.method == "PUT"),
+        "the expired-verdict path writes nothing"
     );
     loopback.shutdown();
 }

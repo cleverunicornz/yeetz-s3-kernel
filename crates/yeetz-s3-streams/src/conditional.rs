@@ -582,13 +582,35 @@ impl Streams {
         // --- B: genesis, then the exact target FIRST — before
         // predecessor, suffix, or floor-driven reads. ---
         let genesis = self.verified_genesis(stream).await?;
-        let target_bytes = self.keyspace.get(&target_key).await.map_err(|err| {
-            storage(
-                map_event_read_error(stream, target_seq, "append_expected: target", err),
-                AppendExpectedEffect::NotAttempted,
-            )
-        })?;
         let mut max_floor: Option<Seq> = None;
+        // The target read itself honors zombie precedence: an
+        // outer-corrupt occupant (stored kernel value the reader
+        // cannot reassemble) below a floor that has retired the
+        // target is expired, not judged — the floor is observed
+        // before that corruption is reported, exactly as the
+        // inner-malformed occupant below is. Ordinary unavailability
+        // and identifier rejection propagate without a floor lookup.
+        let target_bytes = match self.keyspace.get(&target_key).await {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                let mapped =
+                    map_event_read_error(stream, target_seq, "append_expected: target", err);
+                let StreamsError::Corrupt { .. } = mapped else {
+                    return Err(storage(mapped, AppendExpectedEffect::NotAttempted));
+                };
+                let floor = self
+                    .observe_floor(stream, "append_expected: trim floor", &mut max_floor)
+                    .await
+                    .map_err(|floor_err| storage(floor_err, AppendExpectedEffect::NotAttempted))?;
+                if target_seq < floor {
+                    return Err(failed(
+                        expired(stream, target_seq, floor, ExpiredSubject::Target),
+                        AppendExpectedEffect::NotAttempted,
+                    ));
+                }
+                return Err(storage(mapped, AppendExpectedEffect::NotAttempted));
+            }
+        };
 
         if let Some(bytes) = target_bytes.as_ref() {
             if bytes.as_ref() == envelope.encoded().as_ref() {
