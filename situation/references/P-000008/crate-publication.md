@@ -135,24 +135,9 @@ Workers never inspect credentials; there is nothing for them to read.
 The script strips `CARGO_REGISTRY_TOKEN` and its credential-carrying kin
 from every packaging subprocess, so packaging never sees a token.
 
-## Human approval gate
-
-The preparation pull request merges only with explicit human approval
-under the root organization rules. The default is that the working
-agent opens and updates the pull request and does not merge it; the
-exception that matters is an active human authorization naming that
-exact pull request. For PR #48 a human selected Merge-after-checks and
-the selection is retained at
-https://github.com/cleverunicornz/yeetz-s3-kernel/pull/48#issuecomment-5616250101:
-Main may merge PR #48 once gates and the Bedrock closure pass; no other
-pull request and no other agent is authorized to merge. Per
-organization law the merge is a merge commit, never a squash or rebase.
-
 ## Execution order for the 0.5.0 release
 
-1. Preparation PR #48 merges with its recorded human approval (Main
-   executes it after gates and the Bedrock closure pass); `main` then
-   sits at the release SHA M.
+1. After PR #48 is merged into `main`, that branch sits at release SHA M.
 2. Dispatch the package verification at exactly M, running the workflow
    definition from `main`:
    `gh workflow run ci-dev.yml --ref main -f ref=M -f task=package -f release_version=0.5.0`.
@@ -174,8 +159,8 @@ organization law the merge is a merge commit, never a squash or rebase.
    release attaching the four archives and their checksum files.
 7. Witness retention: the witness cites the real Actions run URLs and
    the four sparse-index receipts (version, checksum, publication time),
-   plus the manual-leg evidence for P10's tag/release reconciliation,
-   P11, and P12.
+plus the manual-leg evidence for P10's tag/release reconciliation and
+P11.
 
 Current position: the package route is already exercised — pilot
 `package` run `34459982826` at the PR-48 head
