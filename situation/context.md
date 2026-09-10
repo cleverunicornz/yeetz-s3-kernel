@@ -31,9 +31,6 @@ introduced in their package READMEs.
   their historical execution evidence.
 - `tools/check_storage_boundaries.sh` mechanically checks the storage-access
   boundary for repository Rust sources.
-- `.github/workflows/ci-dev.yml` provides manual verification and native
-  crate-release tasks; `tools/release_crates.py` implements the four-crate
-  `package`/`publish` route.
 
 ## Canonical knowledge
 
