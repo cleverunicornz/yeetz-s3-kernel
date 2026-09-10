@@ -69,7 +69,7 @@ jobs:
           cargo fmt --all --check
           cargo clippy --workspace --all-targets --all-features -- -D warnings
           cargo build --workspace --locked
-          cargo nextest run --workspace
+          cargo nextest run --workspace --no-fail-fast
       - name: qualify commissioned runner
         if: inputs.task == 'qualify'
         run: |

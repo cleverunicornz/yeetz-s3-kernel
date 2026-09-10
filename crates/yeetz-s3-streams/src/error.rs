@@ -3,6 +3,7 @@
 use crate::Seq;
 use crate::StableEventId;
 use crate::StreamId;
+use yeetz_s3_kernel::atomic_keyspace::KeyspaceError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StreamsError {
@@ -126,7 +127,7 @@ pub enum Replay {
     /// LIST-qualified end).
     Empty,
     /// A dense, verified page. Resume the walk with
-    /// `after_seq = events.last().seq` — the read is after-exclusive,
+    /// `after_seq = events.last().seq()` — the read is after-exclusive,
     /// so any cursor beyond the last fetched seq would skip events
     /// (the D2 defect; there is deliberately no `next_seq` field).
     /// `complete` is witness-bounded — see the enum docs.
@@ -157,5 +158,59 @@ impl Replay {
             Replay::Page { events, .. } => events,
             _ => &[],
         }
+    }
+}
+
+/// Classify a kernel keyspace error from an event-object GET
+/// (`AtomicKeyspace::get`) for the strict event reads
+/// (`Streams::read_event` / `Streams::read_range`).
+///
+/// Three honest classes, kept distinct from each other and from every
+/// boundary outcome:
+///
+/// - **Stored integrity** — the kernel could not reassemble or verify
+///   the stored object for this event: the versioned value envelope,
+///   a v3 manifest (malformed, oversized, non-canonical chunk count,
+///   impossible logical length, root disagreement), or a referenced
+///   chunk (absent, wrong length, digest mismatch). Damage at or
+///   below the stream envelope still names the event:
+///   [`StreamsError::Corrupt`] carries `seq`. Stored corruption is
+///   never a caller error and never absence.
+/// - **Store unavailability** — the object GET or a chunk fetch
+///   failed: [`StreamsError::Unavailable`] under the caller's
+///   operation name.
+/// - **Identifier rejection** — the keyspace refused the key itself:
+///   [`StreamsError::InvalidArgument`], the only caller-side failure
+///   a GET can surface.
+///
+/// Every other keyspace outcome (write/CAS/trim/maintenance arms) is
+/// unreachable from a GET; fail-closed as [`StreamsError::Unavailable`]
+/// rather than accusing the caller or naming corruption.
+pub(crate) fn map_event_read_error(
+    stream: &StreamId,
+    seq: Seq,
+    operation: &'static str,
+    err: KeyspaceError,
+) -> StreamsError {
+    match err {
+        // Stored read-integrity failures reachable from
+        // `AtomicKeyspace::get`: `ControlEnvelope::decode` (inline
+        // value envelope, v3 manifest) and `fetch_all_chunks`
+        // (manifest-referenced chunks).
+        KeyspaceError::ValueEnvelopeMalformed(_)
+        | KeyspaceError::ManifestMalformed(_)
+        | KeyspaceError::ManifestRootMismatch(_)
+        | KeyspaceError::ManifestTooLarge { .. }
+        | KeyspaceError::ChunkCountInvalid { .. }
+        | KeyspaceError::ValueTooLarge { .. }
+        | KeyspaceError::ChunkMissing { .. }
+        | KeyspaceError::ChunkIntegrity { .. } => StreamsError::Corrupt {
+            stream: stream.clone(),
+            missing_or_mismatched: vec![seq],
+        },
+        KeyspaceError::InvalidIdentifier(detail) => StreamsError::InvalidArgument(detail),
+        KeyspaceError::Unavailable { .. } => StreamsError::Unavailable { operation },
+        // Unreachable from a GET; fail closed as a store failure.
+        _ => StreamsError::Unavailable { operation },
     }
 }

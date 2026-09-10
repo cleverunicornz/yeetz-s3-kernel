@@ -93,7 +93,11 @@ impl Streams {
                 entry.payload,
             )?;
             let key = crate::Streams::log_key_of(stream, entry.seq);
-            match self.keyspace().create(&key, envelope.encoded.clone()).await {
+            match self
+                .keyspace()
+                .create(&key, envelope.encoded().clone())
+                .await
+            {
                 Ok(()) => {}
                 Err(yeetz_s3_kernel::KeyspaceError::AlreadyExists(_)) => {
                     let existing =
@@ -105,7 +109,7 @@ impl Streams {
                                 ),
                             }
                         })?;
-                    if existing != envelope.encoded {
+                    if existing.as_ref() != envelope.encoded().as_ref() {
                         Envelope::decode_and_verify(stream, entry.seq, &existing).map_err(
                             |_| StreamsError::Corrupt {
                                 stream: stream.clone(),
@@ -136,16 +140,16 @@ impl Streams {
             match self.read(stream, after, 256).await {
                 Replay::Page { events, complete } => {
                     for envelope in &events {
-                        if envelope.seq != after + 1 {
+                        if envelope.seq() != after + 1 {
                             return Err(StreamsError::BackendUnqualified {
                                 witness: format!(
                                     "migration verification: expected seq {} got {}",
                                     after + 1,
-                                    envelope.seq
+                                    envelope.seq()
                                 ),
                             });
                         }
-                        after = envelope.seq;
+                        after = envelope.seq();
                     }
                     if complete {
                         break;

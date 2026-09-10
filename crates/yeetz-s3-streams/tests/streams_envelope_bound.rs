@@ -7,7 +7,8 @@
 
 mod support;
 
-use support::loopback::Loopback;
+use support::loopback::{Loopback, RequestRecord};
+use yeetz_s3_kernel::KEYSPACE_ROOT;
 use yeetz_s3_streams::{MAX_ENCODED_ENVELOPE_BYTES, SchemaId, StableEventId, StreamsError};
 
 fn schema() -> SchemaId {
@@ -16,6 +17,35 @@ fn schema() -> SchemaId {
 
 fn event(value: &str) -> StableEventId {
     StableEventId::new(value).unwrap()
+}
+
+/// A bucket-root request is inside the S11 boundary only when it is a
+/// ListObjectsV2 GET whose `prefix` parameter is exactly the streams
+/// keyspace prefix — the parameter `AtomicKeyspace::list_after` always
+/// sends (`keyspace/streams/v1/`; the exclusive cursor rides
+/// `start-after` as a full key). Parsed from the recorded raw query,
+/// so a foreign or missing prefix, a chunk-root listing, a non-list
+/// root request, or a bare unscoped listing still violates.
+fn root_listing_scoped_to(record: &RequestRecord, expected_prefix: &str) -> bool {
+    if record.method != "GET" {
+        return false;
+    }
+    let Some(query) = record.query.as_deref() else {
+        return false;
+    };
+    let Ok(url) = reqwest::Url::parse(&format!("https://loopback.invalid?{query}")) else {
+        return false;
+    };
+    let mut list_type = false;
+    let mut prefix_scoped = false;
+    for (name, value) in url.query_pairs() {
+        match name.as_ref() {
+            "list-type" => list_type = value == "2",
+            "prefix" => prefix_scoped = value == expected_prefix,
+            _ => {}
+        }
+    }
+    list_type && prefix_scoped
 }
 
 /// Near-bound success: a raw payload whose base64-encoded envelope
@@ -38,9 +68,21 @@ async fn s11_near_bound_envelope_stays_inline_single_put() {
     // The structural witness: every request the streams write path
     // issued stays under the kernel's public logical root `keyspace/`
     // — a private-root request of ANY spelling would violate this.
+    // Object requests are judged by their key; bucket-root requests
+    // (key "", ListObjectsV2) by their captured query — the kernel
+    // keyspace lists with prefix `keyspace/streams/v1/`, so a root
+    // listing scoped anywhere else still violates.
+    let logical_root = format!("{KEYSPACE_ROOT}/");
+    let streams_prefix = format!("{logical_root}streams/v1/");
     let outside_logical_root = log
         .iter()
-        .filter(|record| !record.key.starts_with("keyspace/"))
+        .filter(|record| {
+            if record.key.is_empty() {
+                !root_listing_scoped_to(record, &streams_prefix)
+            } else {
+                !record.key.starts_with(&logical_root)
+            }
+        })
         .count();
     assert_eq!(
         outside_logical_root, 0,
