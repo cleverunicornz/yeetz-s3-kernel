@@ -520,9 +520,13 @@ def inspect_archive(archive: Path, name: str, version: str, root: Path,
     if package.get("version") != version:
         fail(f"{archive.name}: normalized manifest version is "
              f"{package.get('version')!r}, expected {version!r}")
-    if package.get("license-file", "LICENSE") != "LICENSE":
-        fail(f"{archive.name}: normalized license-file is "
-             f"{package.get('license-file')!r}, expected 'LICENSE'")
+    ws_pkg = load_toml(root / "Cargo.toml").get("workspace", {}).get("package", {})
+    for key in ("license", "license-file"):
+        expected = ws_pkg.get(key)
+        if key not in package or package.get(key) != expected:
+            fail(f"{archive.name}: normalized {key} is "
+                 f"{package.get(key)!r}, expected the workspace value "
+                 f"{expected!r} (key must be present)")
     pins = expected_external_pins(root)
     for section in ("dependencies", "dev-dependencies", "build-dependencies"):
         for dep_name, entry in normalized.get(section, {}).items():
@@ -592,7 +596,9 @@ def write_manifest(output: Path, version: str, source_sha: str,
     if publish:
         manifest["publish"] = publish
     path = output / "release-manifest.json"
-    path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    tmp = output / "release-manifest.json.tmp"
+    tmp.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)  # atomic: readers never see a torn manifest
 
 
 # ---------------------------------------------------------------------------
@@ -645,6 +651,10 @@ def index_lookup(name: str, version: str) -> tuple[str, str | None]:
             return "error", (f"index record names {record_name!r}, "
                              f"expected {name!r}")
         if record.get("vers") == version:
+            if cksum is not None:
+                return "error", (f"duplicate sparse-index records for "
+                                 f"{version}; refusing to pick one even if "
+                                 "checksums agree")
             value = record.get("cksum")
             if not isinstance(value, str) or not value:
                 return "error", (f"index record for {version} has no usable "
@@ -696,12 +706,14 @@ def publish_crates(root: Path, version: str, source_sha: str, output: Path,
                    entries: list[dict]) -> None:
     build_dir = output / "build"
     statuses = {entry["name"]: "not-attempted" for entry in entries}
+    retention = {entry["name"]: "untouched" for entry in entries}
 
     def persist() -> None:
         write_manifest(output, version, source_sha, entries, publish={
             "registry": REGISTRY_NAME,
             "results": [{"name": entry["name"], "status": statuses[entry["name"]]}
                         for entry in entries],
+            "retention": dict(retention),
         })
 
     persist()  # the record starts with every crate not-attempted
@@ -718,6 +730,7 @@ def publish_crates(root: Path, version: str, source_sha: str, output: Path,
             if state == "present":
                 check_cksum("pre-check", name, version, detail, packaged_cksum)
                 statuses[name] = "verified-already-present"
+                retention[name] = "retained"  # output copy is registry-verified
                 persist()
                 info(f"{name} {version} already on {REGISTRY_NAME} with the "
                      "verified checksum; skipping upload")
@@ -775,22 +788,37 @@ def publish_crates(root: Path, version: str, source_sha: str, output: Path,
                      "(status remains 'unconfirmed')")
             check_cksum("post-verify", name, version, cksum, fresh_cksum)
 
-            # Retain the actual verified published artifact and receipt.
-            shutil.copy2(fresh, output / entry["file"])
+            # Registry confirmation first: persist the confirmed receipt
+            # (atomic manifest replacement) before any fallible artifact
+            # retention, so a known registry confirmation is never left
+            # unconfirmed.
             entry["sha256"] = fresh_cksum
             entry["size"] = len(fresh_data)
-            write_checksums(output, entries)
             statuses[name] = ("published" if proc.returncode == 0
                               else "verified-after-ambiguous-error")
             persist()
-            if proc.returncode == 0:
-                info(f"published {name} {version}; sparse-index checksum "
-                     "matches the freshly produced archive")
-            else:
-                info(f"{name} {version} is visible with the verified checksum "
-                     "after an ambiguous cargo failure; upload not repeated")
+            info(f"confirmed receipt: {name} {version} status={statuses[name]} "
+                 f"registry checksum={fresh_cksum}")
+            # Artifact retention is fallible and tracked separately from the
+            # registry receipt; it never flips a confirmed status back.
+            try:
+                shutil.copy2(fresh, output / entry["file"])
+                write_checksums(output, entries)
+                retention[name] = "retained"
+            except OSError as exc:
+                retention[name] = f"failed: {exc}"
+                print(f"release_crates: warning: {name} {version} is confirmed "
+                      f"on {REGISTRY_NAME} but artifact retention failed: {exc}",
+                      file=sys.stderr)
+            persist()
 
         guard_clean_unchanged(root, source_sha)
+        broken = [crate for crate, state in retention.items()
+                  if state.startswith("failed")]
+        if broken:
+            fail("artifact retention failed for " + ", ".join(sorted(broken))
+                 + "; registry statuses are recorded in release-manifest.json "
+                 "and are not affected")
     finally:
         persist()  # failure path keeps confirmed crates and the untouched tail
 
