@@ -118,8 +118,6 @@ the dispatched ref. The strict surfaces under judgment live in
 clause of P9 is decided by source inspection: every `Envelope` field is
 private, the getters are public, and `encode`/`decode_and_verify` are
 crate-private constructors; it remains the one manual leg. This section
-claims no execution result: the published candidate head `7c40b58` failed
-compilation before any test ran, and no witness is cited by this oracle.
 
 ## Implementation coverage
 
