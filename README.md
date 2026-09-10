@@ -12,7 +12,7 @@ mechanics.
 | Crate | Purpose |
 | --- | --- |
 | [`yeetz-s3-kernel`](./crates/yeetz-s3-kernel/) | Canonical state kernel, `AtomicKeyspace`, and streamed values |
-| [`yeetz-s3-streams`](./crates/yeetz-s3-streams/) | Append-only event logs over the kernel |
+| [`yeetz-s3-streams`](./crates/yeetz-s3-streams/) | Append-only event logs over the kernel, with strict historical reads and conditional writes |
 | [`yeetz-sdk-s3`](./crates/yeetz-sdk-s3/) | Request-scoped S3-compatible client mechanics |
 | [`yeetz-sdk-core`](./crates/yeetz-sdk-core/) | Provider-neutral request-scoped HTTP primitives |
 
