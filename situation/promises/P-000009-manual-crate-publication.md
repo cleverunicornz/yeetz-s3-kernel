@@ -8,9 +8,10 @@ implemented
 
 At its selected revision, `.github/workflows/publish.yml` exposes only a manual
 `workflow_dispatch` entry point. Its `publish` job runs on
-`cvu-native-builder-x64`, checks out source, configures Rust 1.96.0, and
-executes one `publish crates to crates.io` step with
-`CARGO_REGISTRY_TOKEN` supplied from the Actions secret and this command:
+`cvu-native-builder-x64`, checks out source with `actions/checkout@v7`,
+configures Rust 1.96.0, and executes exactly one step named
+`publish crates to crates.io` with `CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}`
+and this literal command:
 
 ```text
 cargo publish --locked -p yeetz-sdk-core -p yeetz-sdk-s3 -p yeetz-s3-kernel -p yeetz-s3-streams
@@ -18,13 +19,13 @@ cargo publish --locked -p yeetz-sdk-core -p yeetz-sdk-s3 -p yeetz-s3-kernel -p y
 
 ## Scope
 
-This promise covers the trigger, job, runner label, checkout and toolchain
-steps, secret reference, and literal Cargo command in
-`.github/workflows/publish.yml`. It excludes Cargo's package ordering and
-packaging semantics; dispatch authorization and secret lifecycle; registry
-availability, authentication, acceptance, and resulting crate versions;
-artifact retention; tags and GitHub releases; and any publication behavior
-outside this workflow.
+This promise covers the trigger, publish job, runner label, exact checkout and
+toolchain steps, exactly one named publication step, secret reference, and the
+complete literal Cargo command (including its token order) in
+`.github/workflows/publish.yml`. It excludes Cargo's packaging semantics;
+dispatch authorization and secret lifecycle; registry availability,
+authentication, acceptance, and resulting crate versions; artifact retention;
+tags and GitHub releases; and any publication behavior outside this workflow.
 
 ## Oracle
 
