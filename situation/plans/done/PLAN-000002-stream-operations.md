@@ -21,4 +21,5 @@ none
 ## Completion
 
 Completes when P-000006 and P-000007 are each `assured` — each oracle
-applied to a passing witness — with P-000003 not superseded.
+applied to a passing witness that retains every listed executable and manual
+decision — with P-000003 not superseded.
