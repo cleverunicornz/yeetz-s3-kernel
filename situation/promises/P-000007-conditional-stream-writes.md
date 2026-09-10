@@ -127,8 +127,8 @@ outcomes inside this scope.
 - `situation/oracles/O-000007-conditional-stream-writes.md` —
   `implemented` judgment rule, name-aligned to the complete
   `crates/yeetz-s3-streams/tests/streams_conditional.rs` suite
-  (`c1`–`c10`, `e1`–`e30`); no execution has been recorded, and the
-  oracle claims executability only.
+  (`c1`–`c12`, `e1`–`e34`; 46 tests); no execution has been recorded,
+  and the oracle claims executability only.
 - Implementation source is complete on this branch
   (`crates/yeetz-s3-streams/src/conditional.rs` and the test suite);
   the state remains `implementing`: the published candidate `7c40b58`

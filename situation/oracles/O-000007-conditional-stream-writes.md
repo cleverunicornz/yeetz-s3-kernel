@@ -11,7 +11,7 @@ implemented
 ## Inputs
 
 The c-suite (creation) and e-suite (expected append) tests in
-`crates/yeetz-s3-streams/tests/streams_conditional.rs` (`c1`–`c11`,
+`crates/yeetz-s3-streams/tests/streams_conditional.rs` (`c1`–`c12`,
 `e1`–`e34`, name-aligned below), run against the existing in-memory
 harness (`crates/yeetz-s3-streams/tests/support/mod.rs`:
 `streams_on_in_memory_store`, `streams_on_store`, `hand_envelope`,
@@ -20,10 +20,12 @@ harness (`crates/yeetz-s3-streams/tests/support/mod.rs`:
 `request_log`, `pause_next` with `StorageOp`/`FaultPhase`,
 `RequestPause::wait_reached`/`release`, freeze/hide/fault controls, and
 the per-key stale-LIST pair `omit_from_list`/`restore_to_list`), with
-`cargo nextest run --workspace` inside the `gates` task of the current
-`.github/workflows/ci-dev.yml` on the candidate head as the execution
-route. The deterministic race legs arm pauses sequentially and time out
-their waits so an unexpected request shape fails rather than hangs; no
+`cargo nextest run --workspace --no-fail-fast` inside the `gates` task
+of the current `.github/workflows/ci-dev.yml` on the candidate head as
+the execution route — `--no-fail-fast` so a failing case is judged
+without cancelling the remaining cases' judgments. The deterministic
+race legs arm pauses sequentially and time out their waits so an
+unexpected request shape fails rather than hangs; no
 test orders a race with a sleep. A future witness retains the exact
 executed source and workflow identities, and no workflow or source is
 claimed to have run tests before they existed. A changed input set makes
@@ -83,15 +85,23 @@ Creation:
   parks after its effect) contradicts the conflict and is
   `Storage(BackendUnqualified)`, with the incumbent untouched.
 - P6: `c7_invalid_stream_id_rejected_before_any_io`,
-  `c8_oversized_genesis_rejected_before_any_io`, and
-  `c9_kernel_reserved_scope_id_rejected_before_any_io` establish that an
-  invalid id (including one bypassing the constructor by
-  deserialization), an oversized encoded genesis, and a kernel-reserved
-  logical key (a stream id naming the `trims` certificate scope) are
-  typed errors issued before any storage request, with zero recorded
-  requests; the reserved case is specifically `InvalidArgument` —
-  permanent, mapped from the kernel guard rather than name-listed — and
-  distinct from a cut-store `Unavailable`.
+  `c8_oversized_genesis_rejected_before_any_io`,
+  `c9_kernel_reserved_scope_id_rejected_before_any_io`, and
+  `c12_hierarchical_ids_are_valid_through_create_append_and_reads`
+  establish the admission boundary: an invalid id — invalid under the
+  existing grammar, where slash-joined components each satisfying the
+  segment rule are VALID, so invalid means a malformed component, a
+  leading or trailing slash, or an empty component — including one
+  bypassing the constructor by deserialization, an oversized encoded
+  genesis, and a kernel-reserved logical key (a stream id naming the
+  `trims` certificate scope) are typed errors issued before any
+  storage request, with zero recorded requests; the reserved case is
+  specifically `InvalidArgument` — permanent, mapped from the kernel
+  guard rather than name-listed — and distinct from a cut-store
+  `Unavailable`; and hierarchical ids for the stream, the schema, and
+  the stable event id alike are accepted through creation, expected
+  append, exact retry, and verified reads, carrying hierarchy into the
+  physical key layout.
 
 Expected append:
 
@@ -234,9 +244,9 @@ Expected append:
 ## Fail
 
 - F1: an admission-invalid input produces any storage request, an
-  admission-valid input is refused as an admission error, or a
-  kernel-reserved logical key is answered as a retryable `Unavailable`
-  (P6, P14; c7, c8, c9, e16).
+  admission-valid input — including a hierarchical id — is refused as
+  an admission error, or a kernel-reserved logical key is answered as
+  a retryable `Unavailable` (P6, P14; c7, c8, c9, c12, e16).
 - F2: any `append_expected` failure is returned without an effect, any
   post-attempt failure is downgraded to `NotAttempted` or `Unavailable`,
   or any definite-rejected certainty is surfaced (P15, P16, P19; e17,
@@ -284,19 +294,24 @@ Expected append:
 ## Implementation
 
 The executable is `crates/yeetz-s3-streams/tests/streams_conditional.rs`
-(`c1`–`c11`, `e1`–`e34`), run by `cargo nextest run --workspace` inside
-the `gates` task of the current `.github/workflows/ci-dev.yml`. The
-suite source exists complete on this branch and has never executed to
-completion: the published candidate `7c40b58` failed compilation before
-any test ran, so no execution, pass, or assurance is claimed here. A
-witness under `situation/witnesses/P-000007/` will record the executed
-outcome with the exact source and workflow identities.
+(`c1`–`c12`, `e1`–`e34`), run by `cargo nextest run --workspace
+--no-fail-fast` inside the `gates` task of the current
+`.github/workflows/ci-dev.yml`. The suite source exists complete on
+this branch and has never executed to completion: the published
+candidate `7c40b58` failed compilation before any test ran, and the
+one negative literal that run exposed — c7's original "bad/id", valid
+under the grammar's slash-joined components — was a fixture defect,
+corrected by the owner to leading-slash/empty-component literals with
+the source unchanged; no execution, pass, or assurance is claimed
+here. The next run rides a new immutable SHA, and a witness under
+`situation/witnesses/P-000007/` will record the executed outcome with
+the exact source and workflow identities.
 
 ## Implementation coverage
 
 Every leg is executable through the named tests via
-`cargo nextest run --workspace` in the `gates` task; the table claims
-executability, not outcome.
+`cargo nextest run --workspace --no-fail-fast` in the `gates` task; the
+table claims executability, not outcome.
 
 | Leg | Decision | Coverage |
 |---|---|---|
@@ -305,7 +320,7 @@ executability, not outcome.
 | P3 | concurrent same-id creation yields one identity | `c5_concurrent_same_id_yields_one_created_one_existing` |
 | P4 | lost create response converges on same-id retry | `c6_lost_create_response_then_same_id_retry_returns_existing` |
 | P5 | incumbent conflict family is typed, incl. outer corruption; no overwrite | `c3_different_config_conflicts_and_never_overwrites`, `c4_corrupt_incumbent_is_typed_storage_corrupt`, `c10_absent_incumbent_after_conflict_is_backend_unqualified`, `c11_outer_genesis_corruption_maps_to_corrupt` |
-| P6 | creation admission preflight is effect-free incl. reserved keys | `c7_invalid_stream_id_rejected_before_any_io`, `c8_oversized_genesis_rejected_before_any_io`, `c9_kernel_reserved_scope_id_rejected_before_any_io` |
+| P6 | admission boundary: invalid/oversized/reserved refused effect-free; hierarchical ids accepted | `c7_invalid_stream_id_rejected_before_any_io`, `c8_oversized_genesis_rejected_before_any_io`, `c9_kernel_reserved_scope_id_rejected_before_any_io`, `c12_hierarchical_ids_are_valid_through_create_append_and_reads` |
 | P7 | append lands at the exact successor | `e1_exact_successor_from_genesis` |
 | P8 | exact retry converges after suffix advance and predecessor trim | `e2_exact_retry_after_suffix_advance_writes_nothing`, `e3_exact_retry_after_predecessor_trimmed_target_retained` |
 | P9 | occupied target conflicts are typed, incl. outer corruption; no interleave | `e4_same_id_payload_conflict_is_not_attempted`, `e5_same_id_schema_conflict_is_not_attempted`, `e6_different_occupant_position_conflict_no_interleave`, `e24_malformed_target_occupant_is_corrupt_before_attempt`, `e32_outer_target_corruption_maps_to_corrupt` |
@@ -319,7 +334,7 @@ executability, not outcome.
 | P17 | frozen certificate LIST stands on the qualified observation | `e23_frozen_certificate_list_residual_is_honest` |
 | P18 | attributable writes target the exact slot; no tail/cursor/alternate writes | suite-wide `log_put_keys`/no-PUT assertions (incl. `e2`, `e10`, `e11`, `e27`) and `e20`'s one-log-PUT assertion |
 | P19 | monotone floor regression fails closed with the current effect | `e29_floor_regression_before_attempt_is_backend_unqualified`, `e30_floor_regression_after_commit_preserves_committed_receipt` |
-| F1 | preflight detects a premature effect or a mistyped reserved refusal | `c7`, `c8`, `c9`, `e16` |
+| F1 | preflight detects a premature effect, a mistyped reserved refusal, or a refused valid id | `c7`, `c8`, `c9`, `c12`, `e16` |
 | F2 | effect coverage detects a lost, downgraded, or degraded certainty | `e17`, `e18`, `e19`–`e22`, `e27`, `e28`, `e30`, `e34` |
 | F3 | occupancy legs detect a mistyped outcome incl. outer corruption | `c3`, `c4`, `c10`, `c11`, `e4`–`e6`, `e24`, `e25`, `e32` |
 | F4 | attributable-write witness detects slot advance or duplicate landing | `c2`, `c5`, `c6`, `e2`, `e4`–`e6`, `e27`, suite witness |

@@ -346,7 +346,7 @@ async fn c6_lost_create_response_then_same_id_retry_returns_existing() {
 async fn c7_invalid_stream_id_rejected_before_any_io() {
     let (loopback, streams) = counterpart_streams().await;
     let base = loopback.request_count();
-    let bad = deserialized_stream_id("bad/id");
+    let bad = deserialized_stream_id("/c7-leading-slash");
     let error = streams
         .create_stream_with_id(&bad, b"cfg-c7")
         .await
@@ -1118,15 +1118,15 @@ async fn e16_seq_max_and_invalid_admission_perform_no_io() {
     // Deserialized-invalid IDs: predecessor stream, predecessor
     // stable id, target schema, target stable id.
     let bad_stream = EventRef {
-        stream_id: deserialized_stream_id("bad/id"),
+        stream_id: deserialized_stream_id("/pred-stream"),
         ..ok_pred.clone()
     };
     let bad_pred_id = EventRef {
-        stable_event_id: deserialized_event_id("bad/id"),
+        stable_event_id: deserialized_event_id("pred//empty"),
         ..ok_pred.clone()
     };
-    let bad_schema = deserialized_schema_id("bad/id");
-    let bad_stable = deserialized_event_id("bad/id");
+    let bad_schema = deserialized_schema_id("/schema");
+    let bad_stable = deserialized_event_id("stable//empty");
     let cases = [
         (
             "predecessor stream id",
@@ -2101,6 +2101,64 @@ async fn c11_outer_genesis_corruption_maps_to_corrupt() {
         "outer envelope corruption is Corrupt at the incumbent seq, got {error:?}"
     );
     loopback.shutdown();
+}
+
+/// c12: hierarchical IDs are VALID grammar — slash-joined components
+/// each satisfying the segment rule — for the stream, the schema, and
+/// the stable event id alike: creation, expected append, exact retry,
+/// verified reads, and the physical key layout all carry hierarchy.
+/// Guards against narrowing the grammar to satisfy the negative
+/// admission cases (c7, e16).
+#[tokio::test]
+async fn c12_hierarchical_ids_are_valid_through_create_append_and_reads() {
+    let (streams, keyspace) = in_memory();
+    let id = stream_id("tenant/cond-c12");
+    let schema = schema("group/cond.v12");
+    let stable = event("batch/cond-c12-first");
+    let outcome = streams
+        .create_stream_with_id(&id, b"cfg-c12")
+        .await
+        .unwrap();
+    assert_eq!(outcome, CreateStreamOutcome::Created);
+    assert_eq!(
+        streams.read_config(&id).await.unwrap().as_deref(),
+        Some(b"cfg-c12".as_slice()),
+        "the config reads back through the hierarchical genesis"
+    );
+    let receipt = streams
+        .append_expected(&genesis_ref(&id, b"cfg-c12"), &schema, &stable, b"p12")
+        .await
+        .unwrap();
+    assert_eq!(receipt.stream_id, id);
+    assert_eq!(receipt.seq, 1);
+    assert_eq!(receipt.stable_event_id, stable);
+    assert_eq!(receipt.payload_sha256, sha256_hex(b"p12"));
+    let retry = streams
+        .append_expected(&genesis_ref(&id, b"cfg-c12"), &schema, &stable, b"p12")
+        .await
+        .unwrap();
+    assert_eq!(retry, receipt, "the exact retry converges on hierarchy");
+    // Strict read (no log LIST, no tail-hint read, no write): the object
+    // set asserted below attributes every object to the conditional
+    // operations alone.
+    let page = streams
+        .read_range(&id, 0, receipt.seq, 10)
+        .await
+        .expect("strict range read");
+    assert_eq!(
+        page.events
+            .iter()
+            .map(|envelope| (envelope.seq(), envelope.stable_event_id().as_str()))
+            .collect::<Vec<_>>(),
+        vec![(1, "batch/cond-c12-first")],
+        "verified strict read carries the hierarchical identity"
+    );
+    assert!(page.reached_end, "the demanded window was served whole");
+    assert_eq!(
+        stream_objects(&keyspace, &id).await,
+        vec![log_key(&id, 0), log_key(&id, 1)],
+        "the physical keyspace layout carries the hierarchical scope"
+    );
 }
 
 /// e31: a predecessor GET that comes back missing after a concurrent
