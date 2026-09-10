@@ -313,25 +313,10 @@ Expected append:
 The executable is `crates/yeetz-s3-streams/tests/streams_conditional.rs`
 (`c1`–`c12`, `e1`–`e36`; 48 tests), run by `cargo nextest run
 --workspace --no-fail-fast` inside the `gates` task of the current
-`.github/workflows/ci-dev.yml`. No case has passed and no witness
-exists. Run history so far: the published candidate `7c40b58` failed
-compilation before any test ran (exposing c7's original "bad/id"
-literal — valid under the grammar's slash-joined components — as a
-fixture defect, corrected to leading-slash/empty-component literals
-with the source unchanged); a subsequent CI run reached the suite and
-failed `e20` on fixture-side trace attribution — the mark was taken
-after the parked request was already logged, and a later legacy live
-read wrote the tail inside the attributed window — corrected by
-opening the window before the spawn and closing it before the legacy
-read; the product criteria and the Inputs trace-exclusion rules are
-unchanged. Since those runs, `e35_lost_put_with_exact_readback_returns_committed_receipt`
-(the same-call Committed/`Ok` upgrade leg) and
-`e36_outer_corrupt_expired_target_is_expired_not_corrupt` (the
-floor-precedence-over-corruption leg) have landed, their names verified
-against the landed source — completing the declared 48-test suite with
-no criteria change. The next run rides a new immutable SHA, and a
-witness under `situation/witnesses/P-000007/` will record the executed
-outcome with the exact source and workflow identities.
+`.github/workflows/ci-dev.yml`. The names and assertions of these cases
+implement the Pass and Fail legs below. Execution outcomes belong only in
+the linked Witness records; this Oracle records the implemented judgment
+machinery.
 
 ## Implementation coverage
 
