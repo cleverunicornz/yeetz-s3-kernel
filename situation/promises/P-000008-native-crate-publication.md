@@ -64,11 +64,13 @@ the `ci-dev` workflow. For `release_version` V:
 
 ## Scope
 
-The `package` and `publish` tasks of `.github/workflows/ci-dev.yml`,
-`tools/release_crates.py`, the four named crates' release artifacts and
-sparse-index outcomes, the `v0.5.0` tag and release publication, and the
+Scope includes the `package` and `publish` tasks of
+`.github/workflows/ci-dev.yml` and their clause-6 dispatch, runner, gate-job,
+token-scoping, credential-free-packaging, and fixed-crate controls;
+`tools/release_crates.py`; the four named crates' release artifacts and
+sparse-index outcomes; the `v0.5.0` tag and release publication; and the
 complete repository tree at `ref` solely for the finite clause-6
-no-other-in-repository-publication-surface check. Excludes any Rust code,
+no-other-in-repository-publication-surface check. It excludes any Rust code,
 public API, or dependency change; downstream migration; crates beyond the
 four (`yeetz-rigs` stays unpublished); cross-crate atomicity (explicitly
 absent — clause 4); registry-side behavior beyond the observed sparse-index
