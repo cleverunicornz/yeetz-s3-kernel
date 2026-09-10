@@ -2,20 +2,20 @@
 
 ## State
 
-open
+closed
 
 ## Gap
 
-No PASS witness currently establishes the applicability of O-000001 through
-O-000005 to this opening tree after a required gate input changed.
+The former absence of a PASS witness establishing the applicability of
+O-000001 through O-000005 after a required gate input changed.
 
 ## Relevance
 
-P-000001 through P-000005 retain historical `assured` state from their named
-PASS witnesses. Their Oracles require exact source, test, and workflow identity
-between an execution and the observation head. The root
-`<bedrock-repository>` Verification bullet therefore cannot claim an assured
-current gate route until current applicability is witnessed.
+P-000001 through P-000005 retain `assured` state from their named PASS
+witnesses. Their Oracles require exact source, test, and workflow identity
+between an execution and the observation head. The current-head PASS witnesses
+below establish that identity for the existing promises' scopes and restore a
+recorded assured gate route.
 
 ## Evidence
 
@@ -33,19 +33,28 @@ current gate route until current applicability is witnessed.
   runner label and removes the former runner input. The current
   `tools/check_storage_boundaries.sh` also differs from
   `49ba2ced98831d192f6a2371b90aec8e81a081fd:tools/check_storage_boundaries.sh`.
+- `situation/witnesses/P-000001/W-000019-canonical-lineage-current-gate.md`,
+  `situation/witnesses/P-000002/W-000020-keyspace-current-gate.md`,
+  `situation/witnesses/P-000003/W-000018-append-only-streams-current-gate.md`,
+  `situation/witnesses/P-000004/W-000021-streamed-values-current-gate.md`,
+  and `situation/witnesses/P-000005/W-000022-batched-deletion-current-gate.md`
+  each record a PASS from `gates` run `34421839069` at
+  `43fb1f661ad91363fc99ae257ed4e62ea8207303`, with an Oracle-leg table
+  evidencing every Pass leg.
 
 ## Impact
 
-No current gate claim may treat W-000011 through W-000015 as an assured
-observation of this opening tree. This absence does not refute the historical
-PASS observations or broaden any Promise scope.
+The former absence prevented the root Verification bullet from naming an
+assured current gate route. It did not refute the historical PASS observations
+or broaden any Promise scope.
 
 ## Resolution
 
-None. The absence can close only with an actual `gates` execution for a head
-whose Oracle inputs match the observation and a PASS witness that evidences
-each Pass leg. No Candidate is proposed: collecting a current witness is not a
-behavioral selection.
+Closed by W-000018, W-000019, W-000020, W-000021, and W-000022: each
+observes a `gates` execution whose source, test, and workflow inputs match its
+observation head and names the evidence for its Oracle's Pass legs. No
+Candidate was proposed because collecting current evidence selected no new
+behavior.
 
 ## References
 
