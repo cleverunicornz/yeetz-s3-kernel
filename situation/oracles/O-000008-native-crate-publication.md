@@ -23,7 +23,7 @@ tag and GitHub release; and the preparation pull request. A run whose
 workflow or script source differs from the head under judgment is INVALID
 for this oracle rather than a judgment about changed bytes. The
 executable surface — the native `ci-dev` tasks and
-`tools/release_crates.py` — exists in the branch working tree, but no
+`tools/release_crates.py` — has landed on the release branch, but no
 `package` or `publish` run has executed; this oracle remains `designed`,
 and a leg becomes creditable only when a real run exercises the named
 decision, at which point the state becomes `implemented`. Manual legs are
@@ -58,16 +58,19 @@ witnessed by direct evidence.
   check executed and passed before any registry upload was attempted.
 - P7: Sparse-index adjudication observed before each upload in the order
   `yeetz-sdk-core`, `yeetz-sdk-s3`, `yeetz-s3-kernel`, `yeetz-s3-streams`,
-  with the observed action per crate: V absent → upload; V present with
-  an index checksum equal to the local artifact's SHA-256 → skip reported
-  as complete.
+  with the observed action per crate: V absent → upload; V present
+  exactly once with an index checksum equal to the local artifact's
+  SHA-256 → skip reported as complete; duplicate V records are an
+  invalid state.
 - P8: After each upload, the crate's sparse-index entry for V carries a
   checksum equal to the actually uploaded artifact before the next crate
-  begins.
+  begins, and the confirmed status and receipt are persisted to the run
+  output before any fallible artifact-copy step.
 - P9: An exercised partial failure reports exactly — the failing run's
-  output names which crates are confirmed at V and which are not; until
-  such a run exists, the failure-summary path is credited only by manual
-  source inspection.
+  output names which crates are confirmed at V and which are not, and a
+  retention failure is reported as retention, never as a change to
+  publication status; until such a run exists, the failure-summary path
+  is credited only by manual source inspection.
 - P10: The four-before-release rule holds — the `v0.5.0` tag is
   annotated, resolves to exactly the published SHA, and the GitHub
   release attaching the four archives and checksums exists only after
@@ -102,13 +105,15 @@ witnessed by direct evidence.
 - F6: publish proceeds from a SHA unmerged into `main` or a version
   unequal to the workspace version rather than refusing before registry
   contact (P6).
-- F7: an upload is attempted against a present-but-mismatched version, an
-  overwrite is attempted, or adjudication is skipped (P7).
+- F7: an upload is attempted against a present-but-mismatched version or
+  against duplicate V records, an overwrite is attempted, or adjudication
+  is skipped (P7).
 - F8: a dependent crate is attempted before its dependency's index
-  confirmation, or an index checksum disagrees with the uploaded artifact
-  (P8).
-- F9: an exercised partial failure is reported incompletely or wrongly
-  (P9).
+  confirmation, an index checksum disagrees with the uploaded artifact,
+  or a confirmed status is not persisted before a fallible
+  artifact-copy step (P8).
+- F9: an exercised partial failure is reported incompletely or wrongly,
+  or a retention failure is reported as a publication-status change (P9).
 - F10: the tag/release appears before all four confirmations, at a
   different SHA, non-annotated, or with non-matching assets (P10).
 - F11: the token is present outside the publish step or echoed anywhere,
@@ -139,8 +144,8 @@ names both.
 | P4 | Packaged manifest is registry-normalized | `tools/release_crates.py` manifest check |
 | P5 | Invocations carry `--locked`, no bypass flags; no bypass path exists | run log of the real Actions run for the flags; manual (source inspection for absent bypass paths) |
 | P6 | Publish preflight executed and held before registry contact | `tools/release_crates.py` publish preflight output in the real Actions run |
-| P7 | Adjudication observed before each upload, in order | `tools/release_crates.py` publish adjudication in the real Actions run |
-| P8 | Per-crate index checksum equals the uploaded artifact before the next crate | `tools/release_crates.py` post-upload confirmation plus the sparse index |
+| P7 | Adjudication observed before each upload, in order; duplicate V records treated as invalid | `tools/release_crates.py` publish adjudication in the real Actions run |
+| P8 | Per-crate checksum confirmed and persisted before fallible artifact copies, before the next crate | `tools/release_crates.py` post-upload confirmation plus the sparse index |
 | P9 | An exercised partial failure reports exactly | an exercised failing run's summary output; manual (source inspection of the failure-summary path) until one exists |
 | P10 | Tag/release only after four confirmations, exact SHA, matching assets | manual (receipt reconciliation: tag object type, resolved SHA, release asset checksums vs published receipts) |
 | P11 | Token step-scoping, credential-stripped packaging, runner label, gate-job skip, dispatch-only, fixed four, no other surface | manual (source inspection of the workflow and `tools/` at the run head) |
@@ -151,9 +156,9 @@ names both.
 | F4 | Manifest check detects a leak or an off-requirement dependency | `tools/release_crates.py` manifest check |
 | F5 | Run log shows a bypass flag or missing `--locked`; source shows a bypass path | run log of the real Actions run; manual (source inspection) |
 | F6 | Publish preflight refuses unmerged or misversioned source | manual (source inspection of the publish preflight); an exercised refusal case upgrades it |
-| F7 | Adjudication blocks a mismatched overwrite and cannot be skipped | manual (source inspection of the adjudication path); an exercised mismatch or idempotent-skip case upgrades it |
-| F8 | Confirmation detects an out-of-order attempt or a checksum disagreement | `tools/release_crates.py` post-upload confirmation in the real Actions run |
-| F9 | A failing run misreports the partial state | an exercised failing run's summary output; manual (source inspection of the failure-summary path) until one exists |
+| F7 | Adjudication blocks mismatched or duplicate-V uploads and cannot be skipped | manual (source inspection of the adjudication path); an exercised mismatch, duplicate-record, or idempotent-skip case upgrades it |
+| F8 | Confirmation detects an out-of-order attempt, a checksum disagreement, or an unpersisted confirmation | `tools/release_crates.py` post-upload confirmation in the real Actions run |
+| F9 | A failing run misreports the partial state or conflates retention with publication status | an exercised failing run's summary output; manual (source inspection of the failure-summary path) until one exists |
 | F10 | Tag/release violates the four-before-release rule, the SHA, or asset equality | manual (receipt reconciliation) |
 | F11 | A guard violation exists in source or in the run | manual (source inspection of the workflow and `tools/` at the run head) |
 | F12 | Merge record lacks human approval | manual (pull request record) |

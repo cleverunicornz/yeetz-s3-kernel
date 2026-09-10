@@ -24,15 +24,21 @@ root `AGENTS.md` blocks and named skills — it inherits them.
 - A new native job runs when `inputs.task` is `package` or `publish`:
   `runs-on: cvu-native-builder-x64` (the organization's native
   compilation/packaging label), `actions/checkout` at `inputs.ref`,
-  `dtolnay/rust-toolchain@stable` with `toolchain: "1.96.0"` mirroring
-  the test job, then:
+  the immutable toolchain action pinned at
+  `dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8` with
+  explicit `toolchain: "1.96.0"` — the organization's action allowlist
+  rejected a `6bed…` pin for this job, so the approved immutable pin was
+  selected with no policy change — then:
   - `package` step (both tasks):
     `python3 tools/release_crates.py package --source-sha <ref> --version <release_version> --output dist`
   - `publish` step (publish task only):
     `python3 tools/release_crates.py publish --source-sha <ref> --version <release_version> --output dist`
     with `env: CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}`
     scoped to that step alone.
-  - The `dist/` output is uploaded as an Actions artifact for retention.
+  - The `dist/` output is uploaded as an Actions artifact named
+    `crate-release-<version>-<task>-<run_attempt>`: reruns share a run's
+    artifact namespace, so the task and attempt suffixes keep every
+    attempt's artifacts distinct — nothing is overwritten.
 
 ### `tools/release_crates.py`
 
@@ -68,8 +74,9 @@ Fixed crate list in dependency order: `yeetz-sdk-core`, `yeetz-sdk-s3`,
 `package` mode, record each artifact's SHA-256, then per crate in order:
 
 1. Adjudicate the sparse index for `<crate>` at `V`: absent → upload;
-   present with index checksum equal to the recorded SHA-256 → skip,
-   reported as already complete; anything else → fail closed, no upload.
+   present exactly once with an index checksum equal to the recorded
+   SHA-256 → skip, reported as already complete; duplicate `V` records
+   are an invalid state; anything else → fail closed, no upload.
 2. Upload with `cargo publish --locked --registry crates-io -p <crate>`
    (cargo's own verification enabled; registry auth from the step's
    `CARGO_REGISTRY_TOKEN` environment, never a flag or a file).
@@ -78,8 +85,14 @@ Fixed crate list in dependency order: `yeetz-sdk-core`, `yeetz-sdk-s3`,
    upload whose registry checksum disagrees with the artifact fails
    closed.
 
-On any failure, print a per-crate summary — confirmed at V / not
-published — and exit nonzero. No reupload occurs outside adjudication.
+Per-crate status (`not-attempted`, `unconfirmed`, `published`,
+`verified-already-present`, `verified-after-ambiguous-error`) is
+persisted to `release-manifest.json` before and after every attempt and
+on the failure path. A confirmed registry receipt and its status are
+persisted before any fallible artifact-copy step, so a retention failure
+after confirmation is reported separately and never changes publication
+status. On any failure, print a per-crate summary and exit nonzero. No
+reupload occurs outside adjudication.
 
 ## Credential lifecycle (never tokens)
 
@@ -132,8 +145,11 @@ rebase.
 
 Do not reupload blindly. Re-dispatching `publish` is safe: adjudication
 completes crates whose index checksums match and fails closed on any
-divergence. Report the exact confirmed/not-confirmed state in the pull
-request. Genuine divergence (a published V whose bytes differ from the
+   divergence. Report the exact confirmed/not-confirmed state in the
+   pull request; a retention or artifact-upload failure after
+   confirmation is a retention defect reported as such, never a change
+   to publication status. Genuine divergence (a published V whose bytes
+   differ from the
 built artifact) is immutable registry history; resolution — a new version
 or a yank — is a separate human decision outside this procedure.
 

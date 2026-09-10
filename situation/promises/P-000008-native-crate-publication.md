@@ -34,17 +34,20 @@ and `release_version` V:
    registry token is present only in the publish step's environment. For
    each crate in the order `yeetz-sdk-core`, `yeetz-sdk-s3`,
    `yeetz-s3-kernel`, `yeetz-s3-streams`, the sparse index is adjudicated
-   before any upload: V absent means upload; V present with an index
-   checksum equal to the packaged artifact's SHA-256 means skip, reported
-   as already complete; any other state fails closed with no upload of
-   that crate. No attempt is made to overwrite an existing registry
-   version. After each upload, the crate's sparse-index entry for V shows
-   a checksum equal to the actual uploaded artifact before the next crate
-   is attempted.
+   before any upload: V absent means upload; V present exactly once with
+   an index checksum equal to the packaged artifact's SHA-256 means skip,
+   reported as already complete; any other state — duplicate V records
+   included — fails closed with no upload of that crate. No attempt is
+   made to overwrite an existing registry version. After each upload, the
+   crate's sparse-index entry for V shows a checksum equal to the actual
+   uploaded artifact before the next crate is attempted.
 4. A partial publish failure is reported exactly: the run output names
    which crates are confirmed published at V and which are not, and no
    crate is re-uploaded except through the clause-3 checksum
-   adjudication.
+   adjudication. Each confirmed crate's status is persisted to the run
+   output before any fallible artifact-retention step, and a retention
+   failure is reported separately from, and never as a change to,
+   publication status.
 5. The annotated `v0.5.0` tag and the GitHub release are created only
    after clause 3 confirms all four crates at V. The tag resolves to
    exactly the published SHA, and the release attaches the four archives
@@ -71,11 +74,11 @@ initiated through these tasks.
   accepted route authorizing this work.
 - Implementation is active on branch `release-0.5.0`: the distribution
   license fix `56df6eb8f2bc6ad37da47dbfd1cc89961cdb1547` has landed, and
-  the native `ci-dev` tasks and `tools/release_crates.py` exist as
-  in-flight work in the branch tree (uncommitted when this record was
-  written); none of it is merged, no `package` or
-  `publish` run exists, and the four sparse indexes end at 0.4.2, so no
-  clause has an observation.
+  the native `ci-dev` tasks and `tools/release_crates.py` have landed on
+  the branch (`e40d1fe`, corrected by `cc916b1` and `c7ef1ee`); none of
+  it is merged to `main`, no `package` or `publish` run exists, and the
+  four sparse indexes end at 0.4.2, so no clause has an
+  observation.
 - `situation/references/P-000008/crate-publication.md` — the procedure
   the implementing work must realize.
 

@@ -70,8 +70,8 @@ publishes repository crates, and release 0.5.0 through it:
 1. `ci-dev` gains task values `package` and `publish` and a
    `release_version` input. Both run only from a dispatched full 40-hex
    SHA `ref` and route to a new native job on `cvu-native-builder-x64`
-   pinned to Rust 1.96.0, mirroring the test job's toolchain. The
-   existing `run` job is unchanged except that it skips the two native
+   pinned to Rust 1.96.0 through the approved immutable toolchain-action
+   pin. The existing `run` job is unchanged except that it skips the two
    tasks.
 2. `tools/release_crates.py` provides modes `package` and `publish`
    taking `--source-sha SHA --version V --output DIR`. It operates on a
