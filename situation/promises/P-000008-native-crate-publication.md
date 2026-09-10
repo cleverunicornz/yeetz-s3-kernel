@@ -2,7 +2,7 @@
 
 ## State
 
-implementing
+implemented
 
 ## Promise
 
@@ -72,20 +72,29 @@ initiated through these tasks.
 
 - `situation/decisions/D-000008-native-crate-publication.md` — the
   accepted route authorizing this work.
-- Implementation is active on branch `release-0.5.0`: the distribution
-  license fix `56df6eb8f2bc6ad37da47dbfd1cc89961cdb1547` has landed, and
-  the native `ci-dev` tasks and `tools/release_crates.py` have landed on
-  the branch (`e40d1fe`, corrected by `cc916b1` and `c7ef1ee`); none of
-  it is merged to `main`, no `package` or `publish` run exists, and the
-  four sparse indexes end at 0.4.2, so no clause has an
-  observation.
-- `situation/references/P-000008/crate-publication.md` — the procedure
-  the implementing work must realize.
+- Implementation landed through PR #48
+  (https://github.com/cleverunicornz/yeetz-s3-kernel/pull/48, branch
+  `release-0.5.0`): `e40d1fe` adds the route, `cc916b1` fixes runner
+  paths, `c7ef1eee845f322dcfc009885b3e6b999712c2c1` closes receipt and
+  provenance gaps, atop the distribution-license fix `56df6eb`.
+- The package route is exercised and passing: `ci-dev` `package` run
+  `34459982826` at
+  `c7ef1eee845f322dcfc009885b3e6b999712c2c1`
+  (https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/34459982826)
+  produced exactly four verified archives — LICENSE, normalized
+  manifest, lock, and VCS-source checks passed with Cargo 1.96
+  `--locked` verification retained — artifact
+  `crate-release-0.5.0-package-1`. The branch is not yet merged to
+  `main` (human-authorized merge pending gates and the Bedrock closure),
+  no `publish` run exists, and the four sparse indexes end at 0.4.2.
+- No PASS witness is created from the pilot: a package-only run cannot
+  fulfill the publish clauses (3–4) or the release clause (5).
+  `situation/references/P-000008/crate-publication.md` remains the
+  procedure of record.
 
-State advances to `implemented` on the commit landing the workflow tasks
-and `tools/release_crates.py`, and to `assured` only on a witness
-retaining a real package/publish Actions run and registry receipts judged
-by O-000008.
+State advances to `assured` only on a witness retaining real package
+and publish Actions runs, registry receipts, and the tag/release
+evidence judged by O-000008.
 
 ## Residual
 

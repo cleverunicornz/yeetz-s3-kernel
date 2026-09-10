@@ -2,7 +2,7 @@
 
 ## State
 
-designed
+implemented
 
 ## Judges
 
@@ -23,11 +23,12 @@ tag and GitHub release; and the preparation pull request. A run whose
 workflow or script source differs from the head under judgment is INVALID
 for this oracle rather than a judgment about changed bytes. The
 executable surface — the native `ci-dev` tasks and
-`tools/release_crates.py` — has landed on the release branch, but no
-`package` or `publish` run has executed; this oracle remains `designed`,
-and a leg becomes creditable only when a real run exercises the named
-decision, at which point the state becomes `implemented`. Manual legs are
-witnessed by direct evidence.
+`tools/release_crates.py` — has landed on the release branch, and the
+package route has now executed for real: `package` run `34459982826` at
+`c7ef1eee845f322dcfc009885b3e6b999712c2c1` passed, exercising the
+P1–P5 executable decisions. No `publish` run has executed and no tag or
+release was created, so P6–P10 remain uncredited; the manual legs
+P11–P12 await their direct evidence.
 
 ## Pass
 
@@ -124,6 +125,24 @@ witnessed by direct evidence.
 - F12: the preparation pull request merged without explicit human
   approval (P12).
 
+## Implementation
+
+The `release` job of `.github/workflows/ci-dev.yml` (dispatch-only;
+input and host-tool validation; pinned checkout at the dispatched full
+SHA; the secret-free workflow-owned guard — HEAD equals the dispatch
+SHA, clean tree, `publish` additionally requires `origin/main` ancestry
+and the workflow definition from `refs/heads/main`, and the checked-out
+release sources must be blob-identical to the trusted workflow commit;
+the allowlisted immutable toolchain pin with Rust 1.96.0; one
+mode-specific script step; and the partial-on-failure artifact upload)
+together with `tools/release_crates.py` is the executable surface. First
+real execution: `package` mode, Actions run `34459982826` at
+`c7ef1eee845f322dcfc009885b3e6b999712c2c1`, passed, artifact
+`crate-release-0.5.0-package-1` — the P1–P5 executable legs are
+exercised by it. `publish` mode has not executed; the workflow guard's
+refusal legs and the script's failure paths remain covered by source
+inspection until exercised.
+
 ## Implementation coverage
 
 A leg is credited only by its named evidence. A successful run credits
@@ -131,8 +150,10 @@ only the positive observations its log actually carries: refusal and
 secrecy guarantees — that a violated precondition would fail closed, that
 a mismatched version would never upload, that no token leaks anywhere —
 are negative claims credited only by an exercised refusal case in a
-retained run or by the named manual source leg; a green package run
-alone credits none of them. Every Pass and Fail leg has exactly one row;
+retained run or by the named manual source leg; the passing package
+pilot (run 34459982826) credits exactly its P1–P5 executable
+observations and none of the negative claims. Every Pass and Fail leg
+has exactly one row;
 where one leg combines an executable and a manual decision, the row
 names both.
 

@@ -11,34 +11,57 @@ root `AGENTS.md` blocks and named skills — it inherits them.
 ### `ci-dev` workflow (`.github/workflows/ci-dev.yml`)
 
 - The `task` input gains the values `package` and `publish`; a new
-  `release_version` input is required for both. The workflow description
-  states that native tasks require `ref` to be a full 40-hex SHA; the
-  script enforces it. The dispatch-only trigger is unchanged, validation
-  tasks keep their historical cancellation semantics, and a native task
-  never cancels an in-flight publish: the native route holds its own
-  serialization group with `cancel-in-progress: false`, so a re-dispatch
-  queues instead of canceling.
+  `release_version` input is mandatory for both, the `ref` must be a
+  full 40-hex SHA, and a validation step fails the job on a missing
+  `release_version`, a non-SHA `ref`, or a missing host tool (`git`,
+  `cargo`, `rustup`, `python3`). The dispatch-only trigger is unchanged,
+  validation tasks keep their historical cancellation semantics, and a
+  native task never cancels an in-flight native run: the `release` job
+  holds its own serialization group (`ci-dev-release-<task>`,
+  `cancel-in-progress: false`), so a re-dispatch queues instead of
+  canceling.
 - The existing `run` job gains one job-level guard —
   `if: inputs.task != 'package' && inputs.task != 'publish'` — and is
   otherwise untouched.
-- A new native job runs when `inputs.task` is `package` or `publish`:
-  `runs-on: cvu-native-builder-x64` (the organization's native
-  compilation/packaging label), `actions/checkout` at `inputs.ref`,
-  the immutable toolchain action pinned at
-  `dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8` with
-  explicit `toolchain: "1.96.0"` — the organization's action allowlist
-  rejected a `6bed…` pin for this job, so the approved immutable pin was
-  selected with no policy change — then:
-  - `package` step (both tasks):
-    `python3 tools/release_crates.py package --source-sha <ref> --version <release_version> --output dist`
-  - `publish` step (publish task only):
-    `python3 tools/release_crates.py publish --source-sha <ref> --version <release_version> --output dist`
-    with `env: CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}`
-    scoped to that step alone.
-  - The `dist/` output is uploaded as an Actions artifact named
-    `crate-release-<version>-<task>-<run_attempt>`: reruns share a run's
-    artifact namespace, so the task and attempt suffixes keep every
-    attempt's artifacts distinct — nothing is overwritten.
+- The `release` job (`cvu-native-builder-x64`, `permissions: contents:
+  read`, 60-minute timeout) carries job env `RELEASE_SOURCE_SHA`
+  (the dispatch `ref`), `WORKFLOW_SHA`/`WORKFLOW_REF` (the trusted
+  identity of the executing workflow definition), `RELEASE_VERSION`,
+  and `RELEASE_DIR: release-<run_id>-<run_attempt>` — release output
+  basename, unique per run and attempt so stale artifacts cannot
+  contaminate the exact-four release set. Steps:
+  1. Input and host-tool validation (above).
+  2. Pinned checkout at `inputs.ref`, `fetch-depth: 0`.
+  3. A secret-free, workflow-owned guard, run from the trusted workflow
+     definition before the checked-out helper executes or any token is
+     granted: HEAD must equal the dispatch SHA and the tree be clean;
+     `publish` additionally requires `origin/main` ancestry and the
+     workflow definition from `refs/heads/main`; in both modes the
+     checked-out release sources (`tools/release_crates.py`,
+     `.github/workflows/ci-dev.yml`) must be blob-identical to the
+     trusted workflow commit's blobs.
+  4. The immutable toolchain action pinned at
+     `dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8`
+     with explicit `toolchain: "1.96.0"` — the organization's action
+     allowlist rejected a `6bed…` pin for this job, so the approved
+     immutable pin was selected with no policy change.
+  5. Exactly one mode step runs per dispatch — the workflow chooses the
+     mode by task, and `publish` mode performs its own packaging before
+     any upload:
+     - `package crates` (task `package` only):
+       `python3 tools/release_crates.py package --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --output "$RUNNER_TEMP/$RELEASE_DIR"`
+     - `publish crates` (task `publish` only): the same command with
+       `publish`, and `env: CARGO_REGISTRY_TOKEN:
+       ${{ secrets.CARGO_REGISTRY_TOKEN }}` scoped to that step alone.
+     The output lives outside the checkout under `$RUNNER_TEMP` — an
+     in-checkout output such as `dist` would fail the script's
+     path-relationship preflight.
+  6. Artifact upload runs `if: always()` (partial on failure), named
+     `crate-release-<version>-<task>-<run_attempt>`: reruns share a
+     run's artifact namespace, so the task and attempt suffixes keep
+     every attempt's artifacts distinct — nothing is overwritten. It
+     carries `*.crate`, `release-manifest.json`, and `SHA256SUMS` from
+     the release directory.
 
 ### `tools/release_crates.py`
 
@@ -98,7 +121,8 @@ reupload occurs outside adjudication.
 
 The token value never appears in repository files, situation records,
 transcripts, run logs, or agent chat; only the secret name is recorded
-here.
+here. The package route runs entirely secret-free; only the publish
+step consumes the secret.
 
 1. Immediately before the publish dispatch, Main creates the temporary
    repository Actions secret `CARGO_REGISTRY_TOKEN` from the existing
@@ -113,45 +137,70 @@ from every packaging subprocess, so packaging never sees a token.
 
 ## Human approval gate
 
-The preparation pull request (release branch into `main`) carrying the
-workflow tasks, `tools/release_crates.py`, the distribution-license
-metadata fix, and the P-000008/O-000008/D-000008 records merges only
-with explicit human approval under the root organization rules. The
-working agent opens and updates the pull request and does not merge it.
-Per organization law the merge is a merge commit, never a squash or
-rebase.
+The preparation pull request merges only with explicit human approval
+under the root organization rules. The default is that the working
+agent opens and updates the pull request and does not merge it; the
+exception that matters is an active human authorization naming that
+exact pull request. For PR #48 a human selected Merge-after-checks and
+the selection is retained at
+https://github.com/cleverunicornz/yeetz-s3-kernel/pull/48#issuecomment-5616250101:
+Main may merge PR #48 once gates and the Bedrock closure pass; no other
+pull request and no other agent is authorized to merge. Per
+organization law the merge is a merge commit, never a squash or rebase.
 
 ## Execution order for the 0.5.0 release
 
-1. Preparation PR merges with human approval; `main` sits at the release
-   SHA M.
-2. Main creates the temporary secret.
-3. Dispatch `gh workflow run ci-dev.yml -f ref=M -f task=package -f
-   release_version=0.5.0`. Retain the Actions run URL; download the
-   `dist` artifact; judge O-000008 P1–P5 on it.
-4. Dispatch `gh workflow run ci-dev.yml -f ref=M -f task=publish -f
-   release_version=0.5.0`. The script packages, adjudicates, uploads in
-   order, and confirms per-crate index checksums; judge O-000008 P6–P8
-   on the run and the sparse index, and P9 if the run fails.
-5. Main removes the temporary secret.
+1. Preparation PR #48 merges with its recorded human approval (Main
+   executes it after gates and the Bedrock closure pass); `main` then
+   sits at the release SHA M.
+2. Dispatch the package verification at exactly M, running the workflow
+   definition from `main`:
+   `gh workflow run ci-dev.yml --ref main -f ref=M -f task=package -f release_version=0.5.0`.
+   Retain the Actions run URL; download the
+   `crate-release-0.5.0-package-<attempt>` artifact; judge O-000008
+   P1–P5 on it. This step is secret-free.
+3. Immediately before the publish dispatch, Main creates the temporary
+   secret `CARGO_REGISTRY_TOKEN`.
+4. Dispatch publish at exactly M from `main`:
+   `gh workflow run ci-dev.yml --ref main -f ref=M -f task=publish -f release_version=0.5.0`
+   — the workflow guard requires `origin/main` ancestry and the
+   workflow definition from `refs/heads/main`. The script packages,
+   adjudicates, uploads in order, and confirms per-crate index
+   checksums; judge O-000008 P6–P8 on the run and the sparse index, and
+   P9 if the run fails.
+5. Main removes the temporary secret immediately after the publish task
+   completes, success or failure.
 6. Main creates the annotated tag `v0.5.0` at exactly M and the GitHub
    release attaching the four archives and their checksum files.
-7. Witness retention: the witness cites the two Actions run URLs and the
-   four sparse-index receipts (version, checksum, publication time), plus
-   the manual-leg evidence for P10's tag/release reconciliation,
+7. Witness retention: the witness cites the real Actions run URLs and
+   the four sparse-index receipts (version, checksum, publication time),
+   plus the manual-leg evidence for P10's tag/release reconciliation,
    P11, and P12.
+
+Current position: the package route is already exercised — pilot
+`package` run `34459982826` at the PR-48 head
+`c7ef1eee845f322dcfc009885b3e6b999712c2c1`
+(https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/34459982826)
+passed with exactly four verified archives — LICENSE, normalized
+manifest, lock, and VCS-source checks, Cargo 1.96 `--locked`
+verification retained — artifact `crate-release-0.5.0-package-1`
+(https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/34459982826/artifacts/10145210146).
+Package mode permits the unmerged pilot source; publish does not, so
+steps 1 and 3–7 remain and the publish dispatch waits for the merge. A
+package-only run cannot fulfill the publish or release legs, so no PASS
+witness exists.
 
 ## Partial-failure handling
 
 Do not reupload blindly. Re-dispatching `publish` is safe: adjudication
 completes crates whose index checksums match and fails closed on any
-   divergence. Report the exact confirmed/not-confirmed state in the
-   pull request; a retention or artifact-upload failure after
-   confirmation is a retention defect reported as such, never a change
-   to publication status. Genuine divergence (a published V whose bytes
-   differ from the
-built artifact) is immutable registry history; resolution — a new version
-or a yank — is a separate human decision outside this procedure.
+divergence. Report the exact confirmed/not-confirmed state in the
+pull request; a retention or artifact-upload failure after
+confirmation is a retention defect reported as such, never a change
+to publication status. Genuine divergence (a published V whose bytes
+differ from the built artifact) is immutable registry history;
+resolution — a new version or a yank — is a separate human decision
+outside this procedure.
 
 ## Evidence rules
 
@@ -161,16 +210,14 @@ records exists; no record claims completion ahead of its receipts.
 
 ## Execution qualifications (not promised)
 
-These are decided by the first real execution and recorded then; P-000008
-promises none of them:
-
-- Single repeated-`-p` invocation versus per-crate `cargo package`
-  invocations — either is allowed; artifacts must be identical.
-- The exact emitted archive file set beyond the named invariants (for
-  example `Cargo.lock` presence) — observed at first run and folded into
-  the P3 check.
-- Cross-run `.crate` byte determinism — not claimed; the checksum
-  equality checks reconcile idempotently or fail closed.
-- Sparse-index propagation delay before confirmation is observable — the
-  script retries within a bounded window and fails closed on timeout;
-  registry-side timing is residual in P-000008.
+- Single repeated-`-p` invocation — exercised and passing in pilot run
+  `34459982826`; retained as the route's shape.
+- The exact emitted archive file set beyond the named invariants — the
+  pilot's post-package checks passed on the emitted set; anything beyond
+  the named invariants stays observed per run rather than promised.
+- Cross-run `.crate` byte determinism — still unqualified on a single
+  run; the checksum equality checks reconcile idempotently or fail
+  closed.
+- Sparse-index propagation delay before confirmation is observable —
+  still unqualified; the script retries within a bounded window and
+  fails closed on timeout; registry-side timing is residual in P-000008.
