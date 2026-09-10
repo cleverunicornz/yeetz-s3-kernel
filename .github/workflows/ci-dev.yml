@@ -132,9 +132,10 @@ jobs:
       WORKFLOW_SHA: ${{ github.workflow_sha }}
       WORKFLOW_REF: ${{ github.workflow_ref }}
       RELEASE_VERSION: ${{ inputs.release_version }}
-      # Unique per run and attempt: a fresh output directory every time, so
-      # stale artifacts can never contaminate the exact-four release set.
-      RELEASE_DIR: ${{ runner.temp }}/release-${{ github.run_id }}-${{ github.run_attempt }}
+      # Release output basename, unique per run and attempt so stale
+      # artifacts cannot contaminate the exact-four release set. Job-level
+      # env cannot use the runner context; steps join it to $RUNNER_TEMP.
+      RELEASE_DIR: release-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: validate native release dispatch inputs and host tools
         run: |
@@ -198,7 +199,7 @@ jobs:
         run: >-
           python3 tools/release_crates.py package
           --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION"
-          --output "$RELEASE_DIR"
+          --output "$RUNNER_TEMP/$RELEASE_DIR"
       - name: publish crates (verification retained)
         if: inputs.task == 'publish'
         env:
@@ -206,14 +207,14 @@ jobs:
         run: >-
           python3 tools/release_crates.py publish
           --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION"
-          --output "$RELEASE_DIR"
+          --output "$RUNNER_TEMP/$RELEASE_DIR"
       - name: upload crate release artifacts (partial on failure)
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: crate-release-${{ inputs.release_version }}
           path: |
-            ${{ runner.temp }}/release-${{ github.run_id }}-${{ github.run_attempt }}/*.crate
-            ${{ runner.temp }}/release-${{ github.run_id }}-${{ github.run_attempt }}/release-manifest.json
-            ${{ runner.temp }}/release-${{ github.run_id }}-${{ github.run_attempt }}/SHA256SUMS
+            ${{ runner.temp }}/${{ env.RELEASE_DIR }}/*.crate
+            ${{ runner.temp }}/${{ env.RELEASE_DIR }}/release-manifest.json
+            ${{ runner.temp }}/${{ env.RELEASE_DIR }}/SHA256SUMS
           if-no-files-found: warn
