@@ -19,7 +19,7 @@ on:
         default: "warm"
 
 concurrency:
-  group: ci-dev-${{ inputs.ref }}-${{ inputs.task }}-cvu-test-runner-x64-${{ inputs.cache_state }}
+  group: ci-dev-${{ inputs.ref }}-${{ inputs.task }}-automation-test-s-${{ inputs.cache_state }}
   cancel-in-progress: true
 
 jobs:
@@ -27,7 +27,9 @@ jobs:
     # Fork PRs never dispatch — workflow_dispatch requires write access
     # (already enforced by GitHub), belt-and-suspenders for any future trigger
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: cvu-test-runner-x64
+    runs-on:
+      group: ci
+      labels: [automation-test-s]
     steps:
       - uses: actions/checkout@v7
         with:

@@ -9,7 +9,9 @@ on:
 
 jobs:
   publish:
-    runs-on: cvu-native-builder-x64
+    runs-on:
+      group: ci
+      labels: [build-native]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
