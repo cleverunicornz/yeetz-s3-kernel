@@ -44,6 +44,27 @@ Observed:
   https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/36331280528
   (2026-09-27) and pull request run 36330918221.
 
+Further observations, same day (pull request #54):
+
+- The final-head run
+  https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/36867940324
+  (head `0adf79524f1d2e66a183a08f7dd78eec01720a57`) failed the same test with
+  the same panic in attempt 1 and in attempt 2 (job
+  https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/36867940324/job/110394661876).
+  `git diff --stat b91e90c5a5ce98baef9b7b35b69cc32c8db7bcb7 0adf79524f1d2e66a183a08f7dd78eec01720a57`
+  lists only `.github/workflows/ci.yml` and `situation/` files, so the code
+  under test equals `main`.
+- On unchanged `main` (`b91e90c5a5ce98baef9b7b35b69cc32c8db7bcb7`), dispatched
+  through `ci-dev.yml`:
+  - `task=gates` (fmt, clippy, build, then `cargo nextest run --workspace
+    --no-fail-fast`, the same sequence as `ci.yml`)
+    https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/36871210930
+    failed the same test, `FAIL [11.449s] (65/287)`, panic at
+    `state_kernel.rs:4537:17`. The failure is pre-existing on `main`.
+  - `task=nextest` (nextest alone, no preceding build steps)
+    https://github.com/cleverunicornz/yeetz-s3-kernel/actions/runs/36868895651
+    passed it, `PASS [32.424s] (66/287)`.
+
 Interpretation (unconfirmed): the CI runner sets moved to a new image and the
 runner's per-core speed is about a third of a desktop CPU, so a 1 s / 5 s
 deadline may be too short under load. No experiment isolates the cause.
