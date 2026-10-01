@@ -6,7 +6,6 @@ on:
       - "**.md"
       - "docs/**"
       - ".agents/**"
-      - ".github/**"
       - "LICENSE"
   push:
     branches: [main]
@@ -14,12 +13,14 @@ on:
       - "**.md"
       - "docs/**"
       - ".agents/**"
-      - ".github/**"
       - "LICENSE"
 
+# A newer run of the same pull request cancels the older one; every other
+# event (main push) gets its own group (run_id) and is never cancelled.
+# `.github/**` is not ignored: a workflow change runs the workflow.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
