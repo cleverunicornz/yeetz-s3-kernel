@@ -29,6 +29,18 @@ witness.
   `situation/oracles/O-000009-manual-crate-publication.md` retain the selected
   route and the judgment rule awaiting an observation.
 
+Further observation, 2026-10-09 (branch `ci/publish-from-okms`, workflow
+commit `895145941170c8f7b90336c30761e7723b6a780a`):
+
+- `situation/decisions/D-000011-publish-on-build-publish-with-okms-token.md`
+  moves the workflow to the `build-publish` runner and the token to its
+  OKMS-mounted file. P-000009 and O-000009 are superseded by
+  `situation/promises/P-000011-crate-publication-from-build-publish.md` and
+  `situation/oracles/O-000011-crate-publication-from-build-publish.md`; the
+  same absence now applies to them. That change dispatched no run, because
+  dispatching publishes crates; no `situation/witnesses/P-000011/` record
+  exists.
+
 ## Impact
 
 P-000009 cannot advance from `implemented` to `assured`. This record makes no

@@ -33,7 +33,9 @@ introduced in their package READMEs.
   boundary for repository Rust sources.
 - `.github/workflows/publish.yml` is the manual crate-publication workflow
   for `yeetz-sdk-core`, `yeetz-sdk-s3`, `yeetz-s3-kernel`, and
-  `yeetz-s3-streams`.
+  `yeetz-s3-streams`. It runs on the `build-publish` runner, which alone
+  receives the OKMS-held crates.io token as `/etc/cvu/crates-io/token`; no
+  GitHub secret carries it.
 
 ## Canonical knowledge
 

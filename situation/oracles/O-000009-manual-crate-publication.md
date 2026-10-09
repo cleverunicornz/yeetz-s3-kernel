@@ -2,7 +2,11 @@
 
 ## State
 
-designed
+superseded
+
+## Superseded by
+
+`situation/oracles/O-000011-crate-publication-from-build-publish.md`
 
 ## Judges
 
