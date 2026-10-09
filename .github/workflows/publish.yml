@@ -4,20 +4,28 @@ name: publish
 # publication witness: it records who published which crate versions to
 # crates.io, from which commit, and when. Cargo publishes the four crates
 # in dependency order with its own verification; no wrappers.
+#
+# The crates.io token is not a GitHub secret: it lives in OKMS and only the
+# build-publish runner receives it, as a mounted file. The step hands it to
+# the cargo command alone and never prints it.
 on:
   workflow_dispatch:
 
 jobs:
   publish:
     runs-on:
-      group: ci
-      labels: [build-native]
+      group: publish
+      labels: [build-publish]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.96.0"
       - name: publish crates to crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --locked -p yeetz-sdk-core -p yeetz-sdk-s3 -p yeetz-s3-kernel -p yeetz-s3-streams
+        run: |
+          token_file=/etc/cvu/crates-io/token
+          if [ ! -s "$token_file" ]; then
+            echo "::error::$token_file is missing or empty: this job must run on build-publish" >&2
+            exit 1
+          fi
+          CARGO_REGISTRY_TOKEN="$(cat "$token_file")" cargo publish --locked -p yeetz-sdk-core -p yeetz-sdk-s3 -p yeetz-s3-kernel -p yeetz-s3-streams
