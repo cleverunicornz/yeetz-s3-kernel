@@ -2,7 +2,7 @@
 
 ## State
 
-implemented
+superseded
 
 ## Promise
 
@@ -36,6 +36,10 @@ tags and GitHub releases; and any publication behavior outside this workflow.
 - Implementation commit
   `c733386f3577fd6c10322d14dc9c5f07baa6f667:.github/workflows/publish.yml`.
 - `situation/decisions/D-000009-manual-crate-publication.md`.
+- `superseded`: replaced by
+  `situation/promises/P-000011-crate-publication-from-build-publish.md` under
+  `situation/decisions/D-000011-publish-on-build-publish-with-okms-token.md`;
+  the token no longer comes from a GitHub secret.
 
 ## Residual
 

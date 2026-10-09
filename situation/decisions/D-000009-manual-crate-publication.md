@@ -2,7 +2,7 @@
 
 ## Status
 
-accepted
+superseded
 
 ## Date
 
@@ -11,6 +11,10 @@ accepted
 ## Supersedes
 
 `situation/decisions/D-000008-native-crate-publication.md`
+
+## Superseded by
+
+`situation/decisions/D-000011-publish-on-build-publish-with-okms-token.md`
 
 ## Context
 
